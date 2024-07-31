@@ -1,8 +1,7 @@
-package models
+package helpers
 
 import (
 	"database/sql"
-	"github.com/fireynis/the-bell-api/pkg/helpers"
 	"gorm.io/gorm"
 	"time"
 )
@@ -15,6 +14,6 @@ type Base struct {
 }
 
 func (b *Base) BeforeCreate(tx *gorm.DB) (err error) {
-	b.ID = helpers.GenerateUUID()
+	b.ID = GenerateTSUUID()
 	return
 }
