@@ -2,8 +2,9 @@ package helpers
 
 import (
 	"database/sql"
-	"gorm.io/gorm"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type Base struct {
