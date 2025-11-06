@@ -2,8 +2,6 @@ package user
 
 import (
 	"context"
-
-	"github.com/fireynis/the-bell-api/pkg/field_condition"
 )
 
 // ServiceReader defines the interface for reading users from the service layer
@@ -13,12 +11,6 @@ type ServiceReader interface {
 
 	// GetByEmail retrieves a user by email
 	GetByEmail(ctx context.Context, email string) (User, error)
-
-	// List retrieves a list of users based on conditions
-	List(ctx context.Context, conditions ...field_condition.FieldCondition) ([]User, error)
-
-	// Count returns the number of users matching the conditions
-	Count(ctx context.Context, conditions ...field_condition.FieldCondition) (int64, error)
 }
 
 // ServiceWriter defines the interface for writing users in the service layer

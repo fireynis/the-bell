@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/fireynis/the-bell-api/pkg/errors"
-	"github.com/fireynis/the-bell-api/pkg/field_condition"
 	"gorm.io/gorm"
 )
 
@@ -36,35 +35,6 @@ func (r *GormUserRepository) GetByEmail(ctx context.Context, email string) (User
 		return User{}, errors.ParseError(result.Error)
 	}
 	return user, nil
-}
-
-// List retrieves a list of users based on conditions
-func (r *GormUserRepository) List(ctx context.Context, conditions ...field_condition.FieldCondition) ([]User, error) {
-	var users []User
-	query := r.db.WithContext(ctx)
-
-	// TODO: Implement field conditions when needed
-	// For now, just return all users with a limit
-	result := query.Limit(100).Find(&users)
-	if result.Error != nil {
-		return nil, errors.ParseError(result.Error)
-	}
-
-	return users, nil
-}
-
-// Count returns the number of users matching the conditions
-func (r *GormUserRepository) Count(ctx context.Context, conditions ...field_condition.FieldCondition) (int64, error) {
-	var count int64
-	query := r.db.WithContext(ctx).Model(&User{})
-
-	// TODO: Implement field conditions when needed
-	result := query.Count(&count)
-	if result.Error != nil {
-		return 0, errors.ParseError(result.Error)
-	}
-
-	return count, nil
 }
 
 // Create creates a new user

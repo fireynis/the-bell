@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/fireynis/the-bell-api/pkg/errors"
-	"github.com/fireynis/the-bell-api/pkg/field_condition"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -40,16 +39,6 @@ func (s *LocalUserService) GetByEmail(ctx context.Context, email string) (User, 
 	email = strings.ToLower(strings.TrimSpace(email))
 
 	return s.repo.GetByEmail(ctx, email)
-}
-
-// List retrieves a list of users based on conditions
-func (s *LocalUserService) List(ctx context.Context, conditions ...field_condition.FieldCondition) ([]User, error) {
-	return s.repo.List(ctx, conditions...)
-}
-
-// Count returns the number of users matching the conditions
-func (s *LocalUserService) Count(ctx context.Context, conditions ...field_condition.FieldCondition) (int64, error) {
-	return s.repo.Count(ctx, conditions...)
 }
 
 // Create creates a new user with password hashing
@@ -119,31 +108,6 @@ func (s *LocalUserService) Update(ctx context.Context, id string, input UpdateUs
 	// Update fields if provided
 	if input.Name != nil {
 		user.Name = *input.Name
-	}
-
-	if input.Email != nil {
-		normalizedEmail := strings.ToLower(strings.TrimSpace(*input.Email))
-		// Check if email is already taken by another user
-		existingUser, err := s.repo.GetByEmail(ctx, normalizedEmail)
-		if err == nil && existingUser.ID != user.ID {
-			return User{}, errors.ValidationError{
-				Errors: map[string]string{
-					"email": "email already exists",
-				},
-			}
-		} else if err != nil && err != errors.ErrNotFound {
-			return User{}, err
-		}
-		user.Email = normalizedEmail
-	}
-
-	if input.Password != nil {
-		// Hash the new password
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcrypt.DefaultCost)
-		if err != nil {
-			return User{}, errors.ErrUnexpected
-		}
-		user.PasswordHash = string(hashedPassword)
 	}
 
 	if input.EmailVerified != nil {

@@ -116,8 +116,6 @@ func (c *CreateUserInput) Validate() error {
 // UpdateUserInput represents the input for updating a user
 type UpdateUserInput struct {
 	Name          *string `json:"name,omitempty"`
-	Email         *string `json:"email,omitempty"`
-	Password      *string `json:"password,omitempty"`
 	EmailVerified *bool   `json:"email_verified,omitempty"`
 	IsActive      *bool   `json:"is_active,omitempty"`
 }
@@ -134,31 +132,6 @@ func (u *UpdateUserInput) Validate() error {
 			validationError.Errors["name"] = "name cannot be empty"
 		} else if len(*u.Name) > 255 {
 			validationError.Errors["name"] = "name must be less than 255 characters"
-		}
-	}
-
-	// Validate email if provided
-	if u.Email != nil {
-		if strings.TrimSpace(*u.Email) == "" {
-			validationError.Errors["email"] = "email cannot be empty"
-		} else {
-			emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
-			if !emailRegex.MatchString(*u.Email) {
-				validationError.Errors["email"] = "invalid email format"
-			} else if len(*u.Email) > 255 {
-				validationError.Errors["email"] = "email must be less than 255 characters"
-			}
-		}
-	}
-
-	// Validate password if provided
-	if u.Password != nil {
-		if strings.TrimSpace(*u.Password) == "" {
-			validationError.Errors["password"] = "password cannot be empty"
-		} else if len(*u.Password) < 8 {
-			validationError.Errors["password"] = "password must be at least 8 characters"
-		} else if len(*u.Password) > 72 {
-			validationError.Errors["password"] = "password must be less than 72 characters"
 		}
 	}
 
