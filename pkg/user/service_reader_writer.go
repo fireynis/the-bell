@@ -24,9 +24,6 @@ type ServiceWriter interface {
 	// Delete soft deletes a user by ID
 	Delete(ctx context.Context, id string) error
 
-	// VerifyPassword verifies if a password matches the user's hashed password
-	VerifyPassword(ctx context.Context, email string, password string) (User, error)
-
 	// ChangePassword changes a user's password
 	ChangePassword(ctx context.Context, id string, oldPassword string, newPassword string) error
 }

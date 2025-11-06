@@ -140,40 +140,6 @@ func (s *LocalUserService) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// VerifyPassword verifies if a password matches the user's hashed password
-func (s *LocalUserService) VerifyPassword(ctx context.Context, email string, password string) (User, error) {
-	if strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
-		return User{}, errors.ErrInvalidQuery
-	}
-
-	// Get user by email
-	user, err := s.repo.GetByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
-	if err != nil {
-		return User{}, err
-	}
-
-	// Check if user is active
-	if !user.IsActive {
-		return User{}, errors.ValidationError{
-			Errors: map[string]string{
-				"user": "user account is inactive",
-			},
-		}
-	}
-
-	// Verify password
-	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
-	if err != nil {
-		return User{}, errors.ValidationError{
-			Errors: map[string]string{
-				"password": "invalid email or password",
-			},
-		}
-	}
-
-	return user, nil
-}
-
 // ChangePassword changes a user's password
 func (s *LocalUserService) ChangePassword(ctx context.Context, id string, oldPassword string, newPassword string) error {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(oldPassword) == "" || strings.TrimSpace(newPassword) == "" {
