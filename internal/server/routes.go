@@ -83,5 +83,18 @@ func (s *Server) routes() http.Handler {
 		})
 	}
 
+	if s.votingService != nil {
+		vh := handler.NewVotingHandler(s.votingService)
+		r.Route("/api/v1/admin/council/votes", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Use(middleware.RequireRole(domain.RoleCouncil))
+			r.Post("/", vh.CastVote)
+			r.Get("/", vh.ListPending)
+		})
+	}
+
 	return r
 }

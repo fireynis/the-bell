@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCouncilMembers = `-- name: CountCouncilMembers :one
+SELECT COUNT(*) FROM users
+WHERE role = 'council' AND is_active = TRUE
+`
+
+func (q *Queries) CountCouncilMembers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countCouncilMembers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsersByMinRole = `-- name: CountUsersByMinRole :one
 SELECT COUNT(*) FROM users
 WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE

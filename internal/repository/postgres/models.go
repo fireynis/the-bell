@@ -8,6 +8,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type CouncilVote struct {
+	ID         string             `json:"id"`
+	ProposalID string             `json:"proposal_id"`
+	VoterID    string             `json:"voter_id"`
+	Vote       string             `json:"vote"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type ModerationAction struct {
 	ID              string             `json:"id"`
 	TargetUserID    string             `json:"target_user_id"`

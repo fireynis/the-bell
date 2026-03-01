@@ -18,6 +18,7 @@ func TestEmbeddedMigrations_ContainsExpectedFiles(t *testing.T) {
 		"00007_create_trust_graph.sql",
 		"00008_create_vouches.sql",
 		"00009_create_town_config.sql",
+		"00010_create_council_votes.sql",
 	}
 
 	var found []string

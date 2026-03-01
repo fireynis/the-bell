@@ -35,3 +35,7 @@ WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE;
 
 -- name: DeactivateUser :exec
 UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1;
+
+-- name: CountCouncilMembers :one
+SELECT COUNT(*) FROM users
+WHERE role = 'council' AND is_active = TRUE;
