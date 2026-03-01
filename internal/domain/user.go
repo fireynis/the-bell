@@ -18,17 +18,17 @@ const (
 )
 
 type User struct {
-	ID               string
-	KratosIdentityID string
-	DisplayName      string
-	Bio              string
-	AvatarURL        string
-	TrustScore       float64
-	Role             Role
-	IsActive         bool
-	JoinedAt         time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID               string    `json:"id"`
+	KratosIdentityID string    `json:"kratos_identity_id,omitempty"`
+	DisplayName      string    `json:"display_name"`
+	Bio              string    `json:"bio"`
+	AvatarURL        string    `json:"avatar_url"`
+	TrustScore       float64   `json:"trust_score"`
+	Role             Role      `json:"role"`
+	IsActive         bool      `json:"is_active"`
+	JoinedAt         time.Time `json:"joined_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func (u *User) CanPost() bool {

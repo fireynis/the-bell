@@ -413,6 +413,120 @@ func TestReportHandler_ListQueue_Empty(t *testing.T) {
 	}
 }
 
+// --- UpdateReportStatus tests ---
+
+func TestReportHandler_UpdateReportStatus(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	reportRepo.reports["r1"] = &domain.Report{
+		ID:     "r1",
+		Status: "pending",
+	}
+	postGetter := newMockPostGetter()
+	svc := newTestReportService(reportRepo, postGetter)
+	h := handler.NewReportHandler(svc)
+
+	body := `{"status":"dismissed"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/moderation/reports/r1", strings.NewReader(body))
+	req = withChiURLParam(req, "id", "r1")
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.UpdateReportStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var report domain.Report
+	decodeBody(t, rec, &report)
+	if report.Status != "dismissed" {
+		t.Errorf("status = %q, want %q", report.Status, "dismissed")
+	}
+}
+
+func TestReportHandler_UpdateReportStatus_Reviewed(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	reportRepo.reports["r1"] = &domain.Report{
+		ID:     "r1",
+		Status: "pending",
+	}
+	postGetter := newMockPostGetter()
+	svc := newTestReportService(reportRepo, postGetter)
+	h := handler.NewReportHandler(svc)
+
+	body := `{"status":"reviewed"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/moderation/reports/r1", strings.NewReader(body))
+	req = withChiURLParam(req, "id", "r1")
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.UpdateReportStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestReportHandler_UpdateReportStatus_InvalidStatus(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	reportRepo.reports["r1"] = &domain.Report{
+		ID:     "r1",
+		Status: "pending",
+	}
+	postGetter := newMockPostGetter()
+	svc := newTestReportService(reportRepo, postGetter)
+	h := handler.NewReportHandler(svc)
+
+	body := `{"status":"approved"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/moderation/reports/r1", strings.NewReader(body))
+	req = withChiURLParam(req, "id", "r1")
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.UpdateReportStatus(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestReportHandler_UpdateReportStatus_NotFound(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	postGetter := newMockPostGetter()
+	svc := newTestReportService(reportRepo, postGetter)
+	h := handler.NewReportHandler(svc)
+
+	body := `{"status":"dismissed"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/moderation/reports/nonexistent", strings.NewReader(body))
+	req = withChiURLParam(req, "id", "nonexistent")
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.UpdateReportStatus(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestReportHandler_UpdateReportStatus_InvalidJSON(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	postGetter := newMockPostGetter()
+	svc := newTestReportService(reportRepo, postGetter)
+	h := handler.NewReportHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/moderation/reports/r1", strings.NewReader(`{bad}`))
+	req = withChiURLParam(req, "id", "r1")
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.UpdateReportStatus(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func TestReportHandler_ListQueue_FiltersDismissed(t *testing.T) {
 	reportRepo := newMockReportRepo()
 	reportRepo.reports["r1"] = &domain.Report{

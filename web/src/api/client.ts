@@ -51,3 +51,30 @@ class ApiClient {
 }
 
 export const api = new ApiClient();
+
+// --- Typed API helpers ---
+
+import type {
+  User,
+  Post,
+  QueueResponse,
+  TakeActionRequest,
+  TakeActionResult,
+  Report,
+  ActionsResponse,
+} from "./types";
+
+export const moderationApi = {
+  getMe: () => api.get<User>("/me/"),
+  getPost: (id: string) => api.get<Post>(`/posts/${id}`),
+  getModerationQueue: (limit = 20, offset = 0) =>
+    api.get<QueueResponse>(`/moderation/queue?limit=${limit}&offset=${offset}`),
+  takeAction: (req: TakeActionRequest) =>
+    api.post<TakeActionResult>("/moderation/actions", req),
+  updateReportStatus: (reportId: string, status: string) =>
+    api.patch<Report>(`/moderation/reports/${reportId}`, { status }),
+  getActionHistory: (userId: string, limit = 20, offset = 0) =>
+    api.get<ActionsResponse>(
+      `/moderation/actions/${userId}?limit=${limit}&offset=${offset}`,
+    ),
+};

@@ -16,6 +16,15 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.RequestLogger(s.logger))
 	r.Get("/healthz", handler.Health)
 
+	// GET /api/v1/me — return the authenticated user
+	r.Route("/api/v1/me", func(r chi.Router) {
+		if s.authMiddleware != nil {
+			r.Use(s.authMiddleware)
+		}
+		uh := handler.NewUserHandler()
+		r.Get("/", uh.GetMe)
+	})
+
 	if s.postService != nil {
 		ph := handler.NewPostHandler(s.postService)
 		r.Route("/api/v1/posts", func(r chi.Router) {
@@ -60,6 +69,7 @@ func (s *Server) routes() http.Handler {
 			if s.reportService != nil {
 				rh := handler.NewReportHandler(s.reportService)
 				r.Get("/queue", rh.ListQueue)
+				r.Patch("/reports/{id}", rh.UpdateReportStatus)
 			}
 
 			if s.moderationActionService != nil {

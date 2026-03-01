@@ -28,6 +28,10 @@ type listQueueResponse struct {
 	Reports []*domain.Report `json:"reports"`
 }
 
+type updateReportStatusRequest struct {
+	Status string `json:"status"`
+}
+
 // SubmitReport handles POST /api/v1/posts/{id}/report.
 func (h *ReportHandler) SubmitReport(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
@@ -51,6 +55,25 @@ func (h *ReportHandler) SubmitReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusCreated, report)
+}
+
+// UpdateReportStatus handles PATCH /api/v1/moderation/reports/{id}.
+func (h *ReportHandler) UpdateReportStatus(w http.ResponseWriter, r *http.Request) {
+	reportID := chi.URLParam(r, "id")
+
+	var req updateReportStatusRequest
+	if err := Decode(r, &req); err != nil {
+		Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	report, err := h.reports.UpdateStatus(r.Context(), reportID, req.Status)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, report)
 }
 
 // ListQueue handles GET /api/v1/moderation/queue.
