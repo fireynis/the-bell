@@ -1,6 +1,7 @@
 import type { RouteObject } from "react-router";
 import RequireAuth from "./components/RequireAuth.tsx";
 import Home from "./pages/Home";
+import Compose from "./pages/Compose";
 import Login from "./pages/auth/Login";
 import Registration from "./pages/auth/Registration";
 import Settings from "./pages/auth/Settings";
@@ -14,6 +15,7 @@ export const routes: RouteObject[] = [
     element: <RequireAuth />,
     children: [
       { path: "/", element: <Home /> },
+      { path: "/compose", element: <Compose /> },
       { path: "/auth/settings", element: <Settings /> },
     ],
   },

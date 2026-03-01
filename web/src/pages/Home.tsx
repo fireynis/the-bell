@@ -23,6 +23,12 @@ export default function Home() {
             </span>
           )}
           <Link
+            to="/compose"
+            className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500"
+          >
+            New Post
+          </Link>
+          <Link
             to="/auth/settings"
             className="text-sm text-indigo-600 hover:text-indigo-500"
           >

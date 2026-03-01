@@ -29,6 +29,11 @@ export interface FeedResponse {
   next_cursor?: string;
 }
 
+export interface CreatePostRequest {
+  body: string;
+  image_path?: string;
+}
+
 export interface ApiError {
   error: string;
   status: number;
