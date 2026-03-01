@@ -18,3 +18,9 @@ vendor/
 
 # Go workspace file
 go.work
+
+# Build output
+/bell
+
+# Environment
+.env
