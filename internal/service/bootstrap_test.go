@@ -54,12 +54,32 @@ func (m *mockConfigRepo) GetTownConfig(_ context.Context, key string) (string, e
 	return v, nil
 }
 
-func TestBootstrapService_Setup_HappyPath(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+// mockTransactor implements Transactor by passing through to the provided repos.
+type mockTransactor struct {
+	users  UserRepository
+	config ConfigRepository
+	txErr  error
+}
+
+func (m *mockTransactor) InTx(_ context.Context, fn func(UserRepository, ConfigRepository) error) error {
+	if m.txErr != nil {
+		return m.txErr
+	}
+	return fn(m.users, m.config)
+}
+
+func newBootstrapTestHarness(clock func() time.Time) (*mockUserRepo, *mockKratosAdmin, *mockConfigRepo, *mockTransactor, *BootstrapService) {
 	userRepo := newMockUserRepo()
 	kratosAdmin := newMockKratosAdmin()
 	configRepo := newMockConfigRepo()
-	svc := NewBootstrapService(userRepo, kratosAdmin, configRepo, func() time.Time { return now })
+	tx := &mockTransactor{users: userRepo, config: configRepo}
+	svc := NewBootstrapService(kratosAdmin, configRepo, tx, clock)
+	return userRepo, kratosAdmin, configRepo, tx, svc
+}
+
+func TestBootstrapService_Setup_HappyPath(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	userRepo, _, configRepo, _, svc := newBootstrapTestHarness(func() time.Time { return now })
 
 	emails := []string{"alice@town.example", "bob@town.example"}
 	err := svc.Setup(context.Background(), emails)
@@ -94,7 +114,7 @@ func TestBootstrapService_Setup_HappyPath(t *testing.T) {
 }
 
 func TestBootstrapService_Setup_EmptyEmails(t *testing.T) {
-	svc := NewBootstrapService(newMockUserRepo(), newMockKratosAdmin(), newMockConfigRepo(), nil)
+	_, _, _, _, svc := newBootstrapTestHarness(nil)
 
 	err := svc.Setup(context.Background(), nil)
 	if !errors.Is(err, ErrValidation) {
@@ -108,9 +128,8 @@ func TestBootstrapService_Setup_EmptyEmails(t *testing.T) {
 }
 
 func TestBootstrapService_Setup_KratosError(t *testing.T) {
-	kratosAdmin := newMockKratosAdmin()
+	_, kratosAdmin, _, _, svc := newBootstrapTestHarness(nil)
 	kratosAdmin.createErr = errors.New("kratos unavailable")
-	svc := NewBootstrapService(newMockUserRepo(), kratosAdmin, newMockConfigRepo(), nil)
 
 	err := svc.Setup(context.Background(), []string{"alice@town.example"})
 	if err == nil {
@@ -119,9 +138,34 @@ func TestBootstrapService_Setup_KratosError(t *testing.T) {
 }
 
 func TestBootstrapService_Setup_UserCreateError(t *testing.T) {
-	userRepo := newMockUserRepo()
+	userRepo, _, _, _, svc := newBootstrapTestHarness(nil)
 	userRepo.createErr = errors.New("db connection failed")
-	svc := NewBootstrapService(userRepo, newMockKratosAdmin(), newMockConfigRepo(), nil)
+
+	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	if err == nil {
+		t.Fatal("Setup() expected error, got nil")
+	}
+}
+
+func TestBootstrapService_Setup_AlreadyBootstrapped(t *testing.T) {
+	userRepo, kratosAdmin, configRepo, _, svc := newBootstrapTestHarness(nil)
+	configRepo.config["bootstrap_mode"] = "true"
+
+	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Setup() error = %v, want ErrValidation", err)
+	}
+	if len(userRepo.users) != 0 {
+		t.Fatal("expected no users created when already bootstrapped")
+	}
+	if len(kratosAdmin.identities) != 0 {
+		t.Fatal("expected no Kratos identities created when already bootstrapped")
+	}
+}
+
+func TestBootstrapService_Setup_TxError(t *testing.T) {
+	_, _, _, tx, svc := newBootstrapTestHarness(nil)
+	tx.txErr = errors.New("tx begin failed")
 
 	err := svc.Setup(context.Background(), []string{"alice@town.example"})
 	if err == nil {

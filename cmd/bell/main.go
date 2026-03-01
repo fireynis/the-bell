@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -74,26 +75,25 @@ func runServe(logger *slog.Logger) {
 }
 
 func runSetup(logger *slog.Logger) {
-	var councilFlag string
-	for i := 2; i < len(os.Args); i++ {
-		if os.Args[i] == "--council" && i+1 < len(os.Args) {
-			councilFlag = os.Args[i+1]
-			break
-		}
-		if strings.HasPrefix(os.Args[i], "--council=") {
-			councilFlag = strings.TrimPrefix(os.Args[i], "--council=")
-			break
-		}
-	}
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	council := fs.String("council", "", "comma-separated list of council member emails")
+	fs.Parse(os.Args[2:])
 
-	if councilFlag == "" {
+	if *council == "" {
 		fmt.Fprintf(os.Stderr, "usage: bell setup --council email1,email2,...\n")
 		os.Exit(1)
 	}
 
-	emails := strings.Split(councilFlag, ",")
-	for i := range emails {
-		emails[i] = strings.TrimSpace(emails[i])
+	var emails []string
+	for _, e := range strings.Split(*council, ",") {
+		e = strings.TrimSpace(e)
+		if e != "" {
+			emails = append(emails, e)
+		}
+	}
+	if len(emails) == 0 {
+		fmt.Fprintf(os.Stderr, "error: no valid emails provided\n")
+		os.Exit(1)
 	}
 
 	ctx := context.Background()
@@ -101,11 +101,11 @@ func runSetup(logger *slog.Logger) {
 	defer pool.Close()
 
 	queries := postgres.New(pool)
-	userRepo := postgres.NewUserRepo(queries)
 	configRepo := postgres.NewConfigRepo(queries)
 	kratosClient := kratosadmin.NewAdminClient(cfg.KratosAdminURL)
+	transactor := postgres.NewTransactor(pool)
 
-	svc := service.NewBootstrapService(userRepo, kratosClient, configRepo, nil)
+	svc := service.NewBootstrapService(kratosClient, configRepo, transactor, nil)
 
 	if err := svc.Setup(ctx, emails); err != nil {
 		logger.Error("setup failed", "error", err)
