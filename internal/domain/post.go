@@ -11,14 +11,14 @@ const (
 )
 
 type Post struct {
-	ID            string
-	AuthorID      string
-	Body          string
-	ImagePath     string
-	Status        PostStatus
-	RemovalReason string
-	CreatedAt     time.Time
-	EditedAt      *time.Time
+	ID            string     `json:"id"`
+	AuthorID      string     `json:"author_id"`
+	Body          string     `json:"body"`
+	ImagePath     string     `json:"image_path,omitempty"`
+	Status        PostStatus `json:"status"`
+	RemovalReason string     `json:"removal_reason,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	EditedAt      *time.Time `json:"edited_at,omitempty"`
 }
 
 const MaxPostBodyLength = 1000

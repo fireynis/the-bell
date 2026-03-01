@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/handler"
 	"github.com/fireynis/the-bell/internal/middleware"
 )
@@ -14,5 +15,24 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.ContentTypeJSON)
 	r.Use(middleware.RequestLogger(s.logger))
 	r.Get("/healthz", handler.Health)
+
+	if s.postService != nil {
+		ph := handler.NewPostHandler(s.postService)
+		r.Route("/api/v1/posts", func(r chi.Router) {
+			r.Get("/", ph.ListFeed)
+			r.Get("/{id}", ph.GetByID)
+
+			r.Group(func(r chi.Router) {
+				if s.authMiddleware != nil {
+					r.Use(s.authMiddleware)
+				}
+				r.Use(middleware.RequireRole(domain.RoleMember))
+				r.Post("/", ph.Create)
+				r.Patch("/{id}", ph.Update)
+				r.Delete("/{id}", ph.Delete)
+			})
+		})
+	}
+
 	return r
 }

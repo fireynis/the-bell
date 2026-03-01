@@ -8,23 +8,42 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/config"
+	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Server holds dependencies and manages the HTTP server lifecycle.
 type Server struct {
-	cfg    config.Config
-	db     *pgxpool.Pool
-	logger *slog.Logger
-	srv    *http.Server
+	cfg            config.Config
+	db             *pgxpool.Pool
+	logger         *slog.Logger
+	srv            *http.Server
+	postService    *service.PostService
+	authMiddleware func(http.Handler) http.Handler
+}
+
+// Option configures the Server.
+type Option func(*Server)
+
+// WithPostService sets the PostService used by post handlers.
+func WithPostService(ps *service.PostService) Option {
+	return func(s *Server) { s.postService = ps }
+}
+
+// WithAuth sets the authentication middleware for protected routes.
+func WithAuth(mw func(http.Handler) http.Handler) Option {
+	return func(s *Server) { s.authMiddleware = mw }
 }
 
 // New creates a Server with configured routes and middleware.
-func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger) *Server {
+func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger, opts ...Option) *Server {
 	s := &Server{
 		cfg:    cfg,
 		db:     db,
 		logger: logger,
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.srv = &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
