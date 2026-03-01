@@ -163,6 +163,58 @@ func (q *AGEQuerier) FindVouchersUpToDepth(ctx context.Context, userID string, d
 	return ids, nil
 }
 
+// FindVouchersWithDepth returns a map of user IDs to their minimum hop depth
+// for all users who have vouched (directly or transitively) for userID, up to
+// maxDepth hops. Used for penalty propagation where hop depth determines the
+// decay multiplier.
+func (q *AGEQuerier) FindVouchersWithDepth(ctx context.Context, userID string, maxDepth int) (map[string]int, error) {
+	if maxDepth <= 0 {
+		return nil, fmt.Errorf("maxDepth must be positive, got %d", maxDepth)
+	}
+	if maxDepth > maxGraphDepth {
+		return nil, fmt.Errorf("maxDepth %d exceeds maximum %d", maxDepth, maxGraphDepth)
+	}
+
+	result := make(map[string]int)
+	err := q.withAGE(ctx, func(tx pgx.Tx) error {
+		params, err := cypherParams("user_id", userID)
+		if err != nil {
+			return err
+		}
+		query := fmt.Sprintf(`
+			SELECT * FROM cypher('trust_graph', $$
+				MATCH p = (u:User {id: $user_id})<-[:VOUCHES_FOR*1..%d]-(v:User)
+				WHERE v.id <> $user_id
+				RETURN v.id, min(length(p))
+			$$, $1::agtype) AS (voucher_id agtype, hop_depth agtype)
+		`, maxDepth)
+
+		rows, err := tx.Query(ctx, query, params)
+		if err != nil {
+			return fmt.Errorf("finding vouchers with depth: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var rawID, rawDepth string
+			if err := rows.Scan(&rawID, &rawDepth); err != nil {
+				return fmt.Errorf("scanning voucher depth: %w", err)
+			}
+			id := strings.Trim(rawID, `"`)
+			var depth int
+			if _, err := fmt.Sscanf(rawDepth, "%d", &depth); err != nil {
+				return fmt.Errorf("parsing hop depth for %s: %w", id, err)
+			}
+			result[id] = depth
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // HasCyclicVouch checks whether adding a VOUCHES_FOR edge from voucherID to
 // voucheeID would create a cycle in the trust graph. It returns true if a path
 // already exists from voucheeID back to voucherID.

@@ -143,6 +143,41 @@ func TestFindVouchersUpToDepth_ExceedsMaxDepth(t *testing.T) {
 	}
 }
 
+func TestFindVouchersWithDepth_BeginError(t *testing.T) {
+	wantErr := errors.New("begin failed")
+	b := &mockBeginner{beginErr: wantErr}
+	q := postgres.NewAGEQuerier(b)
+
+	_, err := q.FindVouchersWithDepth(context.Background(), "u1", 3)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("got %v, want %v", err, wantErr)
+	}
+}
+
+func TestFindVouchersWithDepth_InvalidDepth(t *testing.T) {
+	b := &mockBeginner{tx: &mockTx{}}
+	q := postgres.NewAGEQuerier(b)
+
+	_, err := q.FindVouchersWithDepth(context.Background(), "u1", 0)
+	if err == nil {
+		t.Fatal("expected error for depth <= 0")
+	}
+	_, err = q.FindVouchersWithDepth(context.Background(), "u1", -1)
+	if err == nil {
+		t.Fatal("expected error for negative depth")
+	}
+}
+
+func TestFindVouchersWithDepth_ExceedsMaxDepth(t *testing.T) {
+	b := &mockBeginner{tx: &mockTx{}}
+	q := postgres.NewAGEQuerier(b)
+
+	_, err := q.FindVouchersWithDepth(context.Background(), "u1", 51)
+	if err == nil {
+		t.Fatal("expected error for depth exceeding max")
+	}
+}
+
 func TestHasCyclicVouch_BeginError(t *testing.T) {
 	wantErr := errors.New("begin failed")
 	b := &mockBeginner{beginErr: wantErr}
