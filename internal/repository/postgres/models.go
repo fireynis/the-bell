@@ -48,6 +48,11 @@ type Report struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type TownConfig struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type TrustPenalty struct {
 	ID                 string             `json:"id"`
 	UserID             string             `json:"user_id"`

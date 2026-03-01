@@ -27,4 +27,4 @@ COPY --from=web-builder /build/dist ./web/dist
 COPY migrations/ ./migrations/
 
 EXPOSE 8080
-CMD ["./bell"]
+CMD ["./bell", "serve"]
