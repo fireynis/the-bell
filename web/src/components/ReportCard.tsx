@@ -35,6 +35,7 @@ export default function ReportCard({
   const [post, setPost] = useState<Post | null>(null);
   const [postError, setPostError] = useState(false);
   const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState<string | null>(null);
 
   useEffect(() => {
     moderationApi
@@ -45,6 +46,7 @@ export default function ReportCard({
 
   async function handleDismiss() {
     setDismissing(true);
+    setDismissError(null);
     try {
       await moderationApi.updateReportStatus(report.id, "dismissed");
       onDismiss(report.id);
@@ -53,6 +55,8 @@ export default function ReportCard({
       // If 404, the report was already resolved by another moderator
       if (apiErr.status === 404) {
         onDismiss(report.id);
+      } else {
+        setDismissError(apiErr.error || "Failed to dismiss report");
       }
       setDismissing(false);
     }
@@ -113,6 +117,11 @@ export default function ReportCard({
       <p className="mb-3 text-xs text-gray-500">
         Reporter: {report.reporter_id.slice(0, 8)}
       </p>
+
+      {/* Dismiss error */}
+      {dismissError && (
+        <p className="mb-2 text-sm text-red-600">{dismissError}</p>
+      )}
 
       {/* Actions */}
       <div className="flex gap-2">

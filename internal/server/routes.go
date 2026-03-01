@@ -16,7 +16,9 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.RequestLogger(s.logger))
 	r.Get("/healthz", handler.Health)
 
-	// GET /api/v1/me — return the authenticated user
+	// GET /api/v1/me — return the authenticated user.
+	// Intentionally omits RequireActive so suspended/banned users can still
+	// learn their own status and role (the frontend RequireRole guard needs this).
 	r.Route("/api/v1/me", func(r chi.Router) {
 		if s.authMiddleware != nil {
 			r.Use(s.authMiddleware)

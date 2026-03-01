@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { KratosSession } from "../api/kratos-types.ts";
 import type { User } from "../api/types.ts";
 import { getSession, createLogoutFlow, performLogout } from "../api/kratos.ts";
-import { moderationApi } from "../api/client.ts";
+import { userApi } from "../api/client.ts";
 
 interface AuthContextValue {
   session: KratosSession | null;
@@ -26,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(s);
       if (s) {
         try {
-          const u = await moderationApi.getMe();
+          const u = await userApi.getMe();
           setUser(u);
         } catch {
           // User may not exist in backend yet (pending sync)

@@ -1,4 +1,13 @@
-import type { ApiError } from "./types";
+import type {
+  ApiError,
+  User,
+  Post,
+  QueueResponse,
+  TakeActionRequest,
+  TakeActionResult,
+  Report,
+  ActionsResponse,
+} from "./types";
 
 class ApiClient {
   private baseUrl: string;
@@ -54,18 +63,11 @@ export const api = new ApiClient();
 
 // --- Typed API helpers ---
 
-import type {
-  User,
-  Post,
-  QueueResponse,
-  TakeActionRequest,
-  TakeActionResult,
-  Report,
-  ActionsResponse,
-} from "./types";
+export const userApi = {
+  getMe: () => api.get<User>("/me/"),
+};
 
 export const moderationApi = {
-  getMe: () => api.get<User>("/me/"),
   getPost: (id: string) => api.get<Post>(`/posts/${id}`),
   getModerationQueue: (limit = 20, offset = 0) =>
     api.get<QueueResponse>(`/moderation/queue?limit=${limit}&offset=${offset}`),
