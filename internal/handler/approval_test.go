@@ -14,7 +14,7 @@ import (
 	"github.com/fireynis/the-bell/internal/service"
 )
 
-// mockApprovalService implements the interface needed by ApprovalHandler.
+// mockApprovalService implements ApprovalService for testing.
 type mockApprovalService struct {
 	pendingUsers []*domain.User
 	approvedUser *domain.User

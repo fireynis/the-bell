@@ -54,35 +54,6 @@ func (m *mockUserRepo) GetUserByKratosID(_ context.Context, kratosID string) (*d
 	return u, nil
 }
 
-func (m *mockUserRepo) ListPendingUsers(_ context.Context) ([]*domain.User, error) {
-	var pending []*domain.User
-	for _, u := range m.users {
-		if u.Role == domain.RolePending && u.IsActive {
-			pending = append(pending, u)
-		}
-	}
-	return pending, nil
-}
-
-func (m *mockUserRepo) CountActiveMembers(_ context.Context) (int64, error) {
-	var count int64
-	for _, u := range m.users {
-		if u.IsActive && (u.Role == domain.RoleMember || u.Role == domain.RoleModerator || u.Role == domain.RoleCouncil) {
-			count++
-		}
-	}
-	return count, nil
-}
-
-func (m *mockUserRepo) UpdateUserRole(_ context.Context, id string, role domain.Role) error {
-	u, ok := m.users[id]
-	if !ok {
-		return ErrNotFound
-	}
-	u.Role = role
-	return nil
-}
-
 func (m *mockUserRepo) UpdateUserProfile(_ context.Context, id, displayName, bio, avatarURL string) (*domain.User, error) {
 	u, ok := m.users[id]
 	if !ok {

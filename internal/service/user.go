@@ -17,9 +17,6 @@ type UserRepository interface {
 	GetUserByID(ctx context.Context, id string) (*domain.User, error)
 	GetUserByKratosID(ctx context.Context, kratosID string) (*domain.User, error)
 	UpdateUserProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error)
-	ListPendingUsers(ctx context.Context) ([]*domain.User, error)
-	CountActiveMembers(ctx context.Context) (int64, error)
-	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
 }
 
 // UserService orchestrates user business logic.

@@ -10,19 +10,19 @@ import (
 	"github.com/fireynis/the-bell/internal/middleware"
 )
 
-// ApprovalLister lists pending users and approves them.
-type ApprovalLister interface {
+// ApprovalService defines the operations needed by the approval handler.
+type ApprovalService interface {
 	ListPending(ctx context.Context) ([]*domain.User, error)
 	Approve(ctx context.Context, userID string) (*domain.User, error)
 }
 
 // ApprovalHandler handles HTTP requests for council user approval.
 type ApprovalHandler struct {
-	approvals ApprovalLister
+	approvals ApprovalService
 }
 
 // NewApprovalHandler creates an ApprovalHandler.
-func NewApprovalHandler(approvals ApprovalLister) *ApprovalHandler {
+func NewApprovalHandler(approvals ApprovalService) *ApprovalHandler {
 	return &ApprovalHandler{approvals: approvals}
 }
 
@@ -54,6 +54,10 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		Error(w, http.StatusBadRequest, "missing user id")
+		return
+	}
 
 	user, err := h.approvals.Approve(r.Context(), userID)
 	if err != nil {

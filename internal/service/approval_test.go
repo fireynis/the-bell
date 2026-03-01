@@ -10,16 +10,44 @@ import (
 	"github.com/fireynis/the-bell/internal/domain"
 )
 
-// mockApprovalUserRepo extends mockUserRepo with configurable role update errors.
+// mockApprovalUserRepo implements ApprovalUserRepository for testing.
 type mockApprovalUserRepo struct {
-	*mockUserRepo
+	users         map[string]*domain.User
 	updateRoleErr error
 }
 
 func newMockApprovalUserRepo() *mockApprovalUserRepo {
 	return &mockApprovalUserRepo{
-		mockUserRepo: newMockUserRepo(),
+		users: make(map[string]*domain.User),
 	}
+}
+
+func (m *mockApprovalUserRepo) GetUserByID(_ context.Context, id string) (*domain.User, error) {
+	u, ok := m.users[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return u, nil
+}
+
+func (m *mockApprovalUserRepo) ListPendingUsers(_ context.Context) ([]*domain.User, error) {
+	var pending []*domain.User
+	for _, u := range m.users {
+		if u.Role == domain.RolePending && u.IsActive {
+			pending = append(pending, u)
+		}
+	}
+	return pending, nil
+}
+
+func (m *mockApprovalUserRepo) CountActiveMembers(_ context.Context) (int64, error) {
+	var count int64
+	for _, u := range m.users {
+		if u.IsActive && (u.Role == domain.RoleMember || u.Role == domain.RoleModerator || u.Role == domain.RoleCouncil) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (m *mockApprovalUserRepo) UpdateUserRole(_ context.Context, id string, role domain.Role) error {

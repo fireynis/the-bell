@@ -9,13 +9,21 @@ import (
 
 const bootstrapExitThreshold = 20
 
+// ApprovalUserRepository is the subset of user persistence needed by ApprovalService.
+type ApprovalUserRepository interface {
+	GetUserByID(ctx context.Context, id string) (*domain.User, error)
+	ListPendingUsers(ctx context.Context) ([]*domain.User, error)
+	CountActiveMembers(ctx context.Context) (int64, error)
+	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
+}
+
 // ApprovalService handles council approval of pending users during bootstrap.
 type ApprovalService struct {
-	users  UserRepository
+	users  ApprovalUserRepository
 	config ConfigRepository
 }
 
-func NewApprovalService(users UserRepository, config ConfigRepository) *ApprovalService {
+func NewApprovalService(users ApprovalUserRepository, config ConfigRepository) *ApprovalService {
 	return &ApprovalService{
 		users:  users,
 		config: config,
