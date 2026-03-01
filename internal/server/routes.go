@@ -53,6 +53,11 @@ func (s *Server) routes() http.Handler {
 			}
 			r.Use(middleware.RequireRole(domain.RoleModerator))
 			r.Get("/queue", rh.ListQueue)
+
+			if s.moderationActionService != nil {
+				mh := handler.NewModerationHandler(s.moderationActionService)
+				r.Post("/actions", mh.TakeAction)
+			}
 		})
 	}
 

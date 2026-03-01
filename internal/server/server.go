@@ -18,9 +18,10 @@ type Server struct {
 	db             *pgxpool.Pool
 	logger         *slog.Logger
 	srv            *http.Server
-	postService    *service.PostService
-	reportService  *service.ReportService
-	authMiddleware func(http.Handler) http.Handler
+	postService             *service.PostService
+	reportService           *service.ReportService
+	moderationActionService *service.ModerationActionService
+	authMiddleware          func(http.Handler) http.Handler
 }
 
 // Option configures the Server.
@@ -34,6 +35,11 @@ func WithPostService(ps *service.PostService) Option {
 // WithReportService sets the ReportService used by report handlers.
 func WithReportService(rs *service.ReportService) Option {
 	return func(s *Server) { s.reportService = rs }
+}
+
+// WithModerationActionService sets the ModerationActionService used by moderation handlers.
+func WithModerationActionService(mas *service.ModerationActionService) Option {
+	return func(s *Server) { s.moderationActionService = mas }
 }
 
 // WithAuth sets the authentication middleware for protected routes.
