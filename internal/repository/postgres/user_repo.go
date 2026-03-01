@@ -74,6 +74,29 @@ func (r *UserRepo) UpdateUserProfile(ctx context.Context, id, displayName, bio, 
 	return userFromRow(row), nil
 }
 
+func (r *UserRepo) ListPendingUsers(ctx context.Context) ([]*domain.User, error) {
+	rows, err := r.q.ListPendingUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]*domain.User, len(rows))
+	for i, row := range rows {
+		users[i] = userFromRow(row)
+	}
+	return users, nil
+}
+
+func (r *UserRepo) CountActiveMembers(ctx context.Context) (int64, error) {
+	return r.q.CountUsersByMinRole(ctx)
+}
+
+func (r *UserRepo) UpdateUserRole(ctx context.Context, id string, role domain.Role) error {
+	return r.q.UpdateUserRole(ctx, UpdateUserRoleParams{
+		ID:   id,
+		Role: string(role),
+	})
+}
+
 func userFromRow(row User) *domain.User {
 	return &domain.User{
 		ID:               row.ID,

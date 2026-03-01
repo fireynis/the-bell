@@ -70,5 +70,18 @@ func (s *Server) routes() http.Handler {
 		})
 	}
 
+	if s.approvalService != nil {
+		ah := handler.NewApprovalHandler(s.approvalService)
+		r.Route("/api/v1/vouches", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Use(middleware.RequireRole(domain.RoleCouncil))
+			r.Get("/pending", ah.ListPending)
+			r.Post("/approve/{id}", ah.Approve)
+		})
+	}
+
 	return r
 }

@@ -11,6 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countUsersByMinRole = `-- name: CountUsersByMinRole :one
+SELECT COUNT(*) FROM users
+WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE
+`
+
+func (q *Queries) CountUsersByMinRole(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsersByMinRole)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -115,6 +127,44 @@ func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listPendingUsers = `-- name: ListPendingUsers :many
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users
+WHERE role = 'pending' AND is_active = TRUE
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
+	rows, err := q.db.Query(ctx, listPendingUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.KratosIdentityID,
+			&i.DisplayName,
+			&i.Bio,
+			&i.AvatarUrl,
+			&i.TrustScore,
+			&i.Role,
+			&i.IsActive,
+			&i.JoinedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listUsersByRole = `-- name: ListUsersByRole :many

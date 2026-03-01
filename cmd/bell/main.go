@@ -48,7 +48,14 @@ func runServe(logger *slog.Logger) {
 	cfg, pool := mustInit(ctx, logger)
 	defer pool.Close()
 
-	srv := server.New(cfg, pool, logger)
+	queries := postgres.New(pool)
+	userRepo := postgres.NewUserRepo(queries)
+	configRepo := postgres.NewConfigRepo(queries)
+	approvalSvc := service.NewApprovalService(userRepo, configRepo)
+
+	srv := server.New(cfg, pool, logger,
+		server.WithApprovalService(approvalSvc),
+	)
 
 	errCh := make(chan error, 1)
 	go func() {

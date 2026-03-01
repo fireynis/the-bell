@@ -24,5 +24,14 @@ UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1;
 -- name: ListUsersByRole :many
 SELECT * FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2;
 
+-- name: ListPendingUsers :many
+SELECT * FROM users
+WHERE role = 'pending' AND is_active = TRUE
+ORDER BY created_at ASC;
+
+-- name: CountUsersByMinRole :one
+SELECT COUNT(*) FROM users
+WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE;
+
 -- name: DeactivateUser :exec
 UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1;

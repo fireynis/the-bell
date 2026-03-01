@@ -21,6 +21,7 @@ type Server struct {
 	postService             *service.PostService
 	reportService           *service.ReportService
 	moderationActionService *service.ModerationActionService
+	approvalService         *service.ApprovalService
 	authMiddleware          func(http.Handler) http.Handler
 }
 
@@ -40,6 +41,11 @@ func WithReportService(rs *service.ReportService) Option {
 // WithModerationActionService sets the ModerationActionService used by moderation handlers.
 func WithModerationActionService(mas *service.ModerationActionService) Option {
 	return func(s *Server) { s.moderationActionService = mas }
+}
+
+// WithApprovalService sets the ApprovalService used by approval handlers.
+func WithApprovalService(as *service.ApprovalService) Option {
+	return func(s *Server) { s.approvalService = as }
 }
 
 // WithAuth sets the authentication middleware for protected routes.
