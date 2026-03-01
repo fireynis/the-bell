@@ -240,6 +240,46 @@ func TestRequireRole_SufficientRole(t *testing.T) {
 	}
 }
 
+// --- RequireActive tests ---
+
+func TestRequireActive_NoUserInContext(t *testing.T) {
+	handler := middleware.RequireActive(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+	assertErrorBody(t, rec, "unauthorized")
+}
+
+func TestRequireActive_InactiveUser(t *testing.T) {
+	user := &domain.User{ID: "u1", Role: domain.RoleMember, IsActive: false}
+	handler := middleware.RequireActive(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := middleware.WithUser(req.Context(), user)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	assertErrorBody(t, rec, "account suspended")
+}
+
+func TestRequireActive_ActiveUser(t *testing.T) {
+	user := &domain.User{ID: "u1", Role: domain.RoleMember, IsActive: true}
+	handler := middleware.RequireActive(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := middleware.WithUser(req.Context(), user)
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+}
+
 // --- Context helper tests ---
 
 func TestWithUser_RoundTrip(t *testing.T) {

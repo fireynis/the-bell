@@ -37,11 +37,19 @@ type TakeActionResult struct {
 	Penalties []domain.TrustPenalty    `json:"penalties"`
 }
 
+// UserEnforcer applies immediate user state changes for moderation actions.
+type UserEnforcer interface {
+	DeactivateUser(ctx context.Context, id string) error
+	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
+	UpdateUserTrustScore(ctx context.Context, id string, score float64) error
+}
+
 // ModerationActionService orchestrates moderation action business logic.
 type ModerationActionService struct {
 	actions    ModerationActionRepository
 	users      ActionUserLookup
 	moderation *ModerationService
+	enforcer   UserEnforcer
 	now        func() time.Time
 }
 
@@ -49,6 +57,7 @@ func NewModerationActionService(
 	actions ModerationActionRepository,
 	users ActionUserLookup,
 	moderation *ModerationService,
+	enforcer UserEnforcer,
 	clock func() time.Time,
 ) *ModerationActionService {
 	if clock == nil {
@@ -58,6 +67,7 @@ func NewModerationActionService(
 		actions:    actions,
 		users:      users,
 		moderation: moderation,
+		enforcer:   enforcer,
 		now:        clock,
 	}
 }
@@ -96,8 +106,9 @@ func (s *ModerationActionService) TakeAction(
 		return nil, fmt.Errorf("%w: cannot moderate yourself", ErrValidation)
 	}
 
-	// Verify target user exists
-	if _, err := s.users.GetUserByID(ctx, targetUserID); err != nil {
+	// Verify target user exists and capture for enforcement
+	targetUser, err := s.users.GetUserByID(ctx, targetUserID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -148,6 +159,33 @@ func (s *ModerationActionService) TakeAction(
 		return &TakeActionResult{Action: action, Penalties: penalties}, fmt.Errorf("propagating penalties: %w", err)
 	}
 
-	return &TakeActionResult{Action: action, Penalties: penalties}, nil
+	result := &TakeActionResult{Action: action, Penalties: penalties}
+
+	if err := s.enforce(ctx, actionType, targetUser); err != nil {
+		return result, fmt.Errorf("enforcing action: %w", err)
+	}
+
+	return result, nil
+}
+
+func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User) error {
+	if s.enforcer == nil {
+		return nil
+	}
+
+	switch actionType {
+	case domain.ActionMute:
+		if user.TrustScore >= domain.PostingThreshold {
+			return s.enforcer.UpdateUserTrustScore(ctx, user.ID, domain.PostingThreshold-1.0)
+		}
+	case domain.ActionSuspend:
+		return s.enforcer.DeactivateUser(ctx, user.ID)
+	case domain.ActionBan:
+		if err := s.enforcer.UpdateUserRole(ctx, user.ID, domain.RoleBanned); err != nil {
+			return err
+		}
+		return s.enforcer.UpdateUserTrustScore(ctx, user.ID, 0)
+	}
+	return nil
 }
 

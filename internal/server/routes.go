@@ -26,6 +26,7 @@ func (s *Server) routes() http.Handler {
 				if s.authMiddleware != nil {
 					r.Use(s.authMiddleware)
 				}
+				r.Use(middleware.RequireActive)
 				r.Use(middleware.RequireRole(domain.RoleMember))
 				r.Post("/", ph.Create)
 				r.Patch("/{id}", ph.Update)
@@ -42,6 +43,7 @@ func (s *Server) routes() http.Handler {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
+			r.Use(middleware.RequireActive)
 			r.Use(middleware.RequireRole(domain.RoleMember))
 			r.Post("/", rh.SubmitReport)
 		})
@@ -52,6 +54,7 @@ func (s *Server) routes() http.Handler {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
+			r.Use(middleware.RequireActive)
 			r.Use(middleware.RequireRole(domain.RoleModerator))
 
 			if s.reportService != nil {

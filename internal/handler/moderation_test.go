@@ -84,7 +84,7 @@ func newTestModerationActionService(
 	graph service.PenaltyGraphQuerier,
 ) *service.ModerationActionService {
 	modSvc := service.NewModerationService(penalties, graph, func() time.Time { return fixedNow })
-	return service.NewModerationActionService(actions, users, modSvc, func() time.Time { return fixedNow })
+	return service.NewModerationActionService(actions, users, modSvc, nil, func() time.Time { return fixedNow })
 }
 
 // --- TakeAction success ---

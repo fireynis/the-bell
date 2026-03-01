@@ -80,6 +80,24 @@ var roleRank = map[domain.Role]int{
 	domain.RoleCouncil:   4,
 }
 
+// RequireActive rejects requests from inactive (suspended) users.
+func RequireActive(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := UserFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		if !user.IsActive {
+			writeError(w, http.StatusForbidden, "account suspended")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequireRole rejects requests from users whose role ranks below minRole.
 func RequireRole(minRole domain.Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

@@ -48,6 +48,11 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !user.CanPost() {
+		Error(w, http.StatusForbidden, "posting not allowed")
+		return
+	}
+
 	var req createPostRequest
 	if err := Decode(r, &req); err != nil {
 		Error(w, http.StatusBadRequest, "invalid request body")

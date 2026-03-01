@@ -12,6 +12,11 @@ const (
 	RoleBanned    Role = "banned"
 )
 
+const (
+	PostingThreshold  = 30.0
+	VouchingThreshold = 60.0
+)
+
 type User struct {
 	ID               string
 	KratosIdentityID string
@@ -27,11 +32,11 @@ type User struct {
 }
 
 func (u *User) CanPost() bool {
-	return u.IsActive && u.TrustScore >= 30.0 && u.Role != RolePending && u.Role != RoleBanned
+	return u.IsActive && u.TrustScore >= PostingThreshold && u.Role != RolePending && u.Role != RoleBanned
 }
 
 func (u *User) CanVouch() bool {
-	return u.IsActive && u.TrustScore >= 60.0 && u.Role != RolePending && u.Role != RoleBanned
+	return u.IsActive && u.TrustScore >= VouchingThreshold && u.Role != RolePending && u.Role != RoleBanned
 }
 
 func (u *User) CanModerate() bool {

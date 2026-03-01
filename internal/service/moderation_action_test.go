@@ -46,6 +46,48 @@ func (m *mockActionUserLookup) GetUserByID(_ context.Context, id string) (*domai
 	return u, nil
 }
 
+// --- mock UserEnforcer ---
+
+type mockUserEnforcer struct {
+	deactivatedIDs []string
+	roleUpdates    map[string]domain.Role
+	trustUpdates   map[string]float64
+	deactivateErr  error
+	roleErr        error
+	trustErr       error
+}
+
+func newMockUserEnforcer() *mockUserEnforcer {
+	return &mockUserEnforcer{
+		roleUpdates:  make(map[string]domain.Role),
+		trustUpdates: make(map[string]float64),
+	}
+}
+
+func (m *mockUserEnforcer) DeactivateUser(_ context.Context, id string) error {
+	if m.deactivateErr != nil {
+		return m.deactivateErr
+	}
+	m.deactivatedIDs = append(m.deactivatedIDs, id)
+	return nil
+}
+
+func (m *mockUserEnforcer) UpdateUserRole(_ context.Context, id string, role domain.Role) error {
+	if m.roleErr != nil {
+		return m.roleErr
+	}
+	m.roleUpdates[id] = role
+	return nil
+}
+
+func (m *mockUserEnforcer) UpdateUserTrustScore(_ context.Context, id string, score float64) error {
+	if m.trustErr != nil {
+		return m.trustErr
+	}
+	m.trustUpdates[id] = score
+	return nil
+}
+
 // --- helpers ---
 
 func newTestModerationActionService(
@@ -53,9 +95,10 @@ func newTestModerationActionService(
 	users ActionUserLookup,
 	penalties PenaltyRepository,
 	graph PenaltyGraphQuerier,
+	enforcer UserEnforcer,
 ) *ModerationActionService {
 	modSvc := NewModerationService(penalties, graph, fixedClock)
-	return NewModerationActionService(actions, users, modSvc, fixedClock)
+	return NewModerationActionService(actions, users, modSvc, enforcer, fixedClock)
 }
 
 func int64Ptr(v int64) *int64 { return &v }
@@ -66,6 +109,7 @@ func TestModerationActionService_TakeAction_InvalidActionType(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), newMockActionUserLookup(),
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "user-1", "nuke", 1, "bad", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -101,6 +145,7 @@ func TestModerationActionService_TakeAction_SeverityMismatch(t *testing.T) {
 			svc := newTestModerationActionService(
 				newMockActionRepo(), users,
 				newMockPenaltyRepo(), newMockPenaltyGraph(),
+				nil,
 			)
 			_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", tt.action, tt.severity, "reason", nil)
 			if !errors.Is(err, ErrValidation) {
@@ -116,6 +161,7 @@ func TestModerationActionService_TakeAction_SeverityOutOfRange(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), newMockActionUserLookup(),
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "user-1", domain.ActionWarn, 0, "reason", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -137,6 +183,7 @@ func TestModerationActionService_TakeAction_EmptyReason(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -158,6 +205,7 @@ func TestModerationActionService_TakeAction_ReasonTooLong(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, string(longReason), nil)
 	if !errors.Is(err, ErrValidation) {
@@ -174,6 +222,7 @@ func TestModerationActionService_TakeAction_SelfModeration(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "mod-1", domain.ActionWarn, 1, "reason", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -187,6 +236,7 @@ func TestModerationActionService_TakeAction_TargetNotFound(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), newMockActionUserLookup(),
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "nonexistent", domain.ActionWarn, 1, "reason", nil)
 	if !errors.Is(err, ErrNotFound) {
@@ -203,6 +253,7 @@ func TestModerationActionService_TakeAction_BanWithDuration(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionBan, 5, "reason", int64Ptr(3600))
 	if !errors.Is(err, ErrValidation) {
@@ -219,6 +270,7 @@ func TestModerationActionService_TakeAction_MuteWithoutDuration(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "reason", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -235,6 +287,7 @@ func TestModerationActionService_TakeAction_SuspendWithoutDuration(t *testing.T)
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionSuspend, 4, "reason", nil)
 	if !errors.Is(err, ErrValidation) {
@@ -251,7 +304,7 @@ func TestModerationActionService_TakeAction_ValidWarn(t *testing.T) {
 	penaltyRepo := newMockPenaltyRepo()
 	graph := newMockPenaltyGraph()
 
-	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph)
+	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph, nil)
 
 	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "first warning", nil)
 	if err != nil {
@@ -307,7 +360,7 @@ func TestModerationActionService_TakeAction_ValidMute(t *testing.T) {
 	graph := newMockPenaltyGraph()
 	graph.vouchers["voucher-a"] = 1
 
-	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph)
+	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph, nil)
 
 	dur := int64Ptr(3600) // 1 hour
 	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "muted for spam", dur)
@@ -348,7 +401,7 @@ func TestModerationActionService_TakeAction_ValidBan(t *testing.T) {
 	graph.vouchers["v2"] = 2
 	graph.vouchers["v3"] = 3
 
-	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph)
+	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph, nil)
 
 	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionBan, 5, "banned permanently", nil)
 	if err != nil {
@@ -389,6 +442,7 @@ func TestModerationActionService_TakeAction_AllValidCombos(t *testing.T) {
 			svc := newTestModerationActionService(
 				newMockActionRepo(), users,
 				newMockPenaltyRepo(), newMockPenaltyGraph(),
+				nil,
 			)
 
 			result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", tt.action, tt.severity, "valid reason", tt.duration)
@@ -416,6 +470,7 @@ func TestModerationActionService_TakeAction_RepoError(t *testing.T) {
 	svc := newTestModerationActionService(
 		actionRepo, users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 
 	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "reason", nil)
@@ -433,6 +488,7 @@ func TestModerationActionService_TakeAction_WarnWithDuration(t *testing.T) {
 	svc := newTestModerationActionService(
 		newMockActionRepo(), users,
 		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
 	)
 
 	dur := int64Ptr(3600)
@@ -457,7 +513,7 @@ func TestModerationActionService_TakeAction_PenaltiesCalledCorrectly(t *testing.
 	graph := newMockPenaltyGraph()
 	graph.vouchers["v1"] = 1
 
-	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph)
+	svc := newTestModerationActionService(actionRepo, users, penaltyRepo, graph, nil)
 
 	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 2, "moderate warning", nil)
 	if err != nil {
@@ -484,5 +540,148 @@ func TestModerationActionService_TakeAction_PenaltiesCalledCorrectly(t *testing.
 	// Direct penalty amount for severity 2 is 10.0
 	if !approxEqual(result.Penalties[0].PenaltyAmount, 10.0) {
 		t.Errorf("direct penalty = %v, want 10.0", result.Penalties[0].PenaltyAmount)
+	}
+}
+
+// --- Enforcement: mute drops trust below posting threshold ---
+
+func TestModerationActionService_TakeAction_MuteEnforcement_HighTrust(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 80.0}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "muted", int64Ptr(3600))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	score, ok := enforcer.trustUpdates["target-1"]
+	if !ok {
+		t.Fatal("expected trust score update for target-1")
+	}
+	if score != 29.0 {
+		t.Errorf("trust score = %v, want 29.0", score)
+	}
+}
+
+// --- Enforcement: mute no-op when trust already below threshold ---
+
+func TestModerationActionService_TakeAction_MuteEnforcement_LowTrust(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 20.0}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "already low trust", int64Ptr(3600))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := enforcer.trustUpdates["target-1"]; ok {
+		t.Error("expected no trust update when trust already below threshold")
+	}
+}
+
+// --- Enforcement: suspend deactivates user ---
+
+func TestModerationActionService_TakeAction_SuspendEnforcement(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionSuspend, 4, "suspended", int64Ptr(86400))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(enforcer.deactivatedIDs) != 1 || enforcer.deactivatedIDs[0] != "target-1" {
+		t.Errorf("deactivated = %v, want [target-1]", enforcer.deactivatedIDs)
+	}
+}
+
+// --- Enforcement: ban sets role=banned and trust=0 ---
+
+func TestModerationActionService_TakeAction_BanEnforcement(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0, Role: domain.RoleMember}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionBan, 5, "banned", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	role, ok := enforcer.roleUpdates["target-1"]
+	if !ok {
+		t.Fatal("expected role update for target-1")
+	}
+	if role != domain.RoleBanned {
+		t.Errorf("role = %q, want %q", role, domain.RoleBanned)
+	}
+
+	score, ok := enforcer.trustUpdates["target-1"]
+	if !ok {
+		t.Fatal("expected trust update for target-1")
+	}
+	if score != 0 {
+		t.Errorf("trust = %v, want 0", score)
+	}
+}
+
+// --- Enforcement: warn does not enforce ---
+
+func TestModerationActionService_TakeAction_WarnNoEnforcement(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "warning", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(enforcer.deactivatedIDs) != 0 {
+		t.Error("expected no deactivation for warn")
+	}
+	if len(enforcer.roleUpdates) != 0 {
+		t.Error("expected no role update for warn")
+	}
+	if len(enforcer.trustUpdates) != 0 {
+		t.Error("expected no trust update for warn")
+	}
+}
+
+// --- Enforcement: failure returns partial result ---
+
+func TestModerationActionService_TakeAction_EnforcementError(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0}
+	enforcer := newMockUserEnforcer()
+	enforcer.deactivateErr = errors.New("db unavailable")
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionSuspend, 4, "suspended", int64Ptr(86400))
+	if err == nil {
+		t.Fatal("expected error from enforcement failure")
+	}
+	// Action should still be created and returned (partial success)
+	if result == nil || result.Action == nil {
+		t.Fatal("expected action to be returned despite enforcement failure")
 	}
 }

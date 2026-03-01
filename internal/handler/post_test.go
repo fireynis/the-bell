@@ -89,9 +89,10 @@ var fixedNow = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 func testUser() *domain.User {
 	return &domain.User{
-		ID:       "user-1",
-		Role:     domain.RoleMember,
-		IsActive: true,
+		ID:         "user-1",
+		Role:       domain.RoleMember,
+		IsActive:   true,
+		TrustScore: 50.0,
 	}
 }
 
@@ -210,6 +211,60 @@ func TestPostHandler_Create_InvalidJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPostHandler_Create_MutedUser(t *testing.T) {
+	repo := newMockPostRepo()
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	user := &domain.User{ID: "user-1", Role: domain.RoleMember, IsActive: true, TrustScore: 20.0}
+	body := `{"body":"Hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts", strings.NewReader(body))
+	req = withUser(req, user)
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestPostHandler_Create_BannedUser(t *testing.T) {
+	repo := newMockPostRepo()
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	user := &domain.User{ID: "user-1", Role: domain.RoleBanned, IsActive: true, TrustScore: 0}
+	body := `{"body":"Hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts", strings.NewReader(body))
+	req = withUser(req, user)
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestPostHandler_Create_PendingUser(t *testing.T) {
+	repo := newMockPostRepo()
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	user := &domain.User{ID: "user-1", Role: domain.RolePending, IsActive: true, TrustScore: 50.0}
+	body := `{"body":"Hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts", strings.NewReader(body))
+	req = withUser(req, user)
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
