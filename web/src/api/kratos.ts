@@ -1,4 +1,4 @@
-import type { KratosFlow, KratosLogoutFlow, KratosSession } from "./kratos-types.ts";
+import type { KratosFlow, KratosLogoutFlow, KratosSession, KratosSuccessResponse } from "./kratos-types.ts";
 
 const BASE = "/.ory";
 
@@ -34,8 +34,8 @@ export async function submitFlow(
   type: FlowType,
   flowId: string,
   body: Record<string, unknown>,
-): Promise<KratosFlow> {
-  return kratosRequest<KratosFlow>(`/self-service/${type}?flow=${flowId}`, {
+): Promise<KratosFlow | KratosSuccessResponse> {
+  return kratosRequest<KratosFlow | KratosSuccessResponse>(`/self-service/${type}?flow=${flowId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

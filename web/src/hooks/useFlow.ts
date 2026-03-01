@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import type { KratosFlow } from "../api/kratos-types.ts";
 import { createFlow, getFlow, submitFlow } from "../api/kratos.ts";
@@ -12,17 +12,20 @@ interface FlowError {
 
 export function useFlow(type: FlowType) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const flowId = searchParams.get("flow");
   const [flow, setFlow] = useState<KratosFlow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const initializedRef = useRef<string | null>(null);
 
   const initFlow = useCallback(async () => {
-    const flowId = searchParams.get("flow");
     try {
       if (flowId) {
         setFlow(await getFlow(type, flowId));
+        initializedRef.current = flowId;
       } else {
         const f = await createFlow(type);
+        initializedRef.current = f.id;
         setSearchParams({ flow: f.id }, { replace: true });
         setFlow(f);
       }
@@ -38,6 +41,7 @@ export function useFlow(type: FlowType) {
       if (err.status === 410 || err.status === 404) {
         try {
           const f = await createFlow(type);
+          initializedRef.current = f.id;
           setSearchParams({ flow: f.id }, { replace: true });
           setFlow(f);
           setError("Your session expired. Please try again.");
@@ -48,11 +52,14 @@ export function useFlow(type: FlowType) {
       }
       setError("Something went wrong. Please try again.");
     }
-  }, [type, searchParams, setSearchParams]);
+  }, [type, flowId, setSearchParams]);
 
   useEffect(() => {
+    // Skip if we already initialized this flow (prevents double-fetch after setSearchParams)
+    if (flowId && flowId === initializedRef.current) return;
+    if (!flowId && initializedRef.current) return;
     initFlow();
-  }, [initFlow]);
+  }, [initFlow, flowId]);
 
   const submit = useCallback(
     async (values: Record<string, unknown>): Promise<{ success: boolean; flow?: KratosFlow }> => {
@@ -61,8 +68,12 @@ export function useFlow(type: FlowType) {
       setError(null);
       try {
         const result = await submitFlow(type, flow.id, values);
-        setFlow(result);
-        return { success: true, flow: result };
+        // Login/registration success returns a session object, not a flow.
+        // Only update flow state if the response is actually a flow (has ui).
+        if ("ui" in result) {
+          setFlow(result);
+        }
+        return { success: true, flow: "ui" in result ? result : undefined };
       } catch (e: unknown) {
         const err = e as FlowError;
         // Validation errors — Kratos returns 400 with updated flow containing messages

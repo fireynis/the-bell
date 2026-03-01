@@ -89,6 +89,11 @@ export interface UiText {
   context?: Record<string, unknown>;
 }
 
+export interface KratosSuccessResponse {
+  session: KratosSession;
+  session_token?: string;
+}
+
 export interface KratosLogoutFlow {
   logout_url: string;
   logout_token: string;

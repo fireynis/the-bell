@@ -123,21 +123,17 @@ export default function FlowForm({ flow, onSubmit, submitting }: FlowFormProps) 
     onSubmit(values);
   };
 
-  // Separate hidden, visible inputs, and submit buttons for layout
-  const hidden = nodes.filter(
-    (n) => (n.attributes as UiNodeInputAttributes).node_type === "input" && (n.attributes as UiNodeInputAttributes).type === "hidden",
+  // Narrow to input nodes first, then partition by input type
+  const inputNodes = nodes.filter(
+    (n): n is UiNode & { attributes: UiNodeInputAttributes } =>
+      n.attributes.node_type === "input",
   );
-  const inputs = nodes.filter(
-    (n) =>
-      (n.attributes as UiNodeInputAttributes).node_type === "input" &&
-      (n.attributes as UiNodeInputAttributes).type !== "hidden" &&
-      (n.attributes as UiNodeInputAttributes).type !== "submit" &&
-      (n.attributes as UiNodeInputAttributes).type !== "button",
+  const hidden = inputNodes.filter((n) => n.attributes.type === "hidden");
+  const inputs = inputNodes.filter(
+    (n) => n.attributes.type !== "hidden" && n.attributes.type !== "submit" && n.attributes.type !== "button",
   );
-  const submits = nodes.filter(
-    (n) =>
-      (n.attributes as UiNodeInputAttributes).node_type === "input" &&
-      ((n.attributes as UiNodeInputAttributes).type === "submit" || (n.attributes as UiNodeInputAttributes).type === "button"),
+  const submits = inputNodes.filter(
+    (n) => n.attributes.type === "submit" || n.attributes.type === "button",
   );
 
   return (
