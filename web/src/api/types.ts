@@ -19,6 +19,16 @@ export interface User {
   joined_at: string;
 }
 
+export interface ReactionCount {
+  reaction_type: string;
+  count: number;
+}
+
+export interface FeedResponse {
+  posts: Post[];
+  next_cursor?: string;
+}
+
 export interface ApiError {
   error: string;
   status: number;
