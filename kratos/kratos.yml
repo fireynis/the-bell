@@ -50,6 +50,10 @@ selfservice:
 
     login:
       ui_url: http://localhost:5173/auth/login
+      after:
+        password:
+          hooks:
+            - hook: session
 
     logout:
       after:
