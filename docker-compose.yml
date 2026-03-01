@@ -1,0 +1,64 @@
+services:
+  bell:
+    build: .
+    container_name: bell
+    restart: unless-stopped
+    depends_on:
+      kratos:
+        condition: service_started
+      redis-bell:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell?sslmode=disable
+      REDIS_URL: redis://redis-bell:6379
+      KRATOS_PUBLIC_URL: http://kratos:4433
+      KRATOS_ADMIN_URL: http://kratos:4434
+      PORT: "8080"
+      TOWN_NAME: "${TOWN_NAME:-My Town}"
+      IMAGE_STORAGE_PATH: /storage/the-bell/images
+    volumes:
+      - /storage/the-bell/images:/storage/the-bell/images
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bell.rule=Host(`bell.home.arpa`)"
+      - "traefik.http.services.bell.loadbalancer.server.port=8080"
+
+  kratos-migrate:
+    image: oryd/kratos:v1.3.1
+    container_name: kratos-migrate
+    restart: "no"
+    command: migrate sql -e --yes
+    environment:
+      DSN: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell_kratos?sslmode=disable
+    networks:
+      - proxy
+
+  kratos:
+    image: oryd/kratos:v1.3.1
+    container_name: kratos
+    restart: unless-stopped
+    depends_on:
+      kratos-migrate:
+        condition: service_completed_successfully
+    command: serve --config /etc/kratos/kratos.yml --dev
+    environment:
+      DSN: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell_kratos?sslmode=disable
+    volumes:
+      - ./kratos/kratos.yml:/etc/kratos/kratos.yml:ro
+      - ./kratos/identity.schema.json:/etc/kratos/identity.schema.json:ro
+    networks:
+      - proxy
+
+  redis-bell:
+    image: redis:7-alpine
+    container_name: redis-bell
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
