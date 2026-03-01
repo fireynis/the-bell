@@ -65,7 +65,7 @@ func (s *Server) routes() http.Handler {
 			if s.moderationActionService != nil {
 				mh := handler.NewModerationHandler(s.moderationActionService)
 				r.Post("/actions", mh.TakeAction)
-			r.Get("/actions/{user_id}", mh.ListActions)
+				r.Get("/actions/{user_id}", mh.ListActions)
 			}
 		})
 	}

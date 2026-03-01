@@ -207,10 +207,14 @@ func (s *ModerationActionService) GetActionHistory(
 	}
 
 	entries := make([]ActionHistoryEntry, 0, len(actions))
+	// TODO: batch query — currently N+1, acceptable at pagination limits (~20)
 	for _, action := range actions {
-		penalties, err := s.penalties.ListPenaltiesByActionID(ctx, action.ID)
-		if err != nil {
-			return nil, fmt.Errorf("listing penalties for action %s: %w", action.ID, err)
+		var penalties []domain.TrustPenalty
+		if s.penalties != nil {
+			penalties, err = s.penalties.ListPenaltiesByActionID(ctx, action.ID)
+			if err != nil {
+				return nil, fmt.Errorf("listing penalties for action %s: %w", action.ID, err)
+			}
 		}
 		if penalties == nil {
 			penalties = []domain.TrustPenalty{}
@@ -244,4 +248,3 @@ func (s *ModerationActionService) enforce(ctx context.Context, actionType domain
 	}
 	return nil
 }
-
