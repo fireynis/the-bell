@@ -19,6 +19,7 @@ type Server struct {
 	logger         *slog.Logger
 	srv            *http.Server
 	postService    *service.PostService
+	reportService  *service.ReportService
 	authMiddleware func(http.Handler) http.Handler
 }
 
@@ -28,6 +29,11 @@ type Option func(*Server)
 // WithPostService sets the PostService used by post handlers.
 func WithPostService(ps *service.PostService) Option {
 	return func(s *Server) { s.postService = ps }
+}
+
+// WithReportService sets the ReportService used by report handlers.
+func WithReportService(rs *service.ReportService) Option {
+	return func(s *Server) { s.reportService = rs }
 }
 
 // WithAuth sets the authentication middleware for protected routes.

@@ -7,4 +7,5 @@ var (
 	ErrForbidden  = errors.New("forbidden")
 	ErrValidation = errors.New("validation error")
 	ErrEditWindow = errors.New("edit window expired")
+	ErrRateLimit  = errors.New("rate limit exceeded")
 )

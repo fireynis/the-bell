@@ -24,12 +24,12 @@ type ModerationAction struct {
 }
 
 type Report struct {
-	ID         string
-	ReporterID string
-	PostID     string
-	Reason     string
-	Status     string // "pending", "reviewed", "dismissed"
-	CreatedAt  time.Time
+	ID         string    `json:"id"`
+	ReporterID string    `json:"reporter_id"`
+	PostID     string    `json:"post_id"`
+	Reason     string    `json:"reason"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // Trust propagation constants

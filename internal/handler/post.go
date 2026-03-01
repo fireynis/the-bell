@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -157,17 +156,14 @@ func parseLimit(s string) int {
 	return n
 }
 
-func serviceError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, service.ErrNotFound):
-		Error(w, http.StatusNotFound, "not found")
-	case errors.Is(err, service.ErrForbidden):
-		Error(w, http.StatusForbidden, "forbidden")
-	case errors.Is(err, service.ErrValidation):
-		Error(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, service.ErrEditWindow):
-		Error(w, http.StatusConflict, "edit window expired")
-	default:
-		Error(w, http.StatusInternalServerError, "internal error")
+func parseOffset(s string) int {
+	if s == "" {
+		return 0
 	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
+

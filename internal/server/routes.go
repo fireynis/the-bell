@@ -34,5 +34,27 @@ func (s *Server) routes() http.Handler {
 		})
 	}
 
+	if s.reportService != nil {
+		rh := handler.NewReportHandler(s.reportService)
+
+		// Report submission (auth + member required)
+		r.Route("/api/v1/posts/{id}/report", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireRole(domain.RoleMember))
+			r.Post("/", rh.SubmitReport)
+		})
+
+		// Moderation queue (auth + moderator required)
+		r.Route("/api/v1/moderation", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireRole(domain.RoleModerator))
+			r.Get("/queue", rh.ListQueue)
+		})
+	}
+
 	return r
 }
