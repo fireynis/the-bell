@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,8 +27,11 @@ func New(cfg config.Config, db *pgxpool.Pool, logger *slog.Logger) *Server {
 		logger: logger,
 	}
 	s.srv = &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: s.routes(),
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      s.routes(),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	return s
 }

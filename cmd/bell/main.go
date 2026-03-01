@@ -44,15 +44,20 @@ func main() {
 
 	srv := server.New(cfg, pool, logger)
 
+	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server error", "error", err)
-			os.Exit(1)
+			errCh <- err
 		}
 	}()
 
 	logger.Info("the-bell: ready", "addr", fmt.Sprintf(":%d", cfg.Port))
-	<-ctx.Done()
+
+	select {
+	case err := <-errCh:
+		logger.Error("server error", "error", err)
+	case <-ctx.Done():
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
