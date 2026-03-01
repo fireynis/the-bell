@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -51,8 +52,12 @@ func (h *ModerationHandler) TakeAction(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		// If we got a partial result (action created but penalties failed),
-		// still return the result with 201.
+		// still return the result with 201 but log the penalty failure.
 		if result != nil && result.Action != nil {
+			slog.Warn("penalty propagation failed after action created",
+				"action_id", result.Action.ID,
+				"error", err,
+			)
 			JSON(w, http.StatusCreated, result)
 			return
 		}

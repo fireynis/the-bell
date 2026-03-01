@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,8 +13,8 @@ import (
 
 const maxActionReasonLen = 1000
 
-// AllowedSeverity maps each action type to its valid severity values.
-var AllowedSeverity = map[domain.ActionType][]int{
+// allowedSeverity maps each action type to its valid severity values.
+var allowedSeverity = map[domain.ActionType][]int{
 	domain.ActionWarn:    {1, 2},
 	domain.ActionMute:    {3},
 	domain.ActionSuspend: {4},
@@ -71,13 +72,13 @@ func (s *ModerationActionService) TakeAction(
 	durationSeconds *int64,
 ) (*TakeActionResult, error) {
 	// Validate action type
-	allowed, ok := AllowedSeverity[actionType]
+	allowed, ok := allowedSeverity[actionType]
 	if !ok {
 		return nil, fmt.Errorf("%w: invalid action type %q", ErrValidation, actionType)
 	}
 
 	// Validate severity matches action type
-	if !containsInt(allowed, severity) {
+	if !slices.Contains(allowed, severity) {
 		return nil, fmt.Errorf("%w: severity %d not valid for action type %q", ErrValidation, severity, actionType)
 	}
 
@@ -150,11 +151,3 @@ func (s *ModerationActionService) TakeAction(
 	return &TakeActionResult{Action: action, Penalties: penalties}, nil
 }
 
-func containsInt(slice []int, val int) bool {
-	for _, v := range slice {
-		if v == val {
-			return true
-		}
-	}
-	return false
-}

@@ -14,10 +14,10 @@ import (
 
 // Server holds dependencies and manages the HTTP server lifecycle.
 type Server struct {
-	cfg            config.Config
-	db             *pgxpool.Pool
-	logger         *slog.Logger
-	srv            *http.Server
+	cfg                     config.Config
+	db                      *pgxpool.Pool
+	logger                  *slog.Logger
+	srv                     *http.Server
 	postService             *service.PostService
 	reportService           *service.ReportService
 	moderationActionService *service.ModerationActionService

@@ -12,15 +12,15 @@ const (
 )
 
 type ModerationAction struct {
-	ID           string
-	TargetUserID string
-	ModeratorID  string
-	Action       ActionType
-	Severity     int // 1-5
-	Reason       string
-	Duration     *time.Duration
-	CreatedAt    time.Time
-	ExpiresAt    *time.Time
+	ID           string         `json:"id"`
+	TargetUserID string         `json:"target_user_id"`
+	ModeratorID  string         `json:"moderator_id"`
+	Action       ActionType     `json:"action"`
+	Severity     int            `json:"severity"`
+	Reason       string         `json:"reason"`
+	Duration     *time.Duration `json:"duration,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	ExpiresAt    *time.Time     `json:"expires_at,omitempty"`
 }
 
 type Report struct {

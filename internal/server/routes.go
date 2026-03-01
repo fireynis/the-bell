@@ -45,14 +45,19 @@ func (s *Server) routes() http.Handler {
 			r.Use(middleware.RequireRole(domain.RoleMember))
 			r.Post("/", rh.SubmitReport)
 		})
+	}
 
-		// Moderation queue (auth + moderator required)
+	if s.reportService != nil || s.moderationActionService != nil {
 		r.Route("/api/v1/moderation", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
 			r.Use(middleware.RequireRole(domain.RoleModerator))
-			r.Get("/queue", rh.ListQueue)
+
+			if s.reportService != nil {
+				rh := handler.NewReportHandler(s.reportService)
+				r.Get("/queue", rh.ListQueue)
+			}
 
 			if s.moderationActionService != nil {
 				mh := handler.NewModerationHandler(s.moderationActionService)
