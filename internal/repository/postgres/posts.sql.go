@@ -72,11 +72,16 @@ func (q *Queries) GetPostByID(ctx context.Context, id string) (Post, error) {
 }
 
 const listPostsByAuthor = `-- name: ListPostsByAuthor :many
-SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts WHERE author_id = $1 ORDER BY created_at DESC
+SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2
 `
 
-func (q *Queries) ListPostsByAuthor(ctx context.Context, authorID string) ([]Post, error) {
-	rows, err := q.db.Query(ctx, listPostsByAuthor, authorID)
+type ListPostsByAuthorParams struct {
+	AuthorID string `json:"author_id"`
+	Limit    int32  `json:"limit"`
+}
+
+func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorParams) ([]Post, error) {
+	rows, err := q.db.Query(ctx, listPostsByAuthor, arg.AuthorID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

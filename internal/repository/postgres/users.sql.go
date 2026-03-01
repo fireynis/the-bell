@@ -118,11 +118,16 @@ func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string
 }
 
 const listUsersByRole = `-- name: ListUsersByRole :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users WHERE role = $1 ORDER BY created_at DESC
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2
 `
 
-func (q *Queries) ListUsersByRole(ctx context.Context, role string) ([]User, error) {
-	rows, err := q.db.Query(ctx, listUsersByRole, role)
+type ListUsersByRoleParams struct {
+	Role  string `json:"role"`
+	Limit int32  `json:"limit"`
+}
+
+func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsersByRole, arg.Role, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

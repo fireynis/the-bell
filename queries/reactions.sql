@@ -1,7 +1,7 @@
 -- name: AddReaction :one
 INSERT INTO reactions (id, user_id, post_id, reaction_type, created_at)
 VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (user_id, post_id, reaction_type) DO NOTHING
+ON CONFLICT (user_id, post_id, reaction_type) DO UPDATE SET created_at = reactions.created_at
 RETURNING *;
 
 -- name: RemoveReaction :exec

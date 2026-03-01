@@ -22,7 +22,7 @@ UPDATE users SET trust_score = $2, updated_at = NOW() WHERE id = $1;
 UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1;
 
 -- name: ListUsersByRole :many
-SELECT * FROM users WHERE role = $1 ORDER BY created_at DESC;
+SELECT * FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2;
 
 -- name: DeactivateUser :exec
 UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1;

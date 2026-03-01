@@ -26,4 +26,4 @@ RETURNING *;
 UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1;
 
 -- name: ListPostsByAuthor :many
-SELECT * FROM posts WHERE author_id = $1 ORDER BY created_at DESC;
+SELECT * FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2;
