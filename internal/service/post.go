@@ -25,24 +25,14 @@ type PostService struct {
 	now  func() time.Time
 }
 
-type PostServiceOption func(*PostService)
-
-// WithClock overrides the clock used by PostService. Useful for testing.
-func WithClock(fn func() time.Time) PostServiceOption {
-	return func(s *PostService) {
-		s.now = fn
+func NewPostService(repo PostRepository, clock func() time.Time) *PostService {
+	if clock == nil {
+		clock = time.Now
 	}
-}
-
-func NewPostService(repo PostRepository, opts ...PostServiceOption) *PostService {
-	s := &PostService{
+	return &PostService{
 		repo: repo,
-		now:  time.Now,
+		now:  clock,
 	}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
 }
 
 func (s *PostService) Create(ctx context.Context, authorID, body, imagePath string) (*domain.Post, error) {

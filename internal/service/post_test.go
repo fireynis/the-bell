@@ -122,7 +122,7 @@ func TestPostService_Create(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockPostRepo()
-			svc := NewPostService(repo, WithClock(clock))
+			svc := NewPostService(repo, clock)
 
 			post, err := svc.Create(context.Background(), tt.authorID, tt.body, tt.imagePath)
 
@@ -163,7 +163,7 @@ func TestPostService_Create(t *testing.T) {
 
 func TestPostService_GetByID(t *testing.T) {
 	repo := newMockPostRepo()
-	svc := NewPostService(repo)
+	svc := NewPostService(repo, nil)
 
 	existing := &domain.Post{
 		ID:       "post-1",
@@ -203,7 +203,7 @@ func TestPostService_GetByID(t *testing.T) {
 
 func TestPostService_ListFeed(t *testing.T) {
 	repo := newMockPostRepo()
-	svc := NewPostService(repo)
+	svc := NewPostService(repo, nil)
 
 	// Add visible and non-visible posts
 	repo.posts["a"] = &domain.Post{ID: "a", Status: domain.PostVisible}
@@ -228,7 +228,7 @@ func TestPostService_ListFeed(t *testing.T) {
 
 func TestPostService_ListFeed_Empty(t *testing.T) {
 	repo := newMockPostRepo()
-	svc := NewPostService(repo)
+	svc := NewPostService(repo, nil)
 
 	posts, err := svc.ListFeed(context.Background(), "", 10)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestPostService_UpdateBody(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockPostRepo()
-			svc := NewPostService(repo, WithClock(func() time.Time { return tt.clock }))
+			svc := NewPostService(repo, func() time.Time { return tt.clock })
 
 			postID := "nonexistent"
 			if tt.post != nil {
@@ -424,7 +424,7 @@ func TestPostService_Delete(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockPostRepo()
-			svc := NewPostService(repo)
+			svc := NewPostService(repo, nil)
 
 			postID := "nonexistent"
 			if tt.post != nil {

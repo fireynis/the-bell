@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 type mockUserRepo struct {
 	users    map[string]*domain.User // keyed by ID
 	byKratos map[string]*domain.User // keyed by KratosIdentityID
+
+	getByKratosErr error // if set, GetUserByKratosID returns this error
+	createErr      error // if set, CreateUser returns this error
 }
 
 func newMockUserRepo() *mockUserRepo {
@@ -23,6 +27,9 @@ func newMockUserRepo() *mockUserRepo {
 }
 
 func (m *mockUserRepo) CreateUser(_ context.Context, user *domain.User) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
 	m.users[user.ID] = user
 	m.byKratos[user.KratosIdentityID] = user
 	return nil
@@ -37,9 +44,12 @@ func (m *mockUserRepo) GetUserByID(_ context.Context, id string) (*domain.User, 
 }
 
 func (m *mockUserRepo) GetUserByKratosID(_ context.Context, kratosID string) (*domain.User, error) {
+	if m.getByKratosErr != nil {
+		return nil, m.getByKratosErr
+	}
 	u, ok := m.byKratos[kratosID]
 	if !ok {
-		return nil, nil // not found returns nil, nil
+		return nil, ErrNotFound
 	}
 	return u, nil
 }
@@ -58,7 +68,7 @@ func (m *mockUserRepo) UpdateUserProfile(_ context.Context, id, displayName, bio
 func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	repo := newMockUserRepo()
-	svc := NewUserService(repo, WithUserClock(func() time.Time { return now }))
+	svc := NewUserService(repo, func() time.Time { return now })
 
 	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123")
 	if err != nil {
@@ -95,7 +105,7 @@ func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 
 func TestUserService_FindOrCreate_ExistingUser(t *testing.T) {
 	repo := newMockUserRepo()
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 
 	existing := &domain.User{
 		ID:               "user-existing",
@@ -129,9 +139,37 @@ func TestUserService_FindOrCreate_ExistingUser(t *testing.T) {
 	}
 }
 
+func TestUserService_FindOrCreate_LookupError(t *testing.T) {
+	repo := newMockUserRepo()
+	repo.getByKratosErr = errors.New("connection refused")
+	svc := NewUserService(repo, nil)
+
+	_, err := svc.FindOrCreate(context.Background(), "kratos-abc-123")
+	if err == nil {
+		t.Fatal("FindOrCreate() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looking up user by kratos id") {
+		t.Errorf("error = %q, want wrapped lookup error", err)
+	}
+}
+
+func TestUserService_FindOrCreate_CreateError(t *testing.T) {
+	repo := newMockUserRepo()
+	repo.createErr = errors.New("unique constraint violation")
+	svc := NewUserService(repo, nil)
+
+	_, err := svc.FindOrCreate(context.Background(), "kratos-new")
+	if err == nil {
+		t.Fatal("FindOrCreate() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "creating user") {
+		t.Errorf("error = %q, want wrapped create error", err)
+	}
+}
+
 func TestUserService_FindByKratosID(t *testing.T) {
 	repo := newMockUserRepo()
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 
 	// FindByKratosID delegates to FindOrCreate, so calling it for a new
 	// kratos ID should auto-provision a user.
@@ -149,7 +187,7 @@ func TestUserService_FindByKratosID(t *testing.T) {
 
 func TestUserService_GetByID(t *testing.T) {
 	repo := newMockUserRepo()
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 
 	existing := &domain.User{
 		ID:               "user-1",
@@ -255,7 +293,7 @@ func TestUserService_UpdateProfile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockUserRepo()
-			svc := NewUserService(repo)
+			svc := NewUserService(repo, nil)
 
 			userID := "nonexistent"
 			if tt.seed != nil {
@@ -289,7 +327,7 @@ func TestUserService_UpdateProfile(t *testing.T) {
 
 func TestUserService_UpdateProfile_DisplayNameTooLong(t *testing.T) {
 	repo := newMockUserRepo()
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 
 	seed := &domain.User{ID: "user-1", DisplayName: "User"}
 	repo.users[seed.ID] = seed
@@ -307,7 +345,7 @@ func TestUserService_UpdateProfile_DisplayNameTooLong(t *testing.T) {
 
 func TestUserService_UpdateProfile_BioTooLong(t *testing.T) {
 	repo := newMockUserRepo()
-	svc := NewUserService(repo)
+	svc := NewUserService(repo, nil)
 
 	seed := &domain.User{ID: "user-1", DisplayName: "User"}
 	repo.users[seed.ID] = seed

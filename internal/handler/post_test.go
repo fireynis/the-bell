@@ -96,7 +96,7 @@ func testUser() *domain.User {
 }
 
 func newTestPostService(repo service.PostRepository) *service.PostService {
-	return service.NewPostService(repo, service.WithClock(func() time.Time { return fixedNow }))
+	return service.NewPostService(repo, func() time.Time { return fixedNow })
 }
 
 func withChiURLParam(r *http.Request, key, value string) *http.Request {

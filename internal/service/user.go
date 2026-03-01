@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,31 +25,21 @@ type UserService struct {
 	now  func() time.Time
 }
 
-type UserServiceOption func(*UserService)
-
-// WithUserClock overrides the clock used by UserService. Useful for testing.
-func WithUserClock(fn func() time.Time) UserServiceOption {
-	return func(s *UserService) {
-		s.now = fn
+func NewUserService(repo UserRepository, clock func() time.Time) *UserService {
+	if clock == nil {
+		clock = time.Now
 	}
-}
-
-func NewUserService(repo UserRepository, opts ...UserServiceOption) *UserService {
-	s := &UserService{
+	return &UserService{
 		repo: repo,
-		now:  time.Now,
+		now:  clock,
 	}
-	for _, opt := range opts {
-		opt(s)
-	}
-	return s
 }
 
 // FindOrCreate looks up a user by Kratos identity ID. If no local user exists,
 // it auto-provisions one as pending with trust 50.0.
 func (s *UserService) FindOrCreate(ctx context.Context, kratosID string) (*domain.User, error) {
 	user, err := s.repo.GetUserByKratosID(ctx, kratosID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("looking up user by kratos id: %w", err)
 	}
 	if user != nil {
