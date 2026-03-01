@@ -71,3 +71,12 @@ type User struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
+
+type Vouch struct {
+	ID        string             `json:"id"`
+	VoucherID string             `json:"voucher_id"`
+	VoucheeID string             `json:"vouchee_id"`
+	Status    string             `json:"status"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
