@@ -49,3 +49,37 @@ func (q *Queries) CreateTrustPenalty(ctx context.Context, arg CreateTrustPenalty
 	)
 	return i, err
 }
+
+const listTrustPenaltiesByActionID = `-- name: ListTrustPenaltiesByActionID :many
+SELECT id, user_id, moderation_action_id, penalty_amount, hop_depth, created_at, decays_at FROM trust_penalties
+WHERE moderation_action_id = $1
+ORDER BY hop_depth ASC
+`
+
+func (q *Queries) ListTrustPenaltiesByActionID(ctx context.Context, moderationActionID string) ([]TrustPenalty, error) {
+	rows, err := q.db.Query(ctx, listTrustPenaltiesByActionID, moderationActionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TrustPenalty{}
+	for rows.Next() {
+		var i TrustPenalty
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ModerationActionID,
+			&i.PenaltyAmount,
+			&i.HopDepth,
+			&i.CreatedAt,
+			&i.DecaysAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

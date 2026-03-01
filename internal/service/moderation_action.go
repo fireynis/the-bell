@@ -24,6 +24,14 @@ var allowedSeverity = map[domain.ActionType][]int{
 // ModerationActionRepository abstracts moderation action persistence.
 type ModerationActionRepository interface {
 	CreateModerationAction(ctx context.Context, action *domain.ModerationAction) error
+	ListActionsByTarget(ctx context.Context, targetUserID string, limit, offset int) ([]*domain.ModerationAction, error)
+	ListActionsByModerator(ctx context.Context, moderatorID string, limit, offset int) ([]*domain.ModerationAction, error)
+}
+
+// PenaltyLister extends PenaltyRepository with read operations for audit.
+type PenaltyLister interface {
+	PenaltyRepository
+	ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error)
 }
 
 // ActionUserLookup retrieves a user by ID for moderation action validation.
@@ -44,12 +52,19 @@ type UserEnforcer interface {
 	UpdateUserTrustScore(ctx context.Context, id string, score float64) error
 }
 
+// ActionHistoryEntry pairs a moderation action with its trust penalties.
+type ActionHistoryEntry struct {
+	Action    *domain.ModerationAction `json:"action"`
+	Penalties []domain.TrustPenalty    `json:"penalties"`
+}
+
 // ModerationActionService orchestrates moderation action business logic.
 type ModerationActionService struct {
 	actions    ModerationActionRepository
 	users      ActionUserLookup
 	moderation *ModerationService
 	enforcer   UserEnforcer
+	penalties  PenaltyLister
 	now        func() time.Time
 }
 
@@ -58,6 +73,7 @@ func NewModerationActionService(
 	users ActionUserLookup,
 	moderation *ModerationService,
 	enforcer UserEnforcer,
+	penalties PenaltyLister,
 	clock func() time.Time,
 ) *ModerationActionService {
 	if clock == nil {
@@ -68,6 +84,7 @@ func NewModerationActionService(
 		users:      users,
 		moderation: moderation,
 		enforcer:   enforcer,
+		penalties:  penalties,
 		now:        clock,
 	}
 }
@@ -166,6 +183,45 @@ func (s *ModerationActionService) TakeAction(
 	}
 
 	return result, nil
+}
+
+// GetActionHistory returns moderation actions with their associated penalties.
+// If byModerator is true, it lists actions taken BY the user (for council audit).
+// Otherwise, it lists actions taken AGAINST the user.
+func (s *ModerationActionService) GetActionHistory(
+	ctx context.Context,
+	userID string,
+	byModerator bool,
+	limit, offset int,
+) ([]ActionHistoryEntry, error) {
+	var actions []*domain.ModerationAction
+	var err error
+
+	if byModerator {
+		actions, err = s.actions.ListActionsByModerator(ctx, userID, limit, offset)
+	} else {
+		actions, err = s.actions.ListActionsByTarget(ctx, userID, limit, offset)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing moderation actions: %w", err)
+	}
+
+	entries := make([]ActionHistoryEntry, 0, len(actions))
+	for _, action := range actions {
+		penalties, err := s.penalties.ListPenaltiesByActionID(ctx, action.ID)
+		if err != nil {
+			return nil, fmt.Errorf("listing penalties for action %s: %w", action.ID, err)
+		}
+		if penalties == nil {
+			penalties = []domain.TrustPenalty{}
+		}
+		entries = append(entries, ActionHistoryEntry{
+			Action:    action,
+			Penalties: penalties,
+		})
+	}
+
+	return entries, nil
 }
 
 func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User) error {

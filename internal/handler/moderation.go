@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
@@ -66,4 +68,40 @@ func (h *ModerationHandler) TakeAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusCreated, result)
+}
+
+type listActionsResponse struct {
+	Actions []service.ActionHistoryEntry `json:"actions"`
+}
+
+// ListActions handles GET /api/v1/moderation/actions/{user_id}.
+func (h *ModerationHandler) ListActions(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	targetUserID := chi.URLParam(r, "user_id")
+	byModerator := r.URL.Query().Get("role") == "moderator"
+
+	if byModerator && !user.IsCouncil() {
+		Error(w, http.StatusForbidden, "council role required")
+		return
+	}
+
+	limit := parseLimit(r.URL.Query().Get("limit"))
+	offset := parseOffset(r.URL.Query().Get("offset"))
+
+	entries, err := h.actions.GetActionHistory(r.Context(), targetUserID, byModerator, limit, offset)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	if entries == nil {
+		entries = []service.ActionHistoryEntry{}
+	}
+
+	JSON(w, http.StatusOK, listActionsResponse{Actions: entries})
 }

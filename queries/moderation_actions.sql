@@ -11,3 +11,9 @@ SELECT * FROM moderation_actions
 WHERE target_user_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListModerationActionsByModerator :many
+SELECT * FROM moderation_actions
+WHERE moderator_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;

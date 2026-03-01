@@ -77,6 +77,49 @@ func (q *Queries) GetModerationActionByID(ctx context.Context, id string) (Moder
 	return i, err
 }
 
+const listModerationActionsByModerator = `-- name: ListModerationActionsByModerator :many
+SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions
+WHERE moderator_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListModerationActionsByModeratorParams struct {
+	ModeratorID string `json:"moderator_id"`
+	Limit       int32  `json:"limit"`
+	Offset      int32  `json:"offset"`
+}
+
+func (q *Queries) ListModerationActionsByModerator(ctx context.Context, arg ListModerationActionsByModeratorParams) ([]ModerationAction, error) {
+	rows, err := q.db.Query(ctx, listModerationActionsByModerator, arg.ModeratorID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ModerationAction{}
+	for rows.Next() {
+		var i ModerationAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetUserID,
+			&i.ModeratorID,
+			&i.ActionType,
+			&i.Severity,
+			&i.Reason,
+			&i.DurationSeconds,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listModerationActionsByTarget = `-- name: ListModerationActionsByTarget :many
 SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions
 WHERE target_user_id = $1

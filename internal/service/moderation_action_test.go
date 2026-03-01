@@ -12,8 +12,11 @@ import (
 // --- mock ModerationActionRepository ---
 
 type mockActionRepo struct {
-	actions   []*domain.ModerationAction
-	createErr error
+	actions            []*domain.ModerationAction
+	actionsByTarget    []*domain.ModerationAction
+	actionsByModerator []*domain.ModerationAction
+	createErr          error
+	listErr            error
 }
 
 func newMockActionRepo() *mockActionRepo {
@@ -26,6 +29,20 @@ func (m *mockActionRepo) CreateModerationAction(_ context.Context, action *domai
 	}
 	m.actions = append(m.actions, action)
 	return nil
+}
+
+func (m *mockActionRepo) ListActionsByTarget(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.actionsByTarget, nil
+}
+
+func (m *mockActionRepo) ListActionsByModerator(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.actionsByModerator, nil
 }
 
 // --- mock ActionUserLookup ---
@@ -98,7 +115,7 @@ func newTestModerationActionService(
 	enforcer UserEnforcer,
 ) *ModerationActionService {
 	modSvc := NewModerationService(penalties, graph, fixedClock)
-	return NewModerationActionService(actions, users, modSvc, enforcer, fixedClock)
+	return NewModerationActionService(actions, users, modSvc, enforcer, nil, fixedClock)
 }
 
 func int64Ptr(v int64) *int64 { return &v }
