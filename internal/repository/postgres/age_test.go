@@ -77,12 +77,13 @@ func TestAddVouchEdge_LoadsAGE(t *testing.T) {
 	b := &mockBeginner{tx: tx}
 	q := postgres.NewAGEQuerier(b)
 
-	// Will fail at the Cypher query step, but LOAD/SET should be called first
-	tx.queryErr = errors.New("cypher not available")
-	_ = q.AddVouchEdge(context.Background(), "voucher-1", "vouchee-1")
+	err := q.AddVouchEdge(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	if len(tx.execCalls) < 2 {
-		t.Fatalf("expected at least 2 exec calls (LOAD + SET), got %d", len(tx.execCalls))
+	if len(tx.execCalls) != 3 {
+		t.Fatalf("expected 3 exec calls (LOAD + SET + Cypher), got %d", len(tx.execCalls))
 	}
 	if tx.execCalls[0] != "LOAD 'age'" {
 		t.Errorf("first exec = %q, want LOAD 'age'", tx.execCalls[0])
@@ -90,6 +91,9 @@ func TestAddVouchEdge_LoadsAGE(t *testing.T) {
 	wantSet := `SET search_path = ag_catalog, "$user", public`
 	if tx.execCalls[1] != wantSet {
 		t.Errorf("second exec = %q, want %q", tx.execCalls[1], wantSet)
+	}
+	if !tx.committed {
+		t.Error("expected transaction to be committed")
 	}
 }
 
@@ -126,6 +130,16 @@ func TestFindVouchersUpToDepth_InvalidDepth(t *testing.T) {
 	_, err = q.FindVouchersUpToDepth(context.Background(), "u1", -1)
 	if err == nil {
 		t.Fatal("expected error for negative depth")
+	}
+}
+
+func TestFindVouchersUpToDepth_ExceedsMaxDepth(t *testing.T) {
+	b := &mockBeginner{tx: &mockTx{}}
+	q := postgres.NewAGEQuerier(b)
+
+	_, err := q.FindVouchersUpToDepth(context.Background(), "u1", 51)
+	if err == nil {
+		t.Fatal("expected error for depth exceeding max")
 	}
 }
 

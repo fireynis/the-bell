@@ -10,6 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// maxGraphDepth is the upper bound for variable-length path traversals in AGE
+// Cypher queries. This prevents runaway traversals on large graphs.
+const maxGraphDepth = 50
+
 // Beginner provides Begin for AGE queries that need per-transaction session setup.
 type Beginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
@@ -83,7 +87,7 @@ func (q *AGEQuerier) AddVouchEdge(ctx context.Context, voucherID, voucheeID stri
 			SELECT * FROM cypher('trust_graph', $$
 				MERGE (a:User {id: $voucher_id})
 				MERGE (b:User {id: $vouchee_id})
-				CREATE (a)-[:VOUCHES_FOR]->(b)
+				MERGE (a)-[:VOUCHES_FOR]->(b)
 			$$, $1::agtype) AS (v agtype)
 		`, params)
 		if err != nil {
@@ -118,6 +122,9 @@ func (q *AGEQuerier) RemoveVouchEdge(ctx context.Context, voucherID, voucheeID s
 func (q *AGEQuerier) FindVouchersUpToDepth(ctx context.Context, userID string, depth int) ([]string, error) {
 	if depth <= 0 {
 		return nil, fmt.Errorf("depth must be positive, got %d", depth)
+	}
+	if depth > maxGraphDepth {
+		return nil, fmt.Errorf("depth %d exceeds maximum %d", depth, maxGraphDepth)
 	}
 
 	var ids []string
@@ -167,14 +174,14 @@ func (q *AGEQuerier) HasCyclicVouch(ctx context.Context, voucherID, voucheeID st
 			return err
 		}
 		// Check if vouchee can already reach voucher via existing edges.
-		// Upper bound of 50 prevents runaway traversals on large graphs.
 		var raw string
-		err = tx.QueryRow(ctx, `
+		query := fmt.Sprintf(`
 			SELECT * FROM cypher('trust_graph', $$
-				MATCH p = (b:User {id: $vouchee_id})-[:VOUCHES_FOR*1..50]->(a:User {id: $voucher_id})
+				MATCH p = (b:User {id: $vouchee_id})-[:VOUCHES_FOR*1..%d]->(a:User {id: $voucher_id})
 				RETURN count(p) > 0
 			$$, $1::agtype) AS (has_cycle agtype)
-		`, params).Scan(&raw)
+		`, maxGraphDepth)
+		err = tx.QueryRow(ctx, query, params).Scan(&raw)
 		if errors.Is(err, pgx.ErrNoRows) {
 			hasCycle = false
 			return nil
