@@ -4,11 +4,11 @@ dsn: memory
 
 serve:
   public:
-    base_url: http://localhost:4433/
+    base_url: https://bell.themacarthurs.ca/.ory
     cors:
       enabled: true
       allowed_origins:
-        - http://localhost:5173
+        - https://bell.themacarthurs.ca
         - http://bell.home.arpa
       allowed_methods:
         - POST
@@ -25,12 +25,12 @@ serve:
         - Set-Cookie
       allow_credentials: true
   admin:
-    base_url: http://localhost:4434/
+    base_url: http://kratos:4434/
 
 selfservice:
-  default_browser_return_url: http://localhost:5173/
+  default_browser_return_url: https://bell.themacarthurs.ca/
   allowed_return_urls:
-    - http://localhost:5173
+    - https://bell.themacarthurs.ca
     - http://bell.home.arpa
 
   methods:
@@ -42,35 +42,40 @@ selfservice:
   flows:
     registration:
       enabled: true
-      ui_url: http://localhost:5173/auth/registration
+      ui_url: https://bell.themacarthurs.ca/auth/registration
       after:
         password:
           hooks:
             - hook: session
 
     login:
-      ui_url: http://localhost:5173/auth/login
+      ui_url: https://bell.themacarthurs.ca/auth/login
 
     logout:
       after:
-        default_browser_return_url: http://localhost:5173/
+        default_browser_return_url: https://bell.themacarthurs.ca/
 
     settings:
-      ui_url: http://localhost:5173/auth/settings
+      ui_url: https://bell.themacarthurs.ca/auth/settings
 
     recovery:
       enabled: true
-      ui_url: http://localhost:5173/auth/recovery
+      ui_url: https://bell.themacarthurs.ca/auth/recovery
 
     verification:
       enabled: true
-      ui_url: http://localhost:5173/auth/verification
+      ui_url: https://bell.themacarthurs.ca/auth/verification
 
 session:
   cookie:
     name: bell_session
+    domain: bell.themacarthurs.ca
     same_site: Lax
   lifespan: 720h
+
+cookies:
+  domain: bell.themacarthurs.ca
+  same_site: Lax
 
 identity:
   default_schema_id: default

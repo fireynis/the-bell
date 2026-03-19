@@ -33,6 +33,17 @@ func (s *Server) routes() http.Handler {
 		kratosTarget, err := url.Parse(s.cfg.KratosPublicURL)
 		if err == nil {
 			proxy := httputil.NewSingleHostReverseProxy(kratosTarget)
+			proxy.ModifyResponse = func(resp *http.Response) error {
+				// Strip Secure flag from cookies so they work over plain HTTP.
+				if cookies := resp.Header.Values("Set-Cookie"); len(cookies) > 0 {
+					resp.Header.Del("Set-Cookie")
+					for _, c := range cookies {
+						c = strings.Replace(c, "; Secure", "", 1)
+						resp.Header.Add("Set-Cookie", c)
+					}
+				}
+				return nil
+			}
 			r.HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
 				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/.ory")
 				if req.URL.Path == "" {

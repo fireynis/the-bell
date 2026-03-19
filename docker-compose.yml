@@ -12,12 +12,14 @@ services:
       retries: 3
       start_period: 30s
     depends_on:
+      bell-postgres:
+        condition: service_healthy
       kratos:
         condition: service_healthy
       redis-bell:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell?sslmode=disable
+      DATABASE_URL: postgres://belluser:${POSTGRES_PASSWORD}@bell-postgres:5432/bell?sslmode=disable
       REDIS_URL: redis://redis-bell:6379
       KRATOS_PUBLIC_URL: http://kratos:4433
       KRATOS_ADMIN_URL: http://kratos:4434
@@ -35,14 +37,45 @@ services:
       - "traefik.http.routers.bell-secure.rule=Host(`bell.themacarthurs.ca`)"
       - "traefik.http.routers.bell-secure.entrypoints=websecure"
       - "traefik.http.routers.bell-secure.tls.certResolver=cloudflare"
+      - "wud.watch.digest=true"
+      - "homepage.group=Apps"
+      - "homepage.name=The Bell"
+      - "homepage.icon=bell.png"
+      - "homepage.href=https://bell.themacarthurs.ca"
+      - "homepage.description=Community micro-blog"
+
+  bell-postgres:
+    image: apache/age:latest
+    container_name: bell-postgres
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U belluser -d bell"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    environment:
+      POSTGRES_USER: belluser
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: bell
+    volumes:
+      - /storage/the-bell/postgres:/var/lib/postgresql
+      - ./deploy/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    networks:
+      - proxy
 
   kratos-migrate:
     image: oryd/kratos:v1.3.1
     container_name: kratos-migrate
     restart: "no"
     command: migrate sql -e --yes
+    depends_on:
+      bell-postgres:
+        condition: service_healthy
     environment:
-      DSN: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell_kratos?sslmode=disable
+      DSN: postgres://belluser:${POSTGRES_PASSWORD}@bell-postgres:5432/bell_kratos?sslmode=disable
     networks:
       - proxy
 
@@ -63,7 +96,7 @@ services:
         condition: service_completed_successfully
     command: serve --config /etc/kratos/kratos.yml
     environment:
-      DSN: postgres://appuser:${POSTGRES_PASSWORD}@postgres:5432/bell_kratos?sslmode=disable
+      DSN: postgres://belluser:${POSTGRES_PASSWORD}@bell-postgres:5432/bell_kratos?sslmode=disable
     volumes:
       - ./kratos/kratos.yml:/etc/kratos/kratos.yml:ro
       - ./kratos/identity.schema.json:/etc/kratos/identity.schema.json:ro
