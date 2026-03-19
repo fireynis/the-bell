@@ -1,0 +1,85 @@
+version: v1.3.1
+
+dsn: memory
+
+serve:
+  public:
+    base_url: http://localhost:4433/
+    cors:
+      enabled: true
+      allowed_origins:
+        - http://localhost:8080
+      allowed_methods:
+        - POST
+        - GET
+        - PUT
+        - PATCH
+        - DELETE
+      allowed_headers:
+        - Authorization
+        - Cookie
+        - Content-Type
+      exposed_headers:
+        - Content-Type
+        - Set-Cookie
+      allow_credentials: true
+  admin:
+    base_url: http://kratos:4434/
+
+selfservice:
+  default_browser_return_url: http://localhost:8080/
+  allowed_return_urls:
+    - http://localhost:8080
+
+  methods:
+    password:
+      enabled: true
+      config:
+        min_password_length: 8
+
+  flows:
+    registration:
+      enabled: true
+      ui_url: http://localhost:8080/auth/registration
+      after:
+        password:
+          hooks:
+            - hook: session
+
+    login:
+      ui_url: http://localhost:8080/auth/login
+      after:
+        password:
+          hooks:
+            - hook: session
+
+    logout:
+      after:
+        default_browser_return_url: http://localhost:8080/
+
+    settings:
+      ui_url: http://localhost:8080/auth/settings
+
+    recovery:
+      enabled: true
+      ui_url: http://localhost:8080/auth/recovery
+
+    verification:
+      enabled: true
+      ui_url: http://localhost:8080/auth/verification
+
+session:
+  cookie:
+    name: bell_session
+    same_site: Lax
+  lifespan: 720h
+
+identity:
+  default_schema_id: default
+  schemas:
+    - id: default
+      url: file:///etc/kratos/identity.schema.json
+
+log:
+  level: info
+  format: json
