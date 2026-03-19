@@ -25,11 +25,12 @@ func NewAdminClient(adminURL string) *AdminClient {
 // CreateIdentity creates a Kratos identity with password credentials.
 // If password is empty, a random 32-byte password is generated (the user
 // can reset via recovery flow).
-func (c *AdminClient) CreateIdentity(ctx context.Context, email, displayName, password string) (string, error) {
+// Returns the Kratos identity ID and the password that was used.
+func (c *AdminClient) CreateIdentity(ctx context.Context, email, displayName, password string) (kratosID string, usedPassword string, err error) {
 	if password == "" {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
-			return "", fmt.Errorf("generating random password: %w", err)
+			return "", "", fmt.Errorf("generating random password: %w", err)
 		}
 		password = hex.EncodeToString(b)
 	}
@@ -49,8 +50,8 @@ func (c *AdminClient) CreateIdentity(ctx context.Context, email, displayName, pa
 
 	identity, _, err := c.api.CreateIdentity(ctx).CreateIdentityBody(*body).Execute()
 	if err != nil {
-		return "", fmt.Errorf("kratos create identity: %w", err)
+		return "", "", fmt.Errorf("kratos create identity: %w", err)
 	}
 
-	return identity.GetId(), nil
+	return identity.GetId(), password, nil
 }

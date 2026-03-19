@@ -19,13 +19,13 @@ func newMockKratosAdmin() *mockKratosAdmin {
 	return &mockKratosAdmin{identities: make(map[string]string)}
 }
 
-func (m *mockKratosAdmin) CreateIdentity(_ context.Context, email, _, _ string) (string, error) {
+func (m *mockKratosAdmin) CreateIdentity(_ context.Context, email, _, _ string) (string, string, error) {
 	if m.createErr != nil {
-		return "", m.createErr
+		return "", "", m.createErr
 	}
 	id := "kratos-" + email
 	m.identities[email] = id
-	return id, nil
+	return id, "generated-password-" + email, nil
 }
 
 // mockConfigRepo implements ConfigRepository for testing.
@@ -82,7 +82,7 @@ func TestBootstrapService_Setup_HappyPath(t *testing.T) {
 	userRepo, _, configRepo, _, svc := newBootstrapTestHarness(func() time.Time { return now })
 
 	emails := []string{"alice@town.example", "bob@town.example"}
-	err := svc.Setup(context.Background(), emails)
+	result, err := svc.Setup(context.Background(), emails, "Springfield")
 	if err != nil {
 		t.Fatalf("Setup() unexpected error: %v", err)
 	}
@@ -111,17 +111,32 @@ func TestBootstrapService_Setup_HappyPath(t *testing.T) {
 	if configRepo.config["bootstrap_mode"] != "true" {
 		t.Errorf("bootstrap_mode = %q, want %q", configRepo.config["bootstrap_mode"], "true")
 	}
+	if configRepo.config["town_name"] != "Springfield" {
+		t.Errorf("town_name = %q, want %q", configRepo.config["town_name"], "Springfield")
+	}
+
+	if len(result.Members) != 2 {
+		t.Fatalf("expected 2 members in result, got %d", len(result.Members))
+	}
+	for _, m := range result.Members {
+		if m.Email == "" {
+			t.Error("expected member email, got empty string")
+		}
+		if m.Password == "" {
+			t.Error("expected member password, got empty string")
+		}
+	}
 }
 
 func TestBootstrapService_Setup_EmptyEmails(t *testing.T) {
 	_, _, _, _, svc := newBootstrapTestHarness(nil)
 
-	err := svc.Setup(context.Background(), nil)
+	_, err := svc.Setup(context.Background(), nil, "")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Setup(nil) error = %v, want %v", err, ErrValidation)
 	}
 
-	err = svc.Setup(context.Background(), []string{})
+	_, err = svc.Setup(context.Background(), []string{}, "")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Setup([]) error = %v, want %v", err, ErrValidation)
 	}
@@ -131,7 +146,7 @@ func TestBootstrapService_Setup_KratosError(t *testing.T) {
 	_, kratosAdmin, _, _, svc := newBootstrapTestHarness(nil)
 	kratosAdmin.createErr = errors.New("kratos unavailable")
 
-	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	_, err := svc.Setup(context.Background(), []string{"alice@town.example"}, "")
 	if err == nil {
 		t.Fatal("Setup() expected error, got nil")
 	}
@@ -141,7 +156,7 @@ func TestBootstrapService_Setup_UserCreateError(t *testing.T) {
 	userRepo, _, _, _, svc := newBootstrapTestHarness(nil)
 	userRepo.createErr = errors.New("db connection failed")
 
-	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	_, err := svc.Setup(context.Background(), []string{"alice@town.example"}, "")
 	if err == nil {
 		t.Fatal("Setup() expected error, got nil")
 	}
@@ -151,7 +166,7 @@ func TestBootstrapService_Setup_AlreadyBootstrapped(t *testing.T) {
 	userRepo, kratosAdmin, configRepo, _, svc := newBootstrapTestHarness(nil)
 	configRepo.config["bootstrap_mode"] = "true"
 
-	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	_, err := svc.Setup(context.Background(), []string{"alice@town.example"}, "")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Setup() error = %v, want ErrValidation", err)
 	}
@@ -167,8 +182,22 @@ func TestBootstrapService_Setup_TxError(t *testing.T) {
 	_, _, _, tx, svc := newBootstrapTestHarness(nil)
 	tx.txErr = errors.New("tx begin failed")
 
-	err := svc.Setup(context.Background(), []string{"alice@town.example"})
+	_, err := svc.Setup(context.Background(), []string{"alice@town.example"}, "")
 	if err == nil {
 		t.Fatal("Setup() expected error, got nil")
+	}
+}
+
+func TestBootstrapService_Setup_NoTownName(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	_, _, configRepo, _, svc := newBootstrapTestHarness(func() time.Time { return now })
+
+	_, err := svc.Setup(context.Background(), []string{"alice@town.example"}, "")
+	if err != nil {
+		t.Fatalf("Setup() unexpected error: %v", err)
+	}
+
+	if _, ok := configRepo.config["town_name"]; ok {
+		t.Error("expected town_name not to be set when empty")
 	}
 }

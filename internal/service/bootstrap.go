@@ -12,7 +12,7 @@ import (
 
 // KratosAdmin creates identities via the Kratos Admin API.
 type KratosAdmin interface {
-	CreateIdentity(ctx context.Context, email, displayName, password string) (kratosID string, err error)
+	CreateIdentity(ctx context.Context, email, displayName, password string) (kratosID string, usedPassword string, err error)
 }
 
 // ConfigRepository reads and writes town_config key-value pairs.
@@ -47,38 +47,51 @@ func NewBootstrapService(kratos KratosAdmin, config ConfigRepository, tx Transac
 	}
 }
 
+// SetupResult holds the outcome of a bootstrap setup.
+type SetupResult struct {
+	Members []SetupMember
+}
+
+// SetupMember represents a council member created during setup.
+type SetupMember struct {
+	Email    string
+	Password string
+}
+
 // Setup creates Kratos identities for the given emails, provisions local users
-// as council members with max trust, and enables bootstrap mode.
-func (s *BootstrapService) Setup(ctx context.Context, emails []string) error {
+// as council members with max trust, optionally sets the town name, and enables
+// bootstrap mode.
+func (s *BootstrapService) Setup(ctx context.Context, emails []string, townName string) (*SetupResult, error) {
 	if len(emails) == 0 {
-		return fmt.Errorf("%w: at least one council email is required", ErrValidation)
+		return nil, fmt.Errorf("%w: at least one council email is required", ErrValidation)
 	}
 
 	// Idempotency guard: if already bootstrapped, return early.
 	val, err := s.config.GetTownConfig(ctx, "bootstrap_mode")
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("checking bootstrap status: %w", err)
+		return nil, fmt.Errorf("checking bootstrap status: %w", err)
 	}
 	if val == "true" {
-		return fmt.Errorf("%w: town is already bootstrapped", ErrValidation)
+		return nil, fmt.Errorf("%w: town is already bootstrapped", ErrValidation)
 	}
 
 	// Phase 1: Create Kratos identities (external, non-transactional).
 	type identity struct {
 		email    string
 		kratosID string
+		password string
 	}
 	identities := make([]identity, 0, len(emails))
 	for _, email := range emails {
-		kratosID, err := s.kratos.CreateIdentity(ctx, email, email, "")
+		kratosID, password, err := s.kratos.CreateIdentity(ctx, email, email, "")
 		if err != nil {
-			return fmt.Errorf("creating kratos identity for %s: %w", email, err)
+			return nil, fmt.Errorf("creating kratos identity for %s: %w", email, err)
 		}
-		identities = append(identities, identity{email: email, kratosID: kratosID})
+		identities = append(identities, identity{email: email, kratosID: kratosID, password: password})
 	}
 
 	// Phase 2: Create local users + set config atomically in a transaction.
-	return s.tx.InTx(ctx, func(users UserRepository, config ConfigRepository) error {
+	err = s.tx.InTx(ctx, func(users UserRepository, config ConfigRepository) error {
 		for _, ident := range identities {
 			id, err := uuid.NewV7()
 			if err != nil {
@@ -106,6 +119,27 @@ func (s *BootstrapService) Setup(ctx context.Context, emails []string) error {
 		if err := config.SetTownConfig(ctx, "bootstrap_mode", "true"); err != nil {
 			return fmt.Errorf("setting bootstrap mode: %w", err)
 		}
+
+		if townName != "" {
+			if err := config.SetTownConfig(ctx, "town_name", townName); err != nil {
+				return fmt.Errorf("setting town name: %w", err)
+			}
+		}
+
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := &SetupResult{
+		Members: make([]SetupMember, len(identities)),
+	}
+	for i, ident := range identities {
+		result.Members[i] = SetupMember{
+			Email:    ident.email,
+			Password: ident.password,
+		}
+	}
+	return result, nil
 }
