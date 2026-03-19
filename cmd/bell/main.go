@@ -74,6 +74,8 @@ func runServe(logger *slog.Logger) {
 	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, nil)
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)
 	votingSvc := service.NewVotingService(voteRepo, nil)
+	statsRepo := postgres.NewStatsRepo(queries)
+	statsSvc := service.NewStatsService(statsRepo)
 
 	// Kratos auth middleware
 	kratosCfg := kratos.NewConfiguration()
@@ -90,6 +92,7 @@ func runServe(logger *slog.Logger) {
 		server.WithModerationActionService(modActionSvc),
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
+		server.WithStatsService(statsSvc),
 	)
 
 	errCh := make(chan error, 1)

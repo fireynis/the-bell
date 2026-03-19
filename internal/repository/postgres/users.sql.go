@@ -20,6 +20,17 @@ func (q *Queries) ClearUserTrustBelowSince(ctx context.Context, id string) error
 	return err
 }
 
+const countAllUsers = `-- name: CountAllUsers :one
+SELECT COUNT(*) FROM users WHERE is_active = TRUE
+`
+
+func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countCouncilMembers = `-- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE
@@ -27,6 +38,30 @@ WHERE role = 'council' AND is_active = TRUE
 
 func (q *Queries) CountCouncilMembers(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, countCouncilMembers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countModerators = `-- name: CountModerators :one
+SELECT COUNT(*) FROM users
+WHERE role = 'moderator' AND is_active = TRUE
+`
+
+func (q *Queries) CountModerators(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countModerators)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countPendingUsers = `-- name: CountPendingUsers :one
+SELECT COUNT(*) FROM users
+WHERE role = 'pending' AND is_active = TRUE
+`
+
+func (q *Queries) CountPendingUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingUsers)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
