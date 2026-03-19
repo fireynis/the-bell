@@ -10,6 +10,7 @@ import (
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,6 +28,7 @@ type Server struct {
 	approvalService         *service.ApprovalService
 	votingService           *service.VotingService
 	statsService            *service.StatsService
+	imageStore              storage.Storage
 	authMiddleware          func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
 }
@@ -72,6 +74,11 @@ func WithVotingService(vs *service.VotingService) Option {
 // WithStatsService sets the StatsService used by admin stats handlers.
 func WithStatsService(ss *service.StatsService) Option {
 	return func(s *Server) { s.statsService = ss }
+}
+
+// WithImageStore sets the image storage backend for uploads.
+func WithImageStore(store storage.Storage) Option {
+	return func(s *Server) { s.imageStore = store }
 }
 
 // WithAuth sets the authentication middleware for protected routes.

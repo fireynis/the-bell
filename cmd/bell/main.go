@@ -21,6 +21,7 @@ import (
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kratos "github.com/ory/kratos-client-go"
 	"github.com/redis/go-redis/v9"
@@ -92,6 +93,13 @@ func runServe(logger *slog.Logger) {
 	statsRepo := postgres.NewStatsRepo(queries)
 	statsSvc := service.NewStatsService(statsRepo)
 
+	// Image storage
+	imageStore, err := storage.NewLocalStorage(cfg.ImageStoragePath, "/uploads/")
+	if err != nil {
+		logger.Error("initializing image storage", "error", err)
+		os.Exit(1)
+	}
+
 	// Trust score cache + background worker (requires Redis)
 	if cfg.RedisURL != "" {
 		opts, err := redis.ParseURL(cfg.RedisURL)
@@ -148,6 +156,7 @@ func runServe(logger *slog.Logger) {
 		server.WithVotingService(votingSvc),
 		server.WithStatsService(statsSvc),
 		server.WithRateLimiter(rateLimiter),
+		server.WithImageStore(imageStore),
 	)
 
 	errCh := make(chan error, 1)
