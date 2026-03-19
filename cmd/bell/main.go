@@ -92,6 +92,25 @@ func runServe(logger *slog.Logger) {
 	statsRepo := postgres.NewStatsRepo(queries)
 	statsSvc := service.NewStatsService(statsRepo)
 
+	// Trust score cache + background worker (requires Redis)
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			logger.Error("parsing redis url", "error", err)
+			os.Exit(1)
+		}
+		rdb := redis.NewClient(opts)
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			logger.Error("connecting to redis", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("redis connected")
+
+		trustCache := cache.NewTrustCache(rdb)
+		trustWorker := cache.NewTrustWorker(trustCache, penaltyRepo, userRepo, logger)
+		go trustWorker.Run(ctx)
+	}
+
 	// Kratos auth middleware
 	kratosCfg := kratos.NewConfiguration()
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}

@@ -125,6 +125,19 @@ func (r *PenaltyRepo) CreateTrustPenalty(ctx context.Context, penalty *domain.Tr
 	return err
 }
 
+func (r *PenaltyRepo) ListActivePenaltiesByUser(ctx context.Context, userID string) ([]domain.TrustPenalty, error) {
+	rows, err := r.q.ListActivePenaltiesByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	penalties := make([]domain.TrustPenalty, len(rows))
+	for i, row := range rows {
+		penalties[i] = trustPenaltyFromRow(row)
+	}
+	return penalties, nil
+}
+
 func (r *PenaltyRepo) ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error) {
 	rows, err := r.q.ListTrustPenaltiesByActionID(ctx, actionID)
 	if err != nil {
