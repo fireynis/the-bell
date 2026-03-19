@@ -27,8 +27,21 @@ func (s *Server) routes() http.Handler {
 		r.Get("/", uh.GetMe)
 	})
 
+	// Static file serving for uploaded images.
+	if s.imageStore != nil {
+		fileServer := http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.cfg.ImageStoragePath)))
+		r.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000")
+			fileServer.ServeHTTP(w, r)
+		})
+	}
+
 	if s.postService != nil {
-		ph := handler.NewPostHandler(s.postService)
+		var phOpts []handler.PostHandlerOption
+		if s.imageStore != nil {
+			phOpts = append(phOpts, handler.WithStorage(s.imageStore))
+		}
+		ph := handler.NewPostHandler(s.postService, phOpts...)
 		r.Route("/api/v1/posts", func(r chi.Router) {
 			r.Get("/", ph.ListFeed)
 			r.Get("/{id}", ph.GetByID)

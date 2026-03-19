@@ -20,6 +20,7 @@ import (
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kratos "github.com/ory/kratos-client-go"
 )
@@ -77,6 +78,13 @@ func runServe(logger *slog.Logger) {
 	statsRepo := postgres.NewStatsRepo(queries)
 	statsSvc := service.NewStatsService(statsRepo)
 
+	// Image storage
+	imageStore, err := storage.NewLocalStorage(cfg.ImageStoragePath, "/uploads/")
+	if err != nil {
+		logger.Error("initializing image storage", "error", err)
+		os.Exit(1)
+	}
+
 	// Kratos auth middleware
 	kratosCfg := kratos.NewConfiguration()
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}
@@ -93,6 +101,7 @@ func runServe(logger *slog.Logger) {
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
 		server.WithStatsService(statsSvc),
+		server.WithImageStore(imageStore),
 	)
 
 	errCh := make(chan error, 1)

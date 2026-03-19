@@ -1,14 +1,20 @@
 package handler
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/storage"
 )
 
 const (
@@ -16,14 +22,27 @@ const (
 	maxLimit     = 100
 )
 
+// PostHandlerOption configures a PostHandler.
+type PostHandlerOption func(*PostHandler)
+
+// WithStorage attaches a Storage backend for image uploads.
+func WithStorage(s storage.Storage) PostHandlerOption {
+	return func(h *PostHandler) { h.store = s }
+}
+
 // PostHandler handles HTTP requests for post operations.
 type PostHandler struct {
 	posts *service.PostService
+	store storage.Storage
 }
 
 // NewPostHandler creates a PostHandler.
-func NewPostHandler(posts *service.PostService) *PostHandler {
-	return &PostHandler{posts: posts}
+func NewPostHandler(posts *service.PostService, opts ...PostHandlerOption) *PostHandler {
+	h := &PostHandler{posts: posts}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 type createPostRequest struct {
@@ -41,6 +60,9 @@ type listFeedResponse struct {
 }
 
 // Create handles POST /api/v1/posts.
+// It accepts either application/json or multipart/form-data.
+// For multipart requests the "body" form field supplies the post text and
+// an optional "image" file field supplies an image to upload.
 func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
@@ -54,9 +76,22 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createPostRequest
-	if err := Decode(r, &req); err != nil {
-		Error(w, http.StatusBadRequest, "invalid request body")
-		return
+
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if err := h.parseMultipartCreate(r, &req); err != nil {
+			if errors.Is(err, errUnsupportedType) || errors.Is(err, errFileTooLarge) {
+				Error(w, http.StatusBadRequest, err.Error())
+			} else {
+				Error(w, http.StatusBadRequest, fmt.Sprintf("invalid multipart request: %v", err))
+			}
+			return
+		}
+	} else {
+		if err := Decode(r, &req); err != nil {
+			Error(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
 	}
 
 	post, err := h.posts.Create(r.Context(), user.ID, req.Body, req.ImagePath)
@@ -66,6 +101,51 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusCreated, post)
+}
+
+// parseMultipartCreate parses a multipart/form-data request into a createPostRequest.
+// If an "image" file part is present it is validated, saved to storage, and the
+// resulting path is set on req.ImagePath.
+func (h *PostHandler) parseMultipartCreate(r *http.Request, req *createPostRequest) error {
+	// Limit total request body to maxImageSize + 1 MB overhead for form fields.
+	r.Body = http.MaxBytesReader(nil, r.Body, maxImageSize+1<<20)
+
+	if err := r.ParseMultipartForm(maxImageSize); err != nil {
+		return fmt.Errorf("parsing multipart form: %w", err)
+	}
+
+	req.Body = r.FormValue("body")
+
+	imgData, ext, err := parseImageUpload(r, maxImageSize)
+	if err != nil {
+		return err
+	}
+	// No image field present — text-only post.
+	if imgData == nil {
+		return nil
+	}
+
+	if h.store == nil {
+		return fmt.Errorf("image uploads not configured")
+	}
+
+	filename := fmt.Sprintf("%s%s", mustUUIDv7(), ext)
+	path, err := h.store.Save(r.Context(), filename, bytes.NewReader(imgData))
+	if err != nil {
+		return fmt.Errorf("saving image: %w", err)
+	}
+
+	req.ImagePath = h.store.URL(path)
+	return nil
+}
+
+func mustUUIDv7() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		// uuid.NewV7 only fails if the random source is broken.
+		panic(fmt.Sprintf("generating UUIDv7: %v", err))
+	}
+	return id.String()
 }
 
 // GetByID handles GET /api/v1/posts/{id}.
@@ -171,4 +251,3 @@ func parseOffset(s string) int {
 	}
 	return n
 }
-
