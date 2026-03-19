@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fireynis/the-bell/internal/cache"
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/database"
 	kratosadmin "github.com/fireynis/the-bell/internal/kratos"
@@ -68,6 +69,19 @@ func runServe(logger *slog.Logger) {
 	// Services
 	userSvc := service.NewUserService(userRepo, nil)
 	postSvc := service.NewPostService(postRepo, nil)
+
+	// Optional Redis feed cache
+	if cfg.RedisURL != "" {
+		rdb, err := cache.NewRedisClient(cfg.RedisURL)
+		if err != nil {
+			logger.Error("connecting to redis", "error", err)
+			os.Exit(1)
+		}
+		feedCache := cache.NewFeedCache(rdb, postRepo, logger)
+		postSvc.SetFeedCache(feedCache)
+		logger.Info("feed cache enabled", "redis", cfg.RedisURL)
+	}
+
 	reportSvc := service.NewReportService(reportRepo, postRepo, nil)
 	vouchSvc := service.NewVouchService(vouchRepo, ageQuerier, userRepo, nil)
 	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)

@@ -20,10 +20,18 @@ type PostRepository interface {
 	UpdatePostStatus(ctx context.Context, id string, status domain.PostStatus, reason string) error
 }
 
+// FeedCacher is an optional cache layer for the post feed.
+type FeedCacher interface {
+	GetFeed(ctx context.Context, cursor string, limit int) ([]*domain.Post, error)
+	InvalidateOnCreate(ctx context.Context, post *domain.Post)
+	InvalidateOnDelete(ctx context.Context, postID string)
+}
+
 // PostService orchestrates post business logic.
 type PostService struct {
-	repo PostRepository
-	now  func() time.Time
+	repo      PostRepository
+	feedCache FeedCacher
+	now       func() time.Time
 }
 
 func NewPostService(repo PostRepository, clock func() time.Time) *PostService {
@@ -34,6 +42,11 @@ func NewPostService(repo PostRepository, clock func() time.Time) *PostService {
 		repo: repo,
 		now:  clock,
 	}
+}
+
+// SetFeedCache attaches an optional feed cache to the service.
+func (s *PostService) SetFeedCache(fc FeedCacher) {
+	s.feedCache = fc
 }
 
 func (s *PostService) Create(ctx context.Context, authorID, body, imagePath string) (*domain.Post, error) {
@@ -59,6 +72,10 @@ func (s *PostService) Create(ctx context.Context, authorID, body, imagePath stri
 		return nil, fmt.Errorf("creating post: %w", err)
 	}
 
+	if s.feedCache != nil {
+		s.feedCache.InvalidateOnCreate(ctx, post)
+	}
+
 	return post, nil
 }
 
@@ -67,6 +84,9 @@ func (s *PostService) GetByID(ctx context.Context, id string) (*domain.Post, err
 }
 
 func (s *PostService) ListFeed(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
+	if s.feedCache != nil {
+		return s.feedCache.GetFeed(ctx, cursor, limit)
+	}
 	return s.repo.ListPosts(ctx, cursor, limit)
 }
 
@@ -101,7 +121,15 @@ func (s *PostService) Delete(ctx context.Context, id, userID string) error {
 		return ErrForbidden
 	}
 
-	return s.repo.UpdatePostStatus(ctx, id, domain.PostRemovedByAuthor, "")
+	if err := s.repo.UpdatePostStatus(ctx, id, domain.PostRemovedByAuthor, ""); err != nil {
+		return err
+	}
+
+	if s.feedCache != nil {
+		s.feedCache.InvalidateOnDelete(ctx, id)
+	}
+
+	return nil
 }
 
 func validateBody(body string) error {
