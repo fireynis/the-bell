@@ -16,10 +16,12 @@ import (
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/database"
 	kratosadmin "github.com/fireynis/the-bell/internal/kratos"
+	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
+	kratos "github.com/ory/kratos-client-go"
 )
 
 func main() {
@@ -51,13 +53,41 @@ func runServe(logger *slog.Logger) {
 	defer pool.Close()
 
 	queries := postgres.New(pool)
+
+	// Repositories
 	userRepo := postgres.NewUserRepo(queries)
 	configRepo := postgres.NewConfigRepo(queries)
-	approvalSvc := service.NewApprovalService(userRepo, configRepo)
+	postRepo := postgres.NewPostRepo(queries)
+	reportRepo := postgres.NewReportRepo(queries)
+	vouchRepo := postgres.NewVouchRepo(queries)
+	modActionRepo := postgres.NewModerationActionRepo(queries)
+	penaltyRepo := postgres.NewPenaltyRepo(queries)
+	ageQuerier := postgres.NewAGEQuerier(pool)
 	voteRepo := postgres.NewVoteRepo(queries)
+
+	// Services
+	userSvc := service.NewUserService(userRepo, nil)
+	postSvc := service.NewPostService(postRepo, nil)
+	reportSvc := service.NewReportService(reportRepo, postRepo, nil)
+	vouchSvc := service.NewVouchService(vouchRepo, ageQuerier, userRepo, nil)
+	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)
+	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, nil)
+	approvalSvc := service.NewApprovalService(userRepo, configRepo)
 	votingSvc := service.NewVotingService(voteRepo, nil)
 
+	// Kratos auth middleware
+	kratosCfg := kratos.NewConfiguration()
+	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}
+	kratosClient := kratos.NewAPIClient(kratosCfg)
+	authMiddleware := middleware.KratosAuth(kratosClient, userSvc, logger)
+
 	srv := server.New(cfg, pool, logger,
+		server.WithAuth(authMiddleware),
+		server.WithUserService(userSvc),
+		server.WithPostService(postSvc),
+		server.WithReportService(reportSvc),
+		server.WithVouchService(vouchSvc),
+		server.WithModerationActionService(modActionSvc),
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
 	)

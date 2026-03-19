@@ -97,6 +97,17 @@ func (r *UserRepo) UpdateUserRole(ctx context.Context, id string, role domain.Ro
 	})
 }
 
+func (r *UserRepo) DeactivateUser(ctx context.Context, id string) error {
+	return r.q.DeactivateUser(ctx, id)
+}
+
+func (r *UserRepo) UpdateUserTrustScore(ctx context.Context, id string, score float64) error {
+	return r.q.UpdateUserTrustScore(ctx, UpdateUserTrustScoreParams{
+		ID:         id,
+		TrustScore: score,
+	})
+}
+
 func userFromRow(row User) *domain.User {
 	u := &domain.User{
 		ID:               row.ID,
