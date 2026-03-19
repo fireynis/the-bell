@@ -99,7 +99,7 @@ function renderNode(node: UiNode) {
   }
 }
 
-const VISIBLE_GROUPS = new Set(["default", "password", "code", "link"]);
+const VISIBLE_GROUPS = new Set(["default", "password", "profile", "code", "link"]);
 
 export default function FlowForm({ flow, onSubmit, submitting }: FlowFormProps) {
   const nodes = flow.ui.nodes.filter((n) => VISIBLE_GROUPS.has(n.group));

@@ -1,7 +1,13 @@
 package server
 
 import (
+	"io/fs"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,20 +19,29 @@ import (
 
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.ContentTypeJSON)
 	r.Use(middleware.RequestLogger(s.logger))
 	r.Get("/healthz", handler.Health)
 
-	// GET /api/v1/me — return the authenticated user.
-	// Intentionally omits RequireActive so suspended/banned users can still
-	// learn their own status and role (the frontend RequireRole guard needs this).
-	r.Route("/api/v1/me", func(r chi.Router) {
-		if s.authMiddleware != nil {
-			r.Use(s.authMiddleware)
-		}
-		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
-		r.Get("/", uh.GetMe)
+	// API routes — all JSON.
+	r.Route("/api", func(r chi.Router) {
+		r.Use(middleware.ContentTypeJSON)
+		s.apiRoutes(r)
 	})
+
+	// Kratos reverse proxy — browser talks to /.ory/*, we forward to Kratos.
+	if s.cfg.KratosPublicURL != "" {
+		kratosTarget, err := url.Parse(s.cfg.KratosPublicURL)
+		if err == nil {
+			proxy := httputil.NewSingleHostReverseProxy(kratosTarget)
+			r.HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
+				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/.ory")
+				if req.URL.Path == "" {
+					req.URL.Path = "/"
+				}
+				proxy.ServeHTTP(w, req)
+			})
+		}
+	}
 
 	// Static file serving for uploaded images.
 	if s.imageStore != nil {
@@ -37,13 +52,34 @@ func (s *Server) routes() http.Handler {
 		})
 	}
 
+	// Serve SPA frontend (web/dist).
+	spaDir := "web/dist"
+	if _, err := os.Stat(spaDir); err == nil {
+		r.Get("/*", spaHandler(spaDir))
+	}
+
+	return r
+}
+
+func (s *Server) apiRoutes(r chi.Router) {
+	// GET /api/v1/me — return the authenticated user.
+	// Intentionally omits RequireActive so suspended/banned users can still
+	// learn their own status and role (the frontend RequireRole guard needs this).
+	r.Route("/v1/me", func(r chi.Router) {
+		if s.authMiddleware != nil {
+			r.Use(s.authMiddleware)
+		}
+		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
+		r.Get("/", uh.GetMe)
+	})
+
 	if s.postService != nil {
 		var phOpts []handler.PostHandlerOption
 		if s.imageStore != nil {
 			phOpts = append(phOpts, handler.WithStorage(s.imageStore))
 		}
 		ph := handler.NewPostHandler(s.postService, phOpts...)
-		r.Route("/api/v1/posts", func(r chi.Router) {
+		r.Route("/v1/posts", func(r chi.Router) {
 			r.Get("/", ph.ListFeed)
 			r.Get("/{id}", ph.GetByID)
 
@@ -66,8 +102,7 @@ func (s *Server) routes() http.Handler {
 	if s.userService != nil {
 		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
 
-		r.Route("/api/v1/users", func(r chi.Router) {
-			// Authenticated endpoints for own profile
+		r.Route("/v1/users", func(r chi.Router) {
 			r.Group(func(r chi.Router) {
 				if s.authMiddleware != nil {
 					r.Use(s.authMiddleware)
@@ -77,7 +112,6 @@ func (s *Server) routes() http.Handler {
 				r.Put("/me", uh.UpdateMe)
 			})
 
-			// Public user profile endpoints
 			r.Get("/{id}", uh.GetByID)
 			r.Get("/{id}/posts", uh.ListPosts)
 			r.Get("/{id}/vouches", uh.ListVouches)
@@ -87,8 +121,7 @@ func (s *Server) routes() http.Handler {
 	if s.reportService != nil {
 		rh := handler.NewReportHandler(s.reportService)
 
-		// Report submission (auth + member required)
-		r.Route("/api/v1/posts/{id}/report", func(r chi.Router) {
+		r.Route("/v1/posts/{id}/report", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
@@ -102,7 +135,7 @@ func (s *Server) routes() http.Handler {
 	}
 
 	if s.reportService != nil || s.moderationActionService != nil {
-		r.Route("/api/v1/moderation", func(r chi.Router) {
+		r.Route("/v1/moderation", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
@@ -125,7 +158,7 @@ func (s *Server) routes() http.Handler {
 
 	if s.approvalService != nil {
 		ah := handler.NewApprovalHandler(s.approvalService)
-		r.Route("/api/v1/vouches", func(r chi.Router) {
+		r.Route("/v1/vouches", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
@@ -141,7 +174,7 @@ func (s *Server) routes() http.Handler {
 
 	if s.votingService != nil {
 		vh := handler.NewVotingHandler(s.votingService)
-		r.Route("/api/v1/admin/council/votes", func(r chi.Router) {
+		r.Route("/v1/admin/council/votes", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
@@ -154,7 +187,7 @@ func (s *Server) routes() http.Handler {
 
 	if s.statsService != nil {
 		sh := handler.NewStatsHandler(s.statsService)
-		r.Route("/api/v1/admin/stats", func(r chi.Router) {
+		r.Route("/v1/admin/stats", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
 			}
@@ -163,6 +196,23 @@ func (s *Server) routes() http.Handler {
 			r.Get("/", sh.GetStats)
 		})
 	}
+}
 
-	return r
+// spaHandler serves static files from dir, falling back to index.html
+// for SPA client-side routing.
+func spaHandler(dir string) http.HandlerFunc {
+	fileServer := http.FileServer(http.Dir(dir))
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+		_, err := fs.Stat(os.DirFS(dir), path)
+		if err != nil {
+			http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}
 }

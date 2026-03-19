@@ -6,6 +6,9 @@ SET search_path = ag_catalog, "$user", public;
 
 SELECT create_graph('trust_graph');
 
+-- Reset search_path so subsequent migrations create tables in public schema
+SET search_path = public, ag_catalog, "$user";
+
 -- +goose Down
 LOAD 'age';
 SET search_path = ag_catalog, "$user", public;

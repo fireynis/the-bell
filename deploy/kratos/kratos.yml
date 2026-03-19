@@ -25,6 +25,9 @@ serve:
       allow_credentials: true
   admin:
     base_url: http://kratos:4434/
+cookies:
+  domain: localhost
+  same_site: Lax
 
 selfservice:
   default_browser_return_url: http://localhost:8080/
@@ -48,10 +51,6 @@ selfservice:
 
     login:
       ui_url: http://localhost:8080/auth/login
-      after:
-        password:
-          hooks:
-            - hook: session
 
     logout:
       after:
@@ -79,6 +78,12 @@ identity:
   schemas:
     - id: default
       url: file:///etc/kratos/identity.schema.json
+
+secrets:
+  cookie:
+    - PLEASE-CHANGE-ME-I-AM-VERY-INSECURE
+  cipher:
+    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
 
 log:
   level: info

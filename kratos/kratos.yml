@@ -50,10 +50,6 @@ selfservice:
 
     login:
       ui_url: http://localhost:5173/auth/login
-      after:
-        password:
-          hooks:
-            - hook: session
 
     logout:
       after:
@@ -81,6 +77,12 @@ identity:
   schemas:
     - id: default
       url: file:///etc/kratos/identity.schema.json
+
+secrets:
+  cookie:
+    - PLEASE-CHANGE-ME-I-AM-VERY-INSECURE
+  cipher:
+    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
 
 log:
   level: info
