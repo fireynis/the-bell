@@ -39,3 +39,14 @@ UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1;
 -- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE;
+
+-- name: ListActiveNonBannedUsers :many
+SELECT * FROM users
+WHERE is_active = TRUE AND role NOT IN ('pending', 'banned')
+ORDER BY created_at;
+
+-- name: UpdateUserTrustBelowSince :exec
+UPDATE users SET trust_below_since = $2, updated_at = NOW() WHERE id = $1;
+
+-- name: ClearUserTrustBelowSince :exec
+UPDATE users SET trust_below_since = NULL, updated_at = NOW() WHERE id = $1;

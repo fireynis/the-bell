@@ -17,3 +17,8 @@ GROUP BY reaction_type;
 
 -- name: GetUserReactionOnPost :one
 SELECT * FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3;
+
+-- name: CountReactionsReceivedByAuthorSince :one
+SELECT COUNT(*) FROM reactions r
+JOIN posts p ON p.id = r.post_id
+WHERE p.author_id = $1 AND r.created_at >= $2;

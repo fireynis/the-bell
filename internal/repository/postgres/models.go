@@ -56,6 +56,15 @@ type Report struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type RoleHistory struct {
+	ID        string             `json:"id"`
+	UserID    string             `json:"user_id"`
+	OldRole   string             `json:"old_role"`
+	NewRole   string             `json:"new_role"`
+	Reason    string             `json:"reason"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type TownConfig struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -83,6 +92,7 @@ type User struct {
 	JoinedAt         pgtype.Timestamptz `json:"joined_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	TrustBelowSince  pgtype.Timestamptz `json:"trust_below_since"`
 }
 
 type Vouch struct {

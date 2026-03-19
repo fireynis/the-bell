@@ -76,6 +76,24 @@ func (q *Queries) CountReactionsByPost(ctx context.Context, postID string) ([]Co
 	return items, nil
 }
 
+const countReactionsReceivedByAuthorSince = `-- name: CountReactionsReceivedByAuthorSince :one
+SELECT COUNT(*) FROM reactions r
+JOIN posts p ON p.id = r.post_id
+WHERE p.author_id = $1 AND r.created_at >= $2
+`
+
+type CountReactionsReceivedByAuthorSinceParams struct {
+	AuthorID  string             `json:"author_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CountReactionsReceivedByAuthorSince(ctx context.Context, arg CountReactionsReceivedByAuthorSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countReactionsReceivedByAuthorSince, arg.AuthorID, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getUserReactionOnPost = `-- name: GetUserReactionOnPost :one
 SELECT id, user_id, post_id, reaction_type, created_at FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3
 `

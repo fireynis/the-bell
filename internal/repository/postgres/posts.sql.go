@@ -11,6 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countPostsByAuthorSince = `-- name: CountPostsByAuthorSince :one
+SELECT COUNT(*) FROM posts
+WHERE author_id = $1 AND created_at >= $2 AND status = 'visible'
+`
+
+type CountPostsByAuthorSinceParams struct {
+	AuthorID  string             `json:"author_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CountPostsByAuthorSince(ctx context.Context, arg CountPostsByAuthorSinceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPostsByAuthorSince, arg.AuthorID, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPost = `-- name: CreatePost :one
 INSERT INTO posts (id, author_id, body, image_path, status, removal_reason, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

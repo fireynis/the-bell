@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearUserTrustBelowSince = `-- name: ClearUserTrustBelowSince :exec
+UPDATE users SET trust_below_since = NULL, updated_at = NOW() WHERE id = $1
+`
+
+func (q *Queries) ClearUserTrustBelowSince(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, clearUserTrustBelowSince, id)
+	return err
+}
+
 const countCouncilMembers = `-- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE
@@ -38,7 +47,7 @@ func (q *Queries) CountUsersByMinRole(ctx context.Context) (int64, error) {
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since
 `
 
 type CreateUserParams struct {
@@ -82,6 +91,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.JoinedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrustBelowSince,
 	)
 	return i, err
 }
@@ -96,7 +106,7 @@ func (q *Queries) DeactivateUser(ctx context.Context, id string) error {
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users WHERE id = $1
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
@@ -114,12 +124,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.JoinedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrustBelowSince,
 	)
 	return i, err
 }
 
 const getUserByKratosID = `-- name: GetUserByKratosID :one
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users WHERE kratos_identity_id = $1
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users WHERE kratos_identity_id = $1
 `
 
 func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string) (User, error) {
@@ -137,12 +148,52 @@ func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string
 		&i.JoinedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrustBelowSince,
 	)
 	return i, err
 }
 
+const listActiveNonBannedUsers = `-- name: ListActiveNonBannedUsers :many
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users
+WHERE is_active = TRUE AND role NOT IN ('pending', 'banned')
+ORDER BY created_at
+`
+
+func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) {
+	rows, err := q.db.Query(ctx, listActiveNonBannedUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.KratosIdentityID,
+			&i.DisplayName,
+			&i.Bio,
+			&i.AvatarUrl,
+			&i.TrustScore,
+			&i.Role,
+			&i.IsActive,
+			&i.JoinedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TrustBelowSince,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingUsers = `-- name: ListPendingUsers :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users
 WHERE role = 'pending' AND is_active = TRUE
 ORDER BY created_at ASC
 `
@@ -168,6 +219,7 @@ func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 			&i.JoinedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TrustBelowSince,
 		); err != nil {
 			return nil, err
 		}
@@ -180,7 +232,7 @@ func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 }
 
 const listUsersByRole = `-- name: ListUsersByRole :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2
 `
 
 type ListUsersByRoleParams struct {
@@ -209,6 +261,7 @@ func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams
 			&i.JoinedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TrustBelowSince,
 		); err != nil {
 			return nil, err
 		}
@@ -224,7 +277,7 @@ const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET display_name = $2, bio = $3, avatar_url = $4, updated_at = NOW()
 WHERE id = $1
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since
 `
 
 type UpdateUserProfileParams struct {
@@ -254,6 +307,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.JoinedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TrustBelowSince,
 	)
 	return i, err
 }
@@ -269,6 +323,20 @@ type UpdateUserRoleParams struct {
 
 func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error {
 	_, err := q.db.Exec(ctx, updateUserRole, arg.ID, arg.Role)
+	return err
+}
+
+const updateUserTrustBelowSince = `-- name: UpdateUserTrustBelowSince :exec
+UPDATE users SET trust_below_since = $2, updated_at = NOW() WHERE id = $1
+`
+
+type UpdateUserTrustBelowSinceParams struct {
+	ID              string             `json:"id"`
+	TrustBelowSince pgtype.Timestamptz `json:"trust_below_since"`
+}
+
+func (q *Queries) UpdateUserTrustBelowSince(ctx context.Context, arg UpdateUserTrustBelowSinceParams) error {
+	_, err := q.db.Exec(ctx, updateUserTrustBelowSince, arg.ID, arg.TrustBelowSince)
 	return err
 }
 

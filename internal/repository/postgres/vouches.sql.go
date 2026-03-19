@@ -11,6 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveModeratorVouchesForUser = `-- name: CountActiveModeratorVouchesForUser :one
+SELECT COUNT(*) FROM vouches v
+JOIN users u ON u.id = v.voucher_id
+WHERE v.vouchee_id = $1
+  AND v.status = 'active'
+  AND u.role IN ('moderator', 'council')
+  AND u.is_active = TRUE
+`
+
+func (q *Queries) CountActiveModeratorVouchesForUser(ctx context.Context, voucheeID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveModeratorVouchesForUser, voucheeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveVouchesWithAvgTrust = `-- name: CountActiveVouchesWithAvgTrust :one
+SELECT COUNT(*) AS vouch_count, COALESCE(AVG(u.trust_score), 0)::double precision AS avg_trust
+FROM vouches v
+JOIN users u ON u.id = v.voucher_id
+WHERE v.vouchee_id = $1 AND v.status = 'active'
+`
+
+type CountActiveVouchesWithAvgTrustRow struct {
+	VouchCount int64   `json:"vouch_count"`
+	AvgTrust   float64 `json:"avg_trust"`
+}
+
+func (q *Queries) CountActiveVouchesWithAvgTrust(ctx context.Context, voucheeID string) (CountActiveVouchesWithAvgTrustRow, error) {
+	row := q.db.QueryRow(ctx, countActiveVouchesWithAvgTrust, voucheeID)
+	var i CountActiveVouchesWithAvgTrustRow
+	err := row.Scan(&i.VouchCount, &i.AvgTrust)
+	return i, err
+}
+
 const countVouchesByVoucherSince = `-- name: CountVouchesByVoucherSince :one
 SELECT COUNT(*) FROM vouches
 WHERE voucher_id = $1 AND created_at >= $2

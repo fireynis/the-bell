@@ -27,3 +27,7 @@ UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1;
 
 -- name: ListPostsByAuthor :many
 SELECT * FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2;
+
+-- name: CountPostsByAuthorSince :one
+SELECT COUNT(*) FROM posts
+WHERE author_id = $1 AND created_at >= $2 AND status = 'visible';

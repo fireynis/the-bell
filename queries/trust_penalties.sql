@@ -7,3 +7,7 @@ RETURNING *;
 SELECT * FROM trust_penalties
 WHERE moderation_action_id = $1
 ORDER BY hop_depth ASC;
+
+-- name: ListActivePenaltiesByUser :many
+SELECT * FROM trust_penalties
+WHERE user_id = $1 AND (decays_at IS NULL OR decays_at > NOW());
