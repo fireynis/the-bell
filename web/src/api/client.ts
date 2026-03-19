@@ -58,3 +58,27 @@ class ApiClient {
 }
 
 export const api = new ApiClient();
+
+// Convenience wrappers used by context providers and hooks.
+export const userApi = {
+  getMe: () => api.get<import("./types").User>("/me"),
+};
+
+export const moderationApi = {
+  getModerationQueue: (limit: number, offset: number) =>
+    api.get<import("./types").ModerationQueueResponse>(
+      `/moderation/queue?limit=${limit}&offset=${offset}`,
+    ),
+  updateReportStatus: (reportId: string, status: string) =>
+    api.patch<import("./types").Report>(`/moderation/reports/${reportId}`, {
+      status,
+    }),
+  takeAction: (req: import("./types").TakeActionRequest) =>
+    api.post<import("./types").ActionHistoryEntry>("/moderation/actions", req),
+  getActionHistory: (userId: string, limit: number, offset: number) =>
+    api.get<import("./types").ActionHistoryResponse>(
+      `/moderation/actions/${userId}?limit=${limit}&offset=${offset}`,
+    ),
+  getPost: (postId: string) =>
+    api.get<import("./types").Post>(`/posts/${postId}`),
+};

@@ -56,10 +56,13 @@ func runServe(logger *slog.Logger) {
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)
 	voteRepo := postgres.NewVoteRepo(queries)
 	votingSvc := service.NewVotingService(voteRepo, nil)
+	statsRepo := postgres.NewStatsRepo(queries)
+	statsSvc := service.NewStatsService(statsRepo)
 
 	srv := server.New(cfg, pool, logger,
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
+		server.WithStatsService(statsSvc),
 	)
 
 	errCh := make(chan error, 1)

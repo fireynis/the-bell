@@ -50,3 +50,14 @@ UPDATE users SET trust_below_since = $2, updated_at = NOW() WHERE id = $1;
 
 -- name: ClearUserTrustBelowSince :exec
 UPDATE users SET trust_below_since = NULL, updated_at = NOW() WHERE id = $1;
+
+-- name: CountAllUsers :one
+SELECT COUNT(*) FROM users WHERE is_active = TRUE;
+
+-- name: CountModerators :one
+SELECT COUNT(*) FROM users
+WHERE role = 'moderator' AND is_active = TRUE;
+
+-- name: CountPendingUsers :one
+SELECT COUNT(*) FROM users
+WHERE role = 'pending' AND is_active = TRUE;

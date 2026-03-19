@@ -6,7 +6,7 @@ import { useFeed } from "../hooks/useFeed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 
 export default function Home() {
-  const { session, logout } = useAuth();
+  const { session, user, logout } = useAuth();
   const { posts, loading, hasMore, error, loadMore, retry } = useFeed();
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +34,14 @@ export default function Home() {
           >
             Profile
           </Link>
+          {user?.role === "council" && (
+            <Link
+              to="/admin"
+              className="text-sm text-indigo-600 hover:text-indigo-500"
+            >
+              Admin
+            </Link>
+          )}
           <Link
             to="/auth/settings"
             className="text-sm text-indigo-600 hover:text-indigo-500"

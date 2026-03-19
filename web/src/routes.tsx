@@ -1,8 +1,10 @@
 import type { RouteObject } from "react-router";
 import RequireAuth from "./components/RequireAuth.tsx";
+import RequireRole from "./components/RequireRole.tsx";
 import Home from "./pages/Home";
 import Compose from "./pages/Compose";
 import Profile from "./pages/Profile";
+import Admin from "./pages/Admin";
 import Login from "./pages/auth/Login";
 import Registration from "./pages/auth/Registration";
 import Settings from "./pages/auth/Settings";
@@ -20,6 +22,11 @@ export const routes: RouteObject[] = [
       { path: "/profile", element: <Profile /> },
       { path: "/profile/:userId", element: <Profile /> },
       { path: "/auth/settings", element: <Settings /> },
+      // Council-only routes
+      {
+        element: <RequireRole minRole="council" />,
+        children: [{ path: "/admin", element: <Admin /> }],
+      },
     ],
   },
   // Public auth routes

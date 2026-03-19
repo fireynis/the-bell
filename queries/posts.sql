@@ -31,3 +31,7 @@ SELECT * FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2;
 -- name: CountPostsByAuthorSince :one
 SELECT COUNT(*) FROM posts
 WHERE author_id = $1 AND created_at >= $2 AND status = 'visible';
+
+-- name: CountPostsToday :one
+SELECT COUNT(*) FROM posts
+WHERE created_at >= CURRENT_DATE AND status = 'visible';

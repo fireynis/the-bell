@@ -28,6 +28,18 @@ func (q *Queries) CountPostsByAuthorSince(ctx context.Context, arg CountPostsByA
 	return count, err
 }
 
+const countPostsToday = `-- name: CountPostsToday :one
+SELECT COUNT(*) FROM posts
+WHERE created_at >= CURRENT_DATE AND status = 'visible'
+`
+
+func (q *Queries) CountPostsToday(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPostsToday)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createPost = `-- name: CreatePost :one
 INSERT INTO posts (id, author_id, body, image_path, status, removal_reason, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

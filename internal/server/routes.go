@@ -129,5 +129,17 @@ func (s *Server) routes() http.Handler {
 		})
 	}
 
+	if s.statsService != nil {
+		sh := handler.NewStatsHandler(s.statsService)
+		r.Route("/api/v1/admin/stats", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Use(middleware.RequireRole(domain.RoleCouncil))
+			r.Get("/", sh.GetStats)
+		})
+	}
+
 	return r
 }
