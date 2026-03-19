@@ -39,12 +39,15 @@ func TestAdminClient_CreateIdentity_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := NewAdminClient(srv.URL)
-	kratosID, err := client.CreateIdentity(context.Background(), "alice@example.com", "Alice", "")
+	kratosID, password, err := client.CreateIdentity(context.Background(), "alice@example.com", "Alice", "")
 	if err != nil {
 		t.Fatalf("CreateIdentity() error: %v", err)
 	}
 	if kratosID != "kratos-identity-123" {
 		t.Errorf("kratosID = %q, want %q", kratosID, "kratos-identity-123")
+	}
+	if password == "" {
+		t.Error("expected a generated password, got empty string")
 	}
 }
 
@@ -58,7 +61,7 @@ func TestAdminClient_CreateIdentity_Error(t *testing.T) {
 	defer srv.Close()
 
 	client := NewAdminClient(srv.URL)
-	_, err := client.CreateIdentity(context.Background(), "alice@example.com", "Alice", "")
+	_, _, err := client.CreateIdentity(context.Background(), "alice@example.com", "Alice", "")
 	if err == nil {
 		t.Fatal("CreateIdentity() expected error, got nil")
 	}

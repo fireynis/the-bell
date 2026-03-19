@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,6 +25,7 @@ import (
 	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/storage"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kratos "github.com/ory/kratos-client-go"
 	"github.com/redis/go-redis/v9"
@@ -186,11 +190,89 @@ func runServe(logger *slog.Logger) {
 func runSetup(logger *slog.Logger) {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	council := fs.String("council", "", "comma-separated list of council member emails")
+	townName := fs.String("town-name", "", "name of the town")
+	createDB := fs.Bool("create-db", false, "create bell and bell_kratos databases if they don't exist")
 	fs.Parse(os.Args[2:])
 
-	if *council == "" {
-		fmt.Fprintf(os.Stderr, "usage: bell setup --council email1,email2,...\n")
+	ctx := context.Background()
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// Load config early to validate env vars.
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("loading config", "error", err)
 		os.Exit(1)
+	}
+
+	fmt.Println("=== The Bell Setup Wizard ===")
+	fmt.Println()
+
+	// --- Prerequisite checks ---
+	fmt.Println("Checking prerequisites...")
+
+	// Check Postgres connectivity.
+	pgOK := checkPostgres(ctx, cfg.DatabaseURL)
+	if pgOK {
+		fmt.Println("  [OK] Postgres is reachable")
+	} else {
+		fmt.Println("  [!!] Postgres is NOT reachable")
+	}
+
+	// Check Kratos health.
+	kratosOK := checkKratosHealth(cfg.KratosAdminURL)
+	if kratosOK {
+		fmt.Println("  [OK] Kratos is reachable")
+	} else {
+		fmt.Println("  [!!] Kratos is NOT reachable")
+	}
+
+	// Check Redis (optional).
+	if cfg.RedisURL != "" {
+		redisOK := checkRedis(ctx, cfg.RedisURL)
+		if redisOK {
+			fmt.Println("  [OK] Redis is reachable")
+		} else {
+			fmt.Println("  [!!] Redis is NOT reachable (optional, continuing)")
+		}
+	} else {
+		fmt.Println("  [--] Redis not configured (optional)")
+	}
+	fmt.Println()
+
+	// Postgres must be reachable to continue (unless --create-db which connects separately).
+	if !pgOK && !*createDB {
+		fmt.Fprintf(os.Stderr, "error: Postgres is not reachable. Check DATABASE_URL and ensure Postgres is running.\n")
+		os.Exit(1)
+	}
+	if !kratosOK {
+		fmt.Fprintf(os.Stderr, "error: Kratos is not reachable. Check KRATOS_ADMIN_URL and ensure Kratos is running.\n")
+		os.Exit(1)
+	}
+
+	// --- Create databases if requested ---
+	dbsCreated := false
+	if *createDB {
+		fmt.Println("Creating databases...")
+		if err := createDatabases(ctx, cfg.DatabaseURL); err != nil {
+			logger.Error("creating databases", "error", err)
+			os.Exit(1)
+		}
+		dbsCreated = true
+		fmt.Println("  [OK] Databases verified/created")
+		fmt.Println()
+	}
+
+	// --- Interactive prompts ---
+	// Council emails.
+	if *council == "" {
+		fmt.Print("Enter council member emails (comma-separated): ")
+		if scanner.Scan() {
+			*council = scanner.Text()
+		}
+		if *council == "" {
+			fmt.Fprintf(os.Stderr, "error: no council emails provided\n")
+			os.Exit(1)
+		}
 	}
 
 	var emails []string
@@ -205,10 +287,36 @@ func runSetup(logger *slog.Logger) {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-	cfg, pool := mustInit(ctx, logger)
+	// Town name.
+	if *townName == "" {
+		fmt.Printf("Enter town name [%s]: ", cfg.TownName)
+		if scanner.Scan() {
+			input := strings.TrimSpace(scanner.Text())
+			if input != "" {
+				*townName = input
+			}
+		}
+	}
+
+	// --- Connect and run migrations ---
+	fmt.Println()
+	fmt.Println("Connecting to database and running migrations...")
+	pool, err := database.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("connecting to database", "error", err)
+		os.Exit(1)
+	}
 	defer pool.Close()
 
+	if err := database.RunMigrations(ctx, pool); err != nil {
+		logger.Error("running migrations", "error", err)
+		os.Exit(1)
+	}
+	fmt.Println("  [OK] Migrations applied")
+	fmt.Println()
+
+	// --- Bootstrap ---
+	fmt.Println("Bootstrapping town...")
 	queries := postgres.New(pool)
 	configRepo := postgres.NewConfigRepo(queries)
 	kratosClient := kratosadmin.NewAdminClient(cfg.KratosAdminURL)
@@ -216,12 +324,117 @@ func runSetup(logger *slog.Logger) {
 
 	svc := service.NewBootstrapService(kratosClient, configRepo, transactor, nil)
 
-	if err := svc.Setup(ctx, emails); err != nil {
+	result, err := svc.Setup(ctx, emails, *townName)
+	if err != nil {
 		logger.Error("setup failed", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info("town bootstrapped", "council_members", len(emails))
+	// --- Summary ---
+	fmt.Println()
+	fmt.Println("=== Setup Complete ===")
+	fmt.Println()
+	if dbsCreated {
+		fmt.Println("Databases:    created/verified")
+	} else {
+		fmt.Println("Databases:    existing (use --create-db to create)")
+	}
+	fmt.Println("Migrations:   applied")
+	if *townName != "" {
+		fmt.Printf("Town name:    %s\n", *townName)
+	}
+	fmt.Println()
+	fmt.Printf("Council members created (%d):\n", len(result.Members))
+	for _, m := range result.Members {
+		fmt.Printf("  Email:     %s\n", m.Email)
+		fmt.Printf("  Password:  %s\n", m.Password)
+		fmt.Println()
+	}
+	fmt.Println("NOTE: Save these passwords! Users can reset them via the Kratos recovery flow.")
+}
+
+// checkPostgres verifies Postgres connectivity by parsing the DSN and
+// attempting a TCP dial to the host:port.
+func checkPostgres(ctx context.Context, databaseURL string) bool {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return false
+	}
+	host := cfg.ConnConfig.Host
+	port := cfg.ConnConfig.Port
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	_ = ctx // intentionally unused here; dial is sufficient
+	return true
+}
+
+// checkKratosHealth pings the Kratos health endpoint.
+func checkKratosHealth(adminURL string) bool {
+	healthURL := strings.TrimRight(adminURL, "/") + "/health/alive"
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(healthURL)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// checkRedis verifies Redis connectivity.
+func checkRedis(ctx context.Context, redisURL string) bool {
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		return false
+	}
+	rdb := redis.NewClient(opts)
+	defer rdb.Close()
+	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return rdb.Ping(tctx).Err() == nil
+}
+
+// createDatabases connects to Postgres as the user from DATABASE_URL and
+// creates the bell and bell_kratos databases if they don't already exist.
+func createDatabases(ctx context.Context, databaseURL string) error {
+	// Parse the DATABASE_URL to get connection info, then connect to the
+	// default "postgres" database for admin operations.
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return fmt.Errorf("parsing DATABASE_URL: %w", err)
+	}
+	parsed.Path = "/postgres"
+	adminURL := parsed.String()
+
+	conn, err := pgx.Connect(ctx, adminURL)
+	if err != nil {
+		return fmt.Errorf("connecting to postgres database: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	for _, dbName := range []string{"bell", "bell_kratos"} {
+		var exists bool
+		err := conn.QueryRow(ctx,
+			"SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", dbName,
+		).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("checking if database %s exists: %w", dbName, err)
+		}
+		if !exists {
+			// Database names can't be parameterized, but these are hardcoded constants.
+			_, err := conn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", dbName))
+			if err != nil {
+				return fmt.Errorf("creating database %s: %w", dbName, err)
+			}
+			fmt.Printf("  Created database: %s\n", dbName)
+		} else {
+			fmt.Printf("  Database already exists: %s\n", dbName)
+		}
+	}
+	return nil
 }
 
 func runCheckRoles(logger *slog.Logger) {
