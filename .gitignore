@@ -24,3 +24,6 @@ go.work
 
 # Environment
 .env
+
+# Test credentials (local only)
+TEST_ACCOUNTS.md
