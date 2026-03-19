@@ -216,14 +216,14 @@ export default function Admin() {
     setError(null);
 
     try {
-      const [statsData, pendingData, proposalsData] = await Promise.all([
+      const [statsData, pendingResult, proposalsData] = await Promise.all([
         api.get<TownStats>("/admin/stats"),
-        api.get<PendingUsersResponse>("/vouches/pending"),
+        api.get<PendingUsersResponse>("/vouches/pending").catch(() => null),
         api.get<ProposalsResponse>("/admin/council/votes"),
       ]);
 
       setStats(statsData);
-      setPendingUsers(pendingData.users ?? []);
+      setPendingUsers(pendingResult?.users ?? []);
       setProposals(proposalsData.proposals ?? []);
     } catch (err) {
       const apiErr = err as ApiError;
