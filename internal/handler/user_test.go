@@ -10,7 +10,7 @@ import (
 )
 
 func TestUserHandler_GetMe(t *testing.T) {
-	h := handler.NewUserHandler()
+	h := handler.NewUserHandler(nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	req = withUser(req, testUser())
@@ -33,7 +33,7 @@ func TestUserHandler_GetMe(t *testing.T) {
 }
 
 func TestUserHandler_GetMe_NoUser(t *testing.T) {
-	h := handler.NewUserHandler()
+	h := handler.NewUserHandler(nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
 	rec := httptest.NewRecorder()

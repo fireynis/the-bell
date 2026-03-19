@@ -98,7 +98,7 @@ func (r *UserRepo) UpdateUserRole(ctx context.Context, id string, role domain.Ro
 }
 
 func userFromRow(row User) *domain.User {
-	return &domain.User{
+	u := &domain.User{
 		ID:               row.ID,
 		KratosIdentityID: row.KratosIdentityID,
 		DisplayName:      row.DisplayName,
@@ -111,4 +111,9 @@ func userFromRow(row User) *domain.User {
 		CreatedAt:        row.CreatedAt.Time,
 		UpdatedAt:        row.UpdatedAt.Time,
 	}
+	if row.TrustBelowSince.Valid {
+		t := row.TrustBelowSince.Time
+		u.TrustBelowSince = &t
+	}
+	return u
 }

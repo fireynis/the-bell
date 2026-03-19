@@ -42,6 +42,14 @@ func (s *VotingService) CastVote(ctx context.Context, proposalID, voterID string
 		return nil, fmt.Errorf("%w: vote must be 'approve' or 'reject'", ErrValidation)
 	}
 
+	existing, err := s.votes.GetVoteByProposalAndVoter(ctx, proposalID, voterID)
+	if err != nil && err != ErrNotFound {
+		return nil, fmt.Errorf("checking existing vote: %w", err)
+	}
+	if existing != nil {
+		return nil, fmt.Errorf("%w: you have already voted on this proposal", ErrValidation)
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("generating vote id: %w", err)
@@ -60,6 +68,7 @@ func (s *VotingService) CastVote(ctx context.Context, proposalID, voterID string
 	}
 
 	return s.buildSummary(ctx, proposalID)
+
 }
 
 // ListPendingProposals returns summaries for all proposals that have votes.
@@ -69,9 +78,14 @@ func (s *VotingService) ListPendingProposals(ctx context.Context) ([]domain.Prop
 		return nil, fmt.Errorf("listing proposal ids: %w", err)
 	}
 
+	totalCouncil, err := s.votes.CountCouncilMembers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("counting council members: %w", err)
+	}
+
 	summaries := make([]domain.ProposalSummary, 0, len(ids))
 	for _, id := range ids {
-		summary, err := s.buildSummary(ctx, id)
+		summary, err := s.buildSummary(ctx, id, totalCouncil)
 		if err != nil {
 			return nil, fmt.Errorf("building summary for %s: %w", id, err)
 		}
@@ -80,7 +94,7 @@ func (s *VotingService) ListPendingProposals(ctx context.Context) ([]domain.Prop
 	return summaries, nil
 }
 
-func (s *VotingService) buildSummary(ctx context.Context, proposalID string) (*domain.ProposalSummary, error) {
+func (s *VotingService) buildSummary(ctx context.Context, proposalID string, totalCouncil ...int64) (*domain.ProposalSummary, error) {
 	approveCount, err := s.votes.CountVotes(ctx, proposalID, domain.VoteApprove)
 	if err != nil {
 		return nil, fmt.Errorf("counting approvals: %w", err)
@@ -89,9 +103,15 @@ func (s *VotingService) buildSummary(ctx context.Context, proposalID string) (*d
 	if err != nil {
 		return nil, fmt.Errorf("counting rejections: %w", err)
 	}
-	totalCouncil, err := s.votes.CountCouncilMembers(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("counting council members: %w", err)
+
+	var council int64
+	if len(totalCouncil) > 0 {
+		council = totalCouncil[0]
+	} else {
+		council, err = s.votes.CountCouncilMembers(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("counting council members: %w", err)
+		}
 	}
 
 	votes, err := s.votes.ListVotesByProposal(ctx, proposalID)
@@ -99,7 +119,7 @@ func (s *VotingService) buildSummary(ctx context.Context, proposalID string) (*d
 		return nil, fmt.Errorf("listing votes: %w", err)
 	}
 
-	majority := totalCouncil/2 + 1
+	majority := council/2 + 1
 	status := domain.ProposalPending
 	if approveCount >= majority {
 		status = domain.ProposalApproved
@@ -111,7 +131,7 @@ func (s *VotingService) buildSummary(ctx context.Context, proposalID string) (*d
 		ProposalID:   proposalID,
 		ApproveCount: approveCount,
 		RejectCount:  rejectCount,
-		TotalCouncil: totalCouncil,
+		TotalCouncil: council,
 		Status:       status,
 		Votes:        votes,
 	}, nil

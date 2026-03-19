@@ -49,6 +49,19 @@ func (m *mockPostRepo) ListPosts(_ context.Context, cursor string, limit int) ([
 	return result, nil
 }
 
+func (m *mockPostRepo) ListPostsByAuthor(_ context.Context, authorID string, limit int) ([]*domain.Post, error) {
+	var result []*domain.Post
+	for _, p := range m.posts {
+		if p.AuthorID == authorID {
+			result = append(result, p)
+		}
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
 func (m *mockPostRepo) UpdatePostBody(_ context.Context, id string, body string) (*domain.Post, error) {
 	p, ok := m.posts[id]
 	if !ok {

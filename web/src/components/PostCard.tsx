@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import type { Post } from "../api/types";
 import ReactionButton from "./ReactionButton";
 
@@ -33,7 +34,12 @@ export default function PostCard({ post }: PostCardProps) {
   return (
     <article className="rounded-lg bg-white p-4 shadow">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-900">{authorShort}</span>
+        <Link
+          to={`/profile/${post.author_id}`}
+          className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+        >
+          {authorShort}
+        </Link>
         <span className="text-xs text-gray-500" title={new Date(post.created_at).toLocaleString()}>
           {formatRelativeTime(post.created_at)}
           {post.edited_at && " (edited)"}

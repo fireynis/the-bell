@@ -15,6 +15,7 @@ type PostRepository interface {
 	CreatePost(ctx context.Context, post *domain.Post) error
 	GetPostByID(ctx context.Context, id string) (*domain.Post, error)
 	ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error)
+	ListPostsByAuthor(ctx context.Context, authorID string, limit int) ([]*domain.Post, error)
 	UpdatePostBody(ctx context.Context, id string, body string) (*domain.Post, error)
 	UpdatePostStatus(ctx context.Context, id string, status domain.PostStatus, reason string) error
 }
@@ -67,6 +68,10 @@ func (s *PostService) GetByID(ctx context.Context, id string) (*domain.Post, err
 
 func (s *PostService) ListFeed(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
 	return s.repo.ListPosts(ctx, cursor, limit)
+}
+
+func (s *PostService) ListByAuthor(ctx context.Context, authorID string, limit int) ([]*domain.Post, error) {
+	return s.repo.ListPostsByAuthor(ctx, authorID, limit)
 }
 
 func (s *PostService) UpdateBody(ctx context.Context, id, userID, body string) (*domain.Post, error) {

@@ -23,7 +23,7 @@ func (s *Server) routes() http.Handler {
 		if s.authMiddleware != nil {
 			r.Use(s.authMiddleware)
 		}
-		uh := handler.NewUserHandler()
+		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
 		r.Get("/", uh.GetMe)
 	})
 
@@ -43,6 +43,27 @@ func (s *Server) routes() http.Handler {
 				r.Patch("/{id}", ph.Update)
 				r.Delete("/{id}", ph.Delete)
 			})
+		})
+	}
+
+	if s.userService != nil {
+		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
+
+		r.Route("/api/v1/users", func(r chi.Router) {
+			// Authenticated endpoints for own profile
+			r.Group(func(r chi.Router) {
+				if s.authMiddleware != nil {
+					r.Use(s.authMiddleware)
+				}
+				r.Use(middleware.RequireActive)
+				r.Get("/me", uh.GetMe)
+				r.Put("/me", uh.UpdateMe)
+			})
+
+			// Public user profile endpoints
+			r.Get("/{id}", uh.GetByID)
+			r.Get("/{id}/posts", uh.ListPosts)
+			r.Get("/{id}/vouches", uh.ListVouches)
 		})
 	}
 

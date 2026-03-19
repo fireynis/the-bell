@@ -26,7 +26,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: bell <command>\n\nCommands:\n  serve    Start the HTTP server\n  setup    Bootstrap the town with initial council members\n")
+		fmt.Fprintf(os.Stderr, "usage: bell <command>\n\nCommands:\n  serve         Start the HTTP server\n  setup         Bootstrap the town with initial council members\n  check-roles   Run role promotion/demotion checks\n")
 		os.Exit(1)
 	}
 
@@ -35,6 +35,8 @@ func main() {
 		runServe(logger)
 	case "setup":
 		runSetup(logger)
+	case "check-roles":
+		runCheckRoles(logger)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		os.Exit(1)
@@ -123,6 +125,40 @@ func runSetup(logger *slog.Logger) {
 	}
 
 	logger.Info("town bootstrapped", "council_members", len(emails))
+}
+
+func runCheckRoles(logger *slog.Logger) {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	_, pool := mustInit(ctx, logger)
+	defer pool.Close()
+
+	queries := postgres.New(pool)
+	roleCheckerRepo := postgres.NewRoleCheckerRepo(queries)
+	checker := service.NewRoleChecker(roleCheckerRepo, logger, nil)
+
+	result, err := checker.Run(ctx)
+	if err != nil {
+		logger.Error("role check failed", "error", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Role check complete.\n")
+	fmt.Printf("  Users checked:  %d\n", result.UsersChecked)
+	fmt.Printf("  Promotions:     %d\n", len(result.Promotions))
+	fmt.Printf("  Demotions:      %d\n", len(result.Demotions))
+	fmt.Printf("  Trust marked:   %d\n", result.Marked)
+	fmt.Printf("  Trust cleared:  %d\n", result.Cleared)
+
+	for _, p := range result.Promotions {
+		fmt.Printf("  [PROMOTED] %s (%s): %s -> %s (%s)\n",
+			p.DisplayName, p.UserID, p.OldRole, p.NewRole, p.Reason)
+	}
+	for _, d := range result.Demotions {
+		fmt.Printf("  [DEMOTED]  %s (%s): %s -> %s (%s)\n",
+			d.DisplayName, d.UserID, d.OldRole, d.NewRole, d.Reason)
+	}
 }
 
 // mustInit loads config, connects to the database, and runs migrations.

@@ -5,10 +5,8 @@ import PostCard from "../components/PostCard.tsx";
 import { useFeed } from "../hooks/useFeed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 
-const MODERATOR_ROLES = new Set(["moderator", "council"]);
-
 export default function Home() {
-  const { session, user, logout } = useAuth();
+  const { session, logout } = useAuth();
   const { posts, loading, hasMore, error, loadMore, retry } = useFeed();
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -30,14 +28,12 @@ export default function Home() {
           >
             New Post
           </Link>
-          {user && MODERATOR_ROLES.has(user.role) && (
-            <Link
-              to="/moderation"
-              className="text-sm text-red-600 hover:text-red-500"
-            >
-              Moderation
-            </Link>
-          )}
+          <Link
+            to="/profile"
+            className="text-sm text-indigo-600 hover:text-indigo-500"
+          >
+            Profile
+          </Link>
           <Link
             to="/auth/settings"
             className="text-sm text-indigo-600 hover:text-indigo-500"

@@ -1,13 +1,4 @@
-import type {
-  ApiError,
-  User,
-  Post,
-  QueueResponse,
-  TakeActionRequest,
-  TakeActionResult,
-  Report,
-  ActionsResponse,
-} from "./types";
+import type { ApiError } from "./types";
 
 class ApiClient {
   private baseUrl: string;
@@ -47,6 +38,13 @@ class ApiClient {
     });
   }
 
+  put<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>(path, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+
   patch<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>(path, {
       method: "PATCH",
@@ -60,23 +58,3 @@ class ApiClient {
 }
 
 export const api = new ApiClient();
-
-// --- Typed API helpers ---
-
-export const userApi = {
-  getMe: () => api.get<User>("/me/"),
-};
-
-export const moderationApi = {
-  getPost: (id: string) => api.get<Post>(`/posts/${id}`),
-  getModerationQueue: (limit = 20, offset = 0) =>
-    api.get<QueueResponse>(`/moderation/queue?limit=${limit}&offset=${offset}`),
-  takeAction: (req: TakeActionRequest) =>
-    api.post<TakeActionResult>("/moderation/actions", req),
-  updateReportStatus: (reportId: string, status: string) =>
-    api.patch<Report>(`/moderation/reports/${reportId}`, { status }),
-  getActionHistory: (userId: string, limit = 20, offset = 0) =>
-    api.get<ActionsResponse>(
-      `/moderation/actions/${userId}?limit=${limit}&offset=${offset}`,
-    ),
-};

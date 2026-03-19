@@ -19,6 +19,8 @@ type Server struct {
 	logger                  *slog.Logger
 	srv                     *http.Server
 	postService             *service.PostService
+	userService             *service.UserService
+	vouchService            *service.VouchService
 	reportService           *service.ReportService
 	moderationActionService *service.ModerationActionService
 	approvalService         *service.ApprovalService
@@ -32,6 +34,16 @@ type Option func(*Server)
 // WithPostService sets the PostService used by post handlers.
 func WithPostService(ps *service.PostService) Option {
 	return func(s *Server) { s.postService = ps }
+}
+
+// WithUserService sets the UserService used by user handlers.
+func WithUserService(us *service.UserService) Option {
+	return func(s *Server) { s.userService = us }
+}
+
+// WithVouchService sets the VouchService used by user profile vouch listings.
+func WithVouchService(vs *service.VouchService) Option {
+	return func(s *Server) { s.vouchService = vs }
 }
 
 // WithReportService sets the ReportService used by report handlers.

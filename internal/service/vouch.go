@@ -18,6 +18,8 @@ type VouchRepository interface {
 	GetVouchByID(ctx context.Context, id string) (*domain.Vouch, error)
 	GetVouchByPair(ctx context.Context, voucherID, voucheeID string) (*domain.Vouch, error)
 	CountVouchesByVoucherSince(ctx context.Context, voucherID string, since time.Time) (int64, error)
+	ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]*domain.Vouch, error)
+	ListActiveVouchesByVoucher(ctx context.Context, voucherID string) ([]*domain.Vouch, error)
 	RevokeVouch(ctx context.Context, id string) error
 }
 
@@ -132,6 +134,16 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	}
 
 	return vouch, nil
+}
+
+// ListReceivedVouches returns active vouches received by the given user.
+func (s *VouchService) ListReceivedVouches(ctx context.Context, userID string) ([]*domain.Vouch, error) {
+	return s.vouches.ListActiveVouchesByVouchee(ctx, userID)
+}
+
+// ListGivenVouches returns active vouches given by the given user.
+func (s *VouchService) ListGivenVouches(ctx context.Context, userID string) ([]*domain.Vouch, error) {
+	return s.vouches.ListActiveVouchesByVoucher(ctx, userID)
 }
 
 // Revoke revokes an existing vouch. Only the original voucher, a moderator,

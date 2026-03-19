@@ -56,6 +56,26 @@ func (m *mockVouchRepo) CountVouchesByVoucherSince(_ context.Context, voucherID 
 	return m.counts[voucherID], nil
 }
 
+func (m *mockVouchRepo) ListActiveVouchesByVouchee(_ context.Context, voucheeID string) ([]*domain.Vouch, error) {
+	var result []*domain.Vouch
+	for _, v := range m.vouches {
+		if v.VoucheeID == voucheeID && v.Status == domain.VouchActive {
+			result = append(result, v)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockVouchRepo) ListActiveVouchesByVoucher(_ context.Context, voucherID string) ([]*domain.Vouch, error) {
+	var result []*domain.Vouch
+	for _, v := range m.vouches {
+		if v.VoucherID == voucherID && v.Status == domain.VouchActive {
+			result = append(result, v)
+		}
+	}
+	return result, nil
+}
+
 func (m *mockVouchRepo) RevokeVouch(_ context.Context, id string) error {
 	if m.revokeErr != nil {
 		return m.revokeErr
