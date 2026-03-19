@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -39,6 +40,9 @@ func (s *Server) routes() http.Handler {
 				}
 				r.Use(middleware.RequireActive)
 				r.Use(middleware.RequireRole(domain.RoleMember))
+				if s.rateLimiter != nil {
+					r.Use(s.rateLimiter.Limit("posts", 10, time.Hour))
+				}
 				r.Post("/", ph.Create)
 				r.Patch("/{id}", ph.Update)
 				r.Delete("/{id}", ph.Delete)
@@ -77,6 +81,9 @@ func (s *Server) routes() http.Handler {
 			}
 			r.Use(middleware.RequireActive)
 			r.Use(middleware.RequireRole(domain.RoleMember))
+			if s.rateLimiter != nil {
+				r.Use(s.rateLimiter.Limit("reports", 5, time.Hour))
+			}
 			r.Post("/", rh.SubmitReport)
 		})
 	}
@@ -111,6 +118,9 @@ func (s *Server) routes() http.Handler {
 			}
 			r.Use(middleware.RequireActive)
 			r.Use(middleware.RequireRole(domain.RoleCouncil))
+			if s.rateLimiter != nil {
+				r.Use(s.rateLimiter.Limit("vouches", 3, 24*time.Hour))
+			}
 			r.Get("/pending", ah.ListPending)
 			r.Post("/approve/{id}", ah.Approve)
 		})

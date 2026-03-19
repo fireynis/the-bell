@@ -23,6 +23,7 @@ import (
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kratos "github.com/ory/kratos-client-go"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -97,6 +98,26 @@ func runServe(logger *slog.Logger) {
 	kratosClient := kratos.NewAPIClient(kratosCfg)
 	authMiddleware := middleware.KratosAuth(kratosClient, userSvc, logger)
 
+	// Rate limiter (optional, requires REDIS_URL)
+	var rateLimiter *middleware.RateLimiter
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			logger.Error("parsing REDIS_URL", "error", err)
+			os.Exit(1)
+		}
+		rdb := redis.NewClient(opts)
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			logger.Warn("redis not reachable, rate limiting disabled", "error", err)
+		} else {
+			logger.Info("redis connected, rate limiting enabled")
+		}
+		rlClient := middleware.NewRedisRateLimiterClient(rdb)
+		rateLimiter = middleware.NewRateLimiter(rlClient, logger)
+	} else {
+		logger.Info("REDIS_URL not set, rate limiting disabled")
+	}
+
 	srv := server.New(cfg, pool, logger,
 		server.WithAuth(authMiddleware),
 		server.WithUserService(userSvc),
@@ -107,6 +128,7 @@ func runServe(logger *slog.Logger) {
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
 		server.WithStatsService(statsSvc),
+		server.WithRateLimiter(rateLimiter),
 	)
 
 	errCh := make(chan error, 1)

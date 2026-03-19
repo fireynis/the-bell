@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/config"
+	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,6 +28,7 @@ type Server struct {
 	votingService           *service.VotingService
 	statsService            *service.StatsService
 	authMiddleware          func(http.Handler) http.Handler
+	rateLimiter             *middleware.RateLimiter
 }
 
 // Option configures the Server.
@@ -75,6 +77,11 @@ func WithStatsService(ss *service.StatsService) Option {
 // WithAuth sets the authentication middleware for protected routes.
 func WithAuth(mw func(http.Handler) http.Handler) Option {
 	return func(s *Server) { s.authMiddleware = mw }
+}
+
+// WithRateLimiter sets the rate limiter for request throttling.
+func WithRateLimiter(rl *middleware.RateLimiter) Option {
+	return func(s *Server) { s.rateLimiter = rl }
 }
 
 // New creates a Server with configured routes and middleware.
