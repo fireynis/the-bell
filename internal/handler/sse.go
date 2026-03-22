@@ -10,7 +10,7 @@ import (
 	"github.com/fireynis/the-bell/internal/sse"
 )
 
-const sseHeartbeatInterval = 30 * time.Second
+const sseHeartbeatInterval = 10 * time.Second
 
 // SSEHandler serves Server-Sent Events for real-time feed updates.
 type SSEHandler struct {
@@ -43,6 +43,10 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher.Flush()
+
+	// Extend write deadline immediately — the default WriteTimeout (15s) would
+	// kill this long-lived connection before the first heartbeat fires.
+	_ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeatInterval + 10*time.Second))
 
 	events, err := h.broker.Subscribe(r.Context())
 	if err != nil {
