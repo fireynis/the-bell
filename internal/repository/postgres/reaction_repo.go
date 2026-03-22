@@ -78,6 +78,36 @@ func (r *ReactionRepo) ListByPost(ctx context.Context, postID string) ([]*domain
 	return reactions, nil
 }
 
+func (r *ReactionRepo) BatchCountByPosts(ctx context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error) {
+	rows, err := r.q.BatchCountReactionsByPosts(ctx, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]map[domain.ReactionType]int)
+	for _, row := range rows {
+		if result[row.PostID] == nil {
+			result[row.PostID] = make(map[domain.ReactionType]int)
+		}
+		result[row.PostID][domain.ReactionType(row.ReactionType)] = int(row.Count)
+	}
+	return result, nil
+}
+
+func (r *ReactionRepo) BatchGetUserReactions(ctx context.Context, userID string, postIDs []string) (map[string][]domain.ReactionType, error) {
+	rows, err := r.q.BatchGetUserReactionsForPosts(ctx, BatchGetUserReactionsForPostsParams{
+		UserID:  userID,
+		PostIds: postIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]domain.ReactionType)
+	for _, row := range rows {
+		result[row.PostID] = append(result[row.PostID], domain.ReactionType(row.ReactionType))
+	}
+	return result, nil
+}
+
 func reactionFromRow(row Reaction) *domain.Reaction {
 	return &domain.Reaction{
 		ID:        row.ID,

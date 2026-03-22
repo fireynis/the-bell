@@ -21,6 +21,8 @@ type Post struct {
 	EditedAt          *time.Time `json:"edited_at,omitempty"`
 	AuthorDisplayName string     `json:"author_display_name,omitempty"`
 	AuthorAvatarURL   string     `json:"author_avatar_url,omitempty"`
+	ReactionCounts    map[ReactionType]int `json:"reaction_counts,omitempty"`
+	UserReactions     []ReactionType       `json:"user_reactions,omitempty"`
 }
 
 const MaxPostBodyLength = 1000

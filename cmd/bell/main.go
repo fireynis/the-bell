@@ -162,6 +162,7 @@ func runServe(logger *slog.Logger) {
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
 		server.WithReactionService(reactionSvc),
+		server.WithReactionRepo(reactionRepo),
 		server.WithStatsService(statsSvc),
 		server.WithConfigRepo(configRepo),
 		server.WithRateLimiter(rateLimiter),

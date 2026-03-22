@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/config"
+	"github.com/fireynis/the-bell/internal/handler"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/storage"
@@ -30,6 +31,7 @@ type Server struct {
 	reactionService         *service.ReactionService
 	statsService            *service.StatsService
 	configRepo              service.ConfigRepository
+	reactionRepo            handler.ReactionEnricher
 	imageStore              storage.Storage
 	authMiddleware          func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
@@ -86,6 +88,11 @@ func WithStatsService(ss *service.StatsService) Option {
 // WithConfigRepo sets the config repository for town configuration endpoints.
 func WithConfigRepo(cr service.ConfigRepository) Option {
 	return func(s *Server) { s.configRepo = cr }
+}
+
+// WithReactionRepo sets the reaction enricher used to attach reaction data to posts.
+func WithReactionRepo(rr handler.ReactionEnricher) Option {
+	return func(s *Server) { s.reactionRepo = rr }
 }
 
 // WithImageStore sets the image storage backend for uploads.

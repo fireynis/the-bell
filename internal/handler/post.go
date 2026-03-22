@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,6 +23,12 @@ const (
 	maxLimit     = 100
 )
 
+// ReactionEnricher loads batch reaction data for posts.
+type ReactionEnricher interface {
+	BatchCountByPosts(ctx context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error)
+	BatchGetUserReactions(ctx context.Context, userID string, postIDs []string) (map[string][]domain.ReactionType, error)
+}
+
 // PostHandlerOption configures a PostHandler.
 type PostHandlerOption func(*PostHandler)
 
@@ -30,10 +37,16 @@ func WithStorage(s storage.Storage) PostHandlerOption {
 	return func(h *PostHandler) { h.store = s }
 }
 
+// WithReactionEnricher attaches a ReactionEnricher for feed enrichment.
+func WithReactionEnricher(re ReactionEnricher) PostHandlerOption {
+	return func(h *PostHandler) { h.reactionEnricher = re }
+}
+
 // PostHandler handles HTTP requests for post operations.
 type PostHandler struct {
-	posts *service.PostService
-	store storage.Storage
+	posts            *service.PostService
+	store            storage.Storage
+	reactionEnricher ReactionEnricher
 }
 
 // NewPostHandler creates a PostHandler.
@@ -158,6 +171,8 @@ func (h *PostHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.enrichPosts(r.Context(), r, []*domain.Post{post})
+
 	JSON(w, http.StatusOK, post)
 }
 
@@ -175,6 +190,8 @@ func (h *PostHandler) ListFeed(w http.ResponseWriter, r *http.Request) {
 	if posts == nil {
 		posts = []*domain.Post{}
 	}
+
+	h.enrichPosts(r.Context(), r, posts)
 
 	resp := listFeedResponse{Posts: posts}
 	if len(posts) == limit {
@@ -225,6 +242,36 @@ func (h *PostHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// enrichPosts attaches reaction counts and user reactions to posts.
+func (h *PostHandler) enrichPosts(ctx context.Context, r *http.Request, posts []*domain.Post) {
+	if h.reactionEnricher == nil || len(posts) == 0 {
+		return
+	}
+
+	postIDs := make([]string, len(posts))
+	for i, p := range posts {
+		postIDs[i] = p.ID
+	}
+
+	if counts, err := h.reactionEnricher.BatchCountByPosts(ctx, postIDs); err == nil {
+		for _, p := range posts {
+			if c, ok := counts[p.ID]; ok {
+				p.ReactionCounts = c
+			}
+		}
+	}
+
+	if user, ok := middleware.UserFromContext(ctx); ok {
+		if userReactions, err := h.reactionEnricher.BatchGetUserReactions(ctx, user.ID, postIDs); err == nil {
+			for _, p := range posts {
+				if ur, ok := userReactions[p.ID]; ok {
+					p.UserReactions = ur
+				}
+			}
+		}
+	}
 }
 
 func parseLimit(s string) int {
