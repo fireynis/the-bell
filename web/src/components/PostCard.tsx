@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import type { Post } from "../api/types";
 import Avatar from "./Avatar";
+import { ImageLightbox } from "./ImageLightbox";
 import ReactionButton from "./ReactionButton";
 
 const REACTION_TYPES = ["bell", "heart", "celebrate"];
@@ -25,6 +27,7 @@ interface PostCardProps {
 }
 
 export default function PostCard({ post }: PostCardProps) {
+  const [lightbox, setLightbox] = useState(false);
   const authorName = post.author_display_name || post.author_id.slice(0, 8);
 
   return (
@@ -68,12 +71,18 @@ export default function PostCard({ post }: PostCardProps) {
       </p>
 
       {post.image_path && (
-        <img
-          src={post.image_path}
-          alt=""
-          className="mb-4 max-h-96 w-full object-cover"
-          style={{ borderRadius: "var(--radius-md)" }}
-        />
+        <>
+          <img
+            src={post.image_path}
+            alt=""
+            loading="lazy"
+            onClick={() => setLightbox(true)}
+            className="mb-4 mt-3 rounded-lg max-h-96 w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+          />
+          {lightbox && (
+            <ImageLightbox src={post.image_path} onClose={() => setLightbox(false)} />
+          )}
+        </>
       )}
 
       <div className="flex gap-1.5">
