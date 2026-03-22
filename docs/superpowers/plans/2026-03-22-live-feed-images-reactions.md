@@ -32,8 +32,7 @@
 - `web/src/components/NewPostsBanner.tsx` — "N new posts" banner component
 - `web/src/components/Toast.tsx` — Reaction notification toast
 - `web/src/components/ImageLightbox.tsx` — Simple image lightbox overlay
-- `web/public/sounds/bell.mp3` — Bell notification sound
-- `web/public/sounds/chime.mp3` — Reaction notification sound
+- (No sound files — sounds are synthesized at runtime via Web Audio API oscillators)
 
 ### Modified Files (Backend)
 - `internal/domain/post.go` — Add ReactionCounts + UserReactions fields to Post
@@ -435,6 +434,7 @@ git commit -m "feat(reactions): add reaction service with validation and tests"
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -444,15 +444,34 @@ import (
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/sse"
 )
 
 // ReactionHandler handles HTTP requests for reaction operations.
 type ReactionHandler struct {
 	reactions *service.ReactionService
+	posts     *service.PostService
+	publisher ReactionEventPublisher
 }
 
-func NewReactionHandler(reactions *service.ReactionService) *ReactionHandler {
-	return &ReactionHandler{reactions: reactions}
+// ReactionEventPublisher publishes reaction events to SSE clients.
+// Nil-safe: if no publisher is set, events are simply not published.
+type ReactionEventPublisher interface {
+	PublishReaction(ctx context.Context, event sse.ReactionEvent) error
+}
+
+type ReactionHandlerOption func(*ReactionHandler)
+
+func WithReactionPublisher(pub ReactionEventPublisher) ReactionHandlerOption {
+	return func(h *ReactionHandler) { h.publisher = pub }
+}
+
+func NewReactionHandler(reactions *service.ReactionService, posts *service.PostService, opts ...ReactionHandlerOption) *ReactionHandler {
+	h := &ReactionHandler{reactions: reactions, posts: posts}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 type addReactionRequest struct {
@@ -461,59 +480,71 @@ type addReactionRequest struct {
 
 // Add handles POST /api/v1/posts/{postId}/reactions
 func (h *ReactionHandler) Add(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFromContext(r.Context())
-	if user == nil {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	postID := chi.URLParam(r, "postId")
 	if postID == "" {
-		respondError(w, http.StatusBadRequest, "missing post ID")
+		Error(w, http.StatusBadRequest, "missing post ID")
 		return
 	}
 
 	var req addReactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid request body")
+		Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	reaction, err := h.reactions.Add(r.Context(), user.ID, postID, domain.ReactionType(req.Type))
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidReactionType) {
-			respondError(w, http.StatusBadRequest, err.Error())
+			Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to add reaction")
+		Error(w, http.StatusInternalServerError, "failed to add reaction")
 		return
 	}
 
-	respondJSON(w, http.StatusOK, reaction)
+	// Publish reaction event for SSE notification (if publisher is wired).
+	if h.publisher != nil && h.posts != nil {
+		if post, err := h.posts.GetByID(r.Context(), postID); err == nil {
+			_ = h.publisher.PublishReaction(r.Context(), sse.ReactionEvent{
+				PostID:       postID,
+				PostAuthorID: post.AuthorID,
+				ReactionType: string(reaction.Type),
+				ReactorID:    user.ID,
+			})
+		}
+	}
+
+	JSON(w, http.StatusOK, reaction)
 }
 
 // Remove handles DELETE /api/v1/posts/{postId}/reactions/{type}
 func (h *ReactionHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFromContext(r.Context())
-	if user == nil {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	postID := chi.URLParam(r, "postId")
 	reactionType := chi.URLParam(r, "type")
 	if postID == "" || reactionType == "" {
-		respondError(w, http.StatusBadRequest, "missing post ID or reaction type")
+		Error(w, http.StatusBadRequest, "missing post ID or reaction type")
 		return
 	}
 
 	err := h.reactions.Remove(r.Context(), user.ID, postID, domain.ReactionType(reactionType))
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidReactionType) {
-			respondError(w, http.StatusBadRequest, err.Error())
+			Error(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to remove reaction")
+		Error(w, http.StatusInternalServerError, "failed to remove reaction")
 		return
 	}
 
@@ -550,7 +581,11 @@ Inside the `if s.postService != nil` block, after the existing posts routes, add
 
 ```go
 if s.reactionService != nil {
-	rh := handler.NewReactionHandler(s.reactionService)
+	var rhOpts []handler.ReactionHandlerOption
+	if s.sseBroker != nil {
+		rhOpts = append(rhOpts, handler.WithReactionPublisher(s.sseBroker))
+	}
+	rh := handler.NewReactionHandler(s.reactionService, s.postService, rhOpts...)
 	r.Route("/v1/posts/{postId}/reactions", func(r chi.Router) {
 		if s.authMiddleware != nil {
 			r.Use(s.authMiddleware)
@@ -625,6 +660,8 @@ FROM reactions
 WHERE user_id = @user_id AND post_id = ANY(@post_ids::text[]);
 ```
 
+**Note:** sqlc will generate params structs for both queries (e.g., `BatchCountReactionsByPostsParams{ PostIds []string }` and `BatchGetUserReactionsForPostsParams{ UserID string, PostIds []string }`). The adapter methods below use these structs. After running `sqlc generate`, check the generated file to confirm field names and adjust if needed.
+
 - [ ] **Step 2: Run sqlc generate**
 
 Run: `cd /home/jeremy/services/the-bell && sqlc generate`
@@ -643,7 +680,7 @@ UserReactions  []ReactionType       `json:"user_reactions,omitempty"`
 Add to `internal/repository/postgres/reaction_repo.go`:
 ```go
 func (r *ReactionRepo) BatchCountByPosts(ctx context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error) {
-	rows, err := r.q.BatchCountReactionsByPosts(ctx, postIDs)
+	rows, err := r.q.BatchCountReactionsByPosts(ctx, BatchCountReactionsByPostsParams{PostIds: postIDs})
 	if err != nil {
 		return nil, err
 	}
@@ -708,7 +745,7 @@ if h.reactionEnricher != nil && len(posts) > 0 {
 			p.ReactionCounts = c
 		}
 	}
-	if user := middleware.UserFromContext(r.Context()); user != nil {
+	if user, ok := middleware.UserFromContext(r.Context()); ok {
 		userReactions, _ := h.reactionEnricher.BatchGetUserReactions(r.Context(), user.ID, postIDs)
 		for _, p := range posts {
 			if ur, ok := userReactions[p.ID]; ok {
@@ -1009,6 +1046,7 @@ Create `internal/handler/sse.go`:
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -1030,15 +1068,15 @@ func NewSSEHandler(broker *sse.Broker) *SSEHandler {
 
 // ServeFeed handles GET /api/v1/feed/live
 func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
-	user := middleware.UserFromContext(r.Context())
-	if user == nil {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		respondError(w, http.StatusInternalServerError, "streaming not supported")
+		Error(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -1053,7 +1091,7 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 
 	events, err := h.broker.Subscribe(r.Context())
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to subscribe")
+		Error(w, http.StatusInternalServerError, "failed to subscribe")
 		return
 	}
 
@@ -1126,74 +1164,9 @@ if s.publisher != nil {
 
 Add `"encoding/json"` to imports.
 
-- [ ] **Step 4: Add event publishing to ReactionService.Add**
+- [ ] **Step 4: Reaction event publishing is already wired in the handler**
 
-In `internal/service/reaction.go`, add similar publisher:
-```go
-type ReactionEventPublisher interface {
-	PublishReaction(ctx context.Context, event ReactionEvent) error
-}
-
-type ReactionEvent struct {
-	PostID       string `json:"post_id"`
-	PostAuthorID string `json:"post_author_id"`
-	ReactionType string `json:"reaction_type"`
-	ReactorID    string `json:"reactor_id"`
-}
-```
-
-Wait — the ReactionService needs to know the post author ID. It doesn't have access to the posts repo. Two options:
-1. Pass a `PostLookup` interface to the service
-2. Have the handler resolve the author and pass it down
-
-Better: Have the handler look up the post author after calling `Add()`, then publish the reaction event. This keeps the service focused.
-
-So instead, add the publishing to the **handler**:
-
-In `internal/handler/reaction.go`, add a publisher field:
-```go
-type ReactionHandler struct {
-	reactions *service.ReactionService
-	posts     *service.PostService
-	publisher ReactionEventPublisher
-}
-
-type ReactionEventPublisher interface {
-	PublishReaction(ctx context.Context, event sse.ReactionEvent) error
-}
-```
-
-Update constructor:
-```go
-func NewReactionHandler(reactions *service.ReactionService, posts *service.PostService, opts ...ReactionHandlerOption) *ReactionHandler {
-	h := &ReactionHandler{reactions: reactions, posts: posts}
-	for _, opt := range opts {
-		opt(h)
-	}
-	return h
-}
-
-type ReactionHandlerOption func(*ReactionHandler)
-
-func WithReactionPublisher(pub ReactionEventPublisher) ReactionHandlerOption {
-	return func(h *ReactionHandler) { h.publisher = pub }
-}
-```
-
-In `Add()`, after successfully adding the reaction, publish:
-```go
-if h.publisher != nil {
-	post, err := h.posts.GetByID(r.Context(), postID)
-	if err == nil {
-		_ = h.publisher.PublishReaction(r.Context(), sse.ReactionEvent{
-			PostID:       postID,
-			PostAuthorID: post.AuthorID,
-			ReactionType: string(reaction.Type),
-			ReactorID:    user.ID,
-		})
-	}
-}
-```
+The `ReactionHandler` was built in Task 3 with `ReactionEventPublisher` support from the start. The `Add()` method already publishes reaction events after successful add (see Task 3 handler code). In this task, just pass the SSE broker as the publisher via `WithReactionPublisher(sseBroker)` when constructing the handler in `routes.go`.
 
 - [ ] **Step 5: Add SSE broker to server and register SSE route**
 
@@ -1209,7 +1182,7 @@ func WithSSEBroker(b *sse.Broker) Option {
 }
 ```
 
-In `routes.go`, the SSE route must be registered **outside** the `/api` group to avoid `ContentTypeJSON` middleware. In the `routes()` method, after the `/api` group and before the SPA handler, add:
+In `routes.go`, the SSE route must be registered **outside** the `/api` group to avoid `ContentTypeJSON` middleware. In the `routes()` method, **before** the `r.Route("/api", ...)` group (so chi matches the more-specific SSE path first), add:
 
 ```go
 // SSE endpoint — outside /api group to avoid ContentTypeJSON middleware.
@@ -1362,18 +1335,15 @@ In Home.tsx:
 4. On banner click: prepend pending posts to feed, call flush, scroll to top
 5. Render `<NewPostsBanner>` above the post list
 
-- [ ] **Step 4: Add slide-down animation to Tailwind config**
+- [ ] **Step 4: Add slide-down animation to CSS**
 
-In `web/tailwind.config.js` (or equivalent), add under `extend.animation`:
-```js
-'slide-down': 'slideDown 0.3s ease-out',
-```
-And under `extend.keyframes`:
-```js
-slideDown: {
-  '0%': { transform: 'translateY(-100%)', opacity: '0' },
-  '100%': { transform: 'translateY(0)', opacity: '1' },
-},
+This project uses Tailwind v4 with CSS-first config. Add custom keyframes to `web/src/index.css`:
+```css
+@keyframes slideDown {
+  0% { transform: translateY(-100%); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+.animate-slide-down { animation: slideDown 0.3s ease-out; }
 ```
 
 - [ ] **Step 5: Verify TypeScript compiles**
@@ -1384,7 +1354,7 @@ Expected: No errors
 - [ ] **Step 6: Commit**
 
 ```bash
-git add web/src/hooks/useLiveFeed.ts web/src/components/NewPostsBanner.tsx web/src/pages/Home.tsx web/tailwind.config.*
+git add web/src/hooks/useLiveFeed.ts web/src/components/NewPostsBanner.tsx web/src/pages/Home.tsx web/src/index.css
 git commit -m "feat: add live feed with SSE, new posts banner with 15s debounce"
 ```
 
@@ -1398,52 +1368,14 @@ git commit -m "feat: add live feed with SSE, new posts banner with 15s debounce"
 - Create: `web/public/sounds/chime.mp3` — (generate or source a short chime sound)
 - Modify: `web/src/pages/Home.tsx` — Add mute toggle + integrate sound
 
-- [ ] **Step 1: Create useSound hook**
+- [ ] **Step 1: Create useSound hook with synthesized tones (no MP3 files needed)**
+
+Sounds are synthesized at runtime using the Web Audio API with oscillators and exponential decay. This avoids needing external sound files.
 
 ```typescript
 import { useCallback, useRef } from "react";
 
-export function useSound(src: string) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const unlockedRef = useRef(false);
-
-  const play = useCallback(() => {
-    if (!audioRef.current) {
-      audioRef.current = new Audio(src);
-      audioRef.current.volume = 0.5;
-    }
-
-    audioRef.current.currentTime = 0;
-    const promise = audioRef.current.play();
-    if (promise) {
-      promise
-        .then(() => { unlockedRef.current = true; })
-        .catch(() => {
-          // Autoplay blocked — silently skip, will retry on next user interaction
-        });
-    }
-  }, [src]);
-
-  return { play };
-}
-```
-
-- [ ] **Step 2: Generate sound files**
-
-For the bell and chime sounds, we need small MP3 files. Options:
-1. Use Web Audio API to synthesize them at runtime (no file needed, but more complex)
-2. Source royalty-free sounds
-
-For simplicity, create a small utility that generates a bell tone using Web Audio API at runtime. But to keep it simpler and match the spec, ship actual MP3 files.
-
-Create placeholder files — the developer should source actual royalty-free bell/chime sounds (~5-10KB MP3 files) and place them at:
-- `web/public/sounds/bell.mp3`
-- `web/public/sounds/chime.mp3`
-
-Alternatively: synthesize sounds using the Web Audio API directly in the `useSound` hook (oscillator with exponential decay). This avoids needing actual files:
-
-```typescript
-export function useSynthBell() {
+export function useSound() {
   const ctxRef = useRef<AudioContext | null>(null);
 
   const play = useCallback((frequency = 800, duration = 0.3) => {
@@ -1452,6 +1384,9 @@ export function useSynthBell() {
         ctxRef.current = new AudioContext();
       }
       const ctx = ctxRef.current;
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -1463,7 +1398,7 @@ export function useSynthBell() {
       osc.start(ctx.currentTime);
       osc.stop(ctx.currentTime + duration);
     } catch {
-      // Silently skip if audio context fails
+      // Silently skip if AudioContext fails (autoplay policy, etc.)
     }
   }, []);
 
@@ -1473,8 +1408,6 @@ export function useSynthBell() {
   return { playBell, playChime };
 }
 ```
-
-Use synthesized sounds — this is simpler and requires no external files.
 
 - [ ] **Step 3: Add mute toggle to Home.tsx**
 
@@ -1531,7 +1464,7 @@ useEffect(() => {
 
 - [ ] **Step 5: Add ring animation CSS**
 
-In the global CSS or Tailwind config:
+Add to `web/src/index.css` (alongside the slide-down animation):
 ```css
 @keyframes ring {
   0% { transform: rotate(0); }
@@ -1545,8 +1478,6 @@ In the global CSS or Tailwind config:
 .animate-ring { animation: ring 0.5s ease-in-out; }
 ```
 
-Add to Tailwind config keyframes/animation.
-
 - [ ] **Step 6: Verify TypeScript compiles**
 
 Run: `cd /home/jeremy/services/the-bell/web && npx tsc --noEmit`
@@ -1555,7 +1486,7 @@ Expected: No errors
 - [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/hooks/useSound.ts web/src/pages/Home.tsx web/tailwind.config.* web/src/index.css
+git add web/src/hooks/useSound.ts web/src/pages/Home.tsx web/src/index.css
 git commit -m "feat: add bell sound notifications with mute toggle and ring animation"
 ```
 
