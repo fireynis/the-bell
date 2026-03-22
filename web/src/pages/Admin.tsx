@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import Spinner from "../components/Spinner";
+import ErrorBanner from "../components/ErrorBanner";
+import ThemeSettings from "./admin/ThemeSettings";
 import type {
   ApiError,
   TownStats,
@@ -14,17 +17,30 @@ import type {
 function StatCard({
   label,
   value,
-  accent,
+  accentVar,
 }: {
   label: string;
   value: number;
-  accent?: string;
+  accentVar?: string;
 }) {
-  const colorClass = accent ?? "text-indigo-600";
   return (
-    <div className="rounded-lg bg-white p-5 shadow">
-      <p className="text-sm font-medium text-gray-500">{label}</p>
-      <p className={`mt-1 text-3xl font-bold ${colorClass}`}>{value}</p>
+    <div
+      className="p-5"
+      style={{
+        backgroundColor: "var(--color-surface)",
+        boxShadow: "var(--shadow-sm)",
+        borderRadius: "var(--radius-lg)",
+      }}
+    >
+      <p className="text-sm font-medium" style={{ color: "var(--color-text-secondary)" }}>
+        {label}
+      </p>
+      <p
+        className="mt-1 text-3xl font-bold"
+        style={{ color: accentVar ?? "var(--color-primary)" }}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -36,17 +52,21 @@ function StatsPanel({ stats }: { stats: TownStats }) {
       <StatCard
         label="Posts Today"
         value={stats.posts_today}
-        accent="text-green-600"
+        accentVar="var(--color-success)"
       />
       <StatCard
         label="Active Moderators"
         value={stats.active_moderators}
-        accent="text-blue-600"
+        accentVar="var(--color-info)"
       />
       <StatCard
         label="Pending Users"
         value={stats.pending_users}
-        accent={stats.pending_users > 0 ? "text-amber-600" : "text-gray-400"}
+        accentVar={
+          stats.pending_users > 0
+            ? "var(--color-warning)"
+            : "var(--color-text-tertiary)"
+        }
       />
     </div>
   );
@@ -63,11 +83,18 @@ function PendingUsersSection({
 }) {
   if (users.length === 0) {
     return (
-      <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="text-lg font-semibold text-gray-900">
+      <div
+        className="p-6"
+        style={{
+          backgroundColor: "var(--color-surface)",
+          boxShadow: "var(--shadow-sm)",
+          borderRadius: "var(--radius-lg)",
+        }}
+      >
+        <h2 className="text-lg font-semibold" style={{ color: "var(--color-text)" }}>
           Pending User Approvals
         </h2>
-        <p className="mt-2 text-sm text-gray-500">
+        <p className="mt-2 text-sm" style={{ color: "var(--color-text-secondary)" }}>
           No pending users at this time.
         </p>
       </div>
@@ -75,28 +102,44 @@ function PendingUsersSection({
   }
 
   return (
-    <div className="rounded-lg bg-white p-6 shadow">
-      <h2 className="mb-4 text-lg font-semibold text-gray-900">
+    <div
+      className="p-6"
+      style={{
+        backgroundColor: "var(--color-surface)",
+        boxShadow: "var(--shadow-sm)",
+        borderRadius: "var(--radius-lg)",
+      }}
+    >
+      <h2 className="mb-4 text-lg font-semibold" style={{ color: "var(--color-text)" }}>
         Pending User Approvals
       </h2>
-      <ul className="divide-y divide-gray-100">
+      <ul style={{ borderTop: "1px solid var(--color-border-light)" }}>
         {users.map((user) => (
-          <li key={user.id} className="flex items-center justify-between py-3">
+          <li
+            key={user.id}
+            className="flex items-center justify-between py-3"
+            style={{ borderBottom: "1px solid var(--color-border-light)" }}
+          >
             <div>
               <Link
                 to={`/profile/${user.id}`}
-                className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                className="text-sm font-medium"
+                style={{ color: "var(--color-primary)" }}
               >
                 {user.display_name || user.id.slice(0, 8)}
               </Link>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
                 Joined {new Date(user.joined_at).toLocaleDateString()}
               </p>
             </div>
             <button
               onClick={() => onApprove(user.id)}
               disabled={approving === user.id}
-              className="rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              style={{
+                backgroundColor: "var(--color-success)",
+                color: "var(--color-text-inverse)",
+              }}
             >
               {approving === user.id ? "Approving..." : "Approve"}
             </button>
@@ -118,11 +161,18 @@ function CouncilVotesSection({
 }) {
   if (proposals.length === 0) {
     return (
-      <div className="rounded-lg bg-white p-6 shadow">
-        <h2 className="text-lg font-semibold text-gray-900">
+      <div
+        className="p-6"
+        style={{
+          backgroundColor: "var(--color-surface)",
+          boxShadow: "var(--shadow-sm)",
+          borderRadius: "var(--radius-lg)",
+        }}
+      >
+        <h2 className="text-lg font-semibold" style={{ color: "var(--color-text)" }}>
           Council Proposals
         </h2>
-        <p className="mt-2 text-sm text-gray-500">
+        <p className="mt-2 text-sm" style={{ color: "var(--color-text-secondary)" }}>
           No open proposals at this time.
         </p>
       </div>
@@ -130,26 +180,39 @@ function CouncilVotesSection({
   }
 
   return (
-    <div className="rounded-lg bg-white p-6 shadow">
-      <h2 className="mb-4 text-lg font-semibold text-gray-900">
+    <div
+      className="p-6"
+      style={{
+        backgroundColor: "var(--color-surface)",
+        boxShadow: "var(--shadow-sm)",
+        borderRadius: "var(--radius-lg)",
+      }}
+    >
+      <h2 className="mb-4 text-lg font-semibold" style={{ color: "var(--color-text)" }}>
         Council Proposals
       </h2>
       <ul className="space-y-4">
         {proposals.map((proposal) => (
           <li
             key={proposal.proposal_id}
-            className="rounded-md border border-gray-200 p-4"
+            className="p-4"
+            style={{
+              borderWidth: "1px",
+              borderStyle: "solid",
+              borderColor: "var(--color-border)",
+              borderRadius: "var(--radius-md)",
+            }}
           >
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-900">
+                <p className="text-sm font-medium" style={{ color: "var(--color-text)" }}>
                   Proposal {proposal.proposal_id.slice(0, 8)}
                 </p>
-                <div className="mt-1 flex gap-4 text-xs text-gray-500">
-                  <span className="text-green-600">
+                <div className="mt-1 flex gap-4 text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                  <span style={{ color: "var(--color-success)" }}>
                     {proposal.approve_count} approve
                   </span>
-                  <span className="text-red-600">
+                  <span style={{ color: "var(--color-danger)" }}>
                     {proposal.reject_count} reject
                   </span>
                   <span>
@@ -158,10 +221,14 @@ function CouncilVotesSection({
                   </span>
                 </div>
                 <div className="mt-2">
-                  <div className="h-2 w-48 rounded-full bg-gray-200">
+                  <div
+                    className="h-2 w-48 rounded-full"
+                    style={{ backgroundColor: "var(--color-border)" }}
+                  >
                     <div
-                      className="h-2 rounded-full bg-green-500"
+                      className="h-2 rounded-full"
                       style={{
+                        backgroundColor: "var(--color-success)",
                         width: `${
                           proposal.total_council > 0
                             ? (proposal.approve_count /
@@ -178,14 +245,22 @@ function CouncilVotesSection({
                 <button
                   onClick={() => onVote(proposal.proposal_id, "approve")}
                   disabled={voting === proposal.proposal_id}
-                  className="rounded-md bg-green-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    backgroundColor: "var(--color-success)",
+                    color: "var(--color-text-inverse)",
+                  }}
                 >
                   Approve
                 </button>
                 <button
                   onClick={() => onVote(proposal.proposal_id, "reject")}
                   disabled={voting === proposal.proposal_id}
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    backgroundColor: "var(--color-danger)",
+                    color: "var(--color-text-inverse)",
+                  }}
                 >
                   Reject
                 </button>
@@ -265,9 +340,9 @@ export default function Admin() {
         { proposal_id: proposalId, vote },
       );
       setProposals((prev) =>
-        prev.map((p) =>
-          p.proposal_id === proposalId ? updated : p,
-        ).filter((p) => p.status === "pending"),
+        prev
+          .map((p) => (p.proposal_id === proposalId ? updated : p))
+          .filter((p) => p.status === "pending"),
       );
     } catch (err) {
       const apiErr = err as ApiError;
@@ -280,15 +355,15 @@ export default function Admin() {
   if (!isCouncil) {
     return (
       <div className="mx-auto max-w-4xl p-4">
-        <div className="rounded-md bg-red-50 p-4 text-sm text-red-700">
+        <div
+          className="rounded-[var(--radius-md)] p-4 text-sm"
+          style={{
+            backgroundColor: "var(--color-danger-light)",
+            color: "var(--color-danger)",
+          }}
+        >
           You do not have permission to view this page.
         </div>
-        <Link
-          to="/"
-          className="mt-4 inline-block text-sm text-indigo-600 hover:text-indigo-500"
-        >
-          Back to feed
-        </Link>
       </div>
     );
   }
@@ -297,7 +372,7 @@ export default function Admin() {
     return (
       <div className="mx-auto max-w-4xl p-4">
         <div className="flex justify-center py-12">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-600" />
+          <Spinner size="lg" />
         </div>
       </div>
     );
@@ -305,36 +380,40 @@ export default function Admin() {
 
   return (
     <div className="mx-auto max-w-4xl p-4">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
-        <Link to="/" className="text-sm text-indigo-600 hover:text-indigo-500">
-          Back to feed
-        </Link>
-      </div>
+      <div className="py-5">
+        <h1
+          className="mb-6 text-2xl font-bold"
+          style={{
+            color: "var(--color-text)",
+            fontFamily: "var(--font-display)",
+          }}
+        >
+          Admin Dashboard
+        </h1>
 
-      {error && (
-        <div className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          <button onClick={fetchData} className="ml-2 font-medium underline">
-            Retry
-          </button>
+        {error && (
+          <div className="mb-4">
+            <ErrorBanner message={error} onRetry={fetchData} />
+          </div>
+        )}
+
+        <div className="space-y-6">
+          {stats && <StatsPanel stats={stats} />}
+
+          <PendingUsersSection
+            users={pendingUsers}
+            onApprove={handleApprove}
+            approving={approving}
+          />
+
+          <CouncilVotesSection
+            proposals={proposals}
+            onVote={handleVote}
+            voting={voting}
+          />
+
+          <ThemeSettings />
         </div>
-      )}
-
-      <div className="space-y-6">
-        {stats && <StatsPanel stats={stats} />}
-
-        <PendingUsersSection
-          users={pendingUsers}
-          onApprove={handleApprove}
-          approving={approving}
-        />
-
-        <CouncilVotesSection
-          proposals={proposals}
-          onVote={handleVote}
-          voting={voting}
-        />
       </div>
     </div>
   );
