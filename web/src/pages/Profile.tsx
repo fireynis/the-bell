@@ -299,7 +299,7 @@ export default function Profile() {
     );
   }
 
-  const tabClasses = (tab: Tab) => {
+  const tabClasses = (_tab: Tab) => {
     const base = "px-4 py-2 text-sm font-medium border-b-2";
     return base;
   };
