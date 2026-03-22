@@ -207,6 +207,20 @@ func (s *Server) apiRoutes(r chi.Router) {
 			r.Get("/", sh.GetStats)
 		})
 	}
+
+	if s.configRepo != nil {
+		ch := handler.NewConfigHandler(s.configRepo)
+		r.Get("/v1/config", ch.GetConfig)
+
+		r.Route("/v1/admin/config", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Use(middleware.RequireRole(domain.RoleCouncil))
+			r.Put("/", ch.UpdateConfig)
+		})
+	}
 }
 
 // spaHandler serves static files from dir, falling back to index.html

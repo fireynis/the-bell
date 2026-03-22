@@ -54,6 +54,14 @@ func (m *mockConfigRepo) GetTownConfig(_ context.Context, key string) (string, e
 	return v, nil
 }
 
+func (m *mockConfigRepo) ListTownConfig(_ context.Context) (map[string]string, error) {
+	result := make(map[string]string, len(m.config))
+	for k, v := range m.config {
+		result[k] = v
+	}
+	return result, nil
+}
+
 // mockTransactor implements Transactor by passing through to the provided repos.
 type mockTransactor struct {
 	users  UserRepository
