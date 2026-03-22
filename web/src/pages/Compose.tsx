@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { api } from "../api/client";
 import type { ApiError, Post } from "../api/types";
+import ErrorBanner from "../components/ErrorBanner.tsx";
+import Spinner from "../components/Spinner.tsx";
 
 const MAX_LENGTH = 1000;
 const WARN_THRESHOLD = 950;
@@ -32,54 +34,66 @@ export default function Compose() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-4">
-      <div className="mb-6 flex items-center gap-3">
-        <Link
-          to="/"
-          className="text-sm text-indigo-600 hover:text-indigo-500"
-        >
-          &larr; Back
-        </Link>
-        <h1 className="text-2xl font-bold">New Post</h1>
-      </div>
+    <div className="py-5">
+      <h1
+        className="mb-5 text-xl font-bold"
+        style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
+      >
+        Ring the Bell
+      </h1>
 
-      {error && (
-        <div className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
 
       <form onSubmit={handleSubmit}>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          maxLength={MAX_LENGTH}
-          rows={6}
-          placeholder="What's on your mind?"
-          className="w-full rounded-md border border-gray-300 p-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-        />
-        <p
-          className={`mt-1 text-right text-xs ${
-            body.length >= WARN_THRESHOLD ? "text-red-600" : "text-gray-400"
-          }`}
+        <div
+          className="p-4"
+          style={{
+            backgroundColor: "var(--color-surface)",
+            boxShadow: "var(--shadow-sm)",
+            borderRadius: "var(--radius-lg)",
+          }}
         >
-          {body.length} / {MAX_LENGTH}
-        </p>
-
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="mt-4 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {submitting ? (
-            <span className="inline-flex items-center gap-2">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              Posting…
-            </span>
-          ) : (
-            "Post"
-          )}
-        </button>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            maxLength={MAX_LENGTH}
+            rows={6}
+            placeholder="What's happening in town?"
+            className="w-full resize-none border-0 bg-transparent leading-relaxed focus:outline-none"
+            style={{ color: "var(--color-text)", fontSize: "0.9375rem" }}
+          />
+          <div
+            className="mt-3 flex items-center justify-between border-t pt-3"
+            style={{ borderColor: "var(--color-border-light)" }}
+          >
+            <p
+              className="text-xs"
+              style={{
+                color: body.length >= WARN_THRESHOLD ? "var(--color-danger)" : "var(--color-text-tertiary)",
+              }}
+            >
+              {body.length} / {MAX_LENGTH}
+            </p>
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="rounded-full px-5 py-2 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+              style={{
+                backgroundColor: "var(--color-primary)",
+                color: "var(--color-text-inverse)",
+              }}
+            >
+              {submitting ? (
+                <span className="inline-flex items-center gap-2">
+                  <Spinner size="sm" />
+                  Posting...
+                </span>
+              ) : (
+                "Post"
+              )}
+            </button>
+          </div>
+        </div>
       </form>
     </div>
   );
