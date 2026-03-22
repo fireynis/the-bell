@@ -55,6 +55,20 @@ class ApiClient {
   delete(path: string): Promise<void> {
     return this.request<void>(path, { method: "DELETE" });
   }
+
+  async upload<T>(path: string, formData: FormData): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw { error: body.error || res.statusText, status: res.status } satisfies ApiError;
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  }
 }
 
 export const api = new ApiClient();
