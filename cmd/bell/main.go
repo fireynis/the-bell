@@ -24,6 +24,7 @@ import (
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/sse"
 	"github.com/fireynis/the-bell/internal/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -79,7 +80,8 @@ func runServe(logger *slog.Logger) {
 	postSvc := service.NewPostService(postRepo, nil)
 	reactionSvc := service.NewReactionService(reactionRepo, nil)
 
-	// Optional Redis feed cache
+	// Optional Redis feed cache + SSE broker
+	var sseBroker *sse.Broker
 	if cfg.RedisURL != "" {
 		rdb, err := cache.NewRedisClient(cfg.RedisURL)
 		if err != nil {
@@ -89,6 +91,10 @@ func runServe(logger *slog.Logger) {
 		feedCache := cache.NewFeedCache(rdb, postRepo, logger)
 		postSvc.SetFeedCache(feedCache)
 		logger.Info("feed cache enabled", "redis", cfg.RedisURL)
+
+		sseBroker = sse.NewBroker(rdb, logger)
+		postSvc.SetPublisher(sseBroker)
+		logger.Info("SSE broker enabled")
 	}
 
 	reportSvc := service.NewReportService(reportRepo, postRepo, nil)
@@ -152,7 +158,8 @@ func runServe(logger *slog.Logger) {
 		logger.Info("REDIS_URL not set, rate limiting disabled")
 	}
 
-	srv := server.New(cfg, pool, logger,
+	var serverOpts []server.Option
+	serverOpts = append(serverOpts,
 		server.WithAuth(authMiddleware),
 		server.WithUserService(userSvc),
 		server.WithPostService(postSvc),
@@ -168,6 +175,11 @@ func runServe(logger *slog.Logger) {
 		server.WithRateLimiter(rateLimiter),
 		server.WithImageStore(imageStore),
 	)
+	if sseBroker != nil {
+		serverOpts = append(serverOpts, server.WithSSEBroker(sseBroker))
+	}
+
+	srv := server.New(cfg, pool, logger, serverOpts...)
 
 	errCh := make(chan error, 1)
 	go func() {

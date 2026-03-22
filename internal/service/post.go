@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,10 +28,16 @@ type FeedCacher interface {
 	InvalidateOnDelete(ctx context.Context, postID string)
 }
 
+// EventPublisher publishes post events for real-time SSE delivery.
+type EventPublisher interface {
+	PublishPost(ctx context.Context, postJSON []byte) error
+}
+
 // PostService orchestrates post business logic.
 type PostService struct {
 	repo      PostRepository
 	feedCache FeedCacher
+	publisher EventPublisher
 	now       func() time.Time
 }
 
@@ -47,6 +54,11 @@ func NewPostService(repo PostRepository, clock func() time.Time) *PostService {
 // SetFeedCache attaches an optional feed cache to the service.
 func (s *PostService) SetFeedCache(fc FeedCacher) {
 	s.feedCache = fc
+}
+
+// SetPublisher attaches an optional event publisher for real-time SSE delivery.
+func (s *PostService) SetPublisher(pub EventPublisher) {
+	s.publisher = pub
 }
 
 func (s *PostService) Create(ctx context.Context, authorID, body, imagePath string) (*domain.Post, error) {
@@ -74,6 +86,12 @@ func (s *PostService) Create(ctx context.Context, authorID, body, imagePath stri
 
 	if s.feedCache != nil {
 		s.feedCache.InvalidateOnCreate(ctx, post)
+	}
+
+	if s.publisher != nil {
+		if data, err := json.Marshal(post); err == nil {
+			_ = s.publisher.PublishPost(ctx, data)
+		}
 	}
 
 	return post, nil

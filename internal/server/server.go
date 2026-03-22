@@ -11,6 +11,7 @@ import (
 	"github.com/fireynis/the-bell/internal/handler"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/sse"
 	"github.com/fireynis/the-bell/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	statsService            *service.StatsService
 	configRepo              service.ConfigRepository
 	reactionRepo            handler.ReactionEnricher
+	sseBroker               *sse.Broker
 	imageStore              storage.Storage
 	authMiddleware          func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
@@ -103,6 +105,11 @@ func WithImageStore(store storage.Storage) Option {
 // WithAuth sets the authentication middleware for protected routes.
 func WithAuth(mw func(http.Handler) http.Handler) Option {
 	return func(s *Server) { s.authMiddleware = mw }
+}
+
+// WithSSEBroker sets the SSE broker for real-time event streaming.
+func WithSSEBroker(b *sse.Broker) Option {
+	return func(s *Server) { s.sseBroker = b }
 }
 
 // WithRateLimiter sets the rate limiter for request throttling.

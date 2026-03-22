@@ -22,6 +22,18 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.RequestLogger(s.logger))
 	r.Get("/healthz", handler.Health)
 
+	// SSE endpoint — registered before /api to avoid ContentTypeJSON middleware.
+	if s.sseBroker != nil {
+		sseH := handler.NewSSEHandler(s.sseBroker)
+		r.Route("/api/v1/feed/live", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Get("/", sseH.ServeFeed)
+		})
+	}
+
 	// API routes — all JSON.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(middleware.ContentTypeJSON)
@@ -114,7 +126,11 @@ func (s *Server) apiRoutes(r chi.Router) {
 	}
 
 	if s.reactionService != nil {
-		rh := handler.NewReactionHandler(s.reactionService, s.postService)
+		var rhOpts []handler.ReactionHandlerOption
+		if s.sseBroker != nil {
+			rhOpts = append(rhOpts, handler.WithReactionPublisher(s.sseBroker))
+		}
+		rh := handler.NewReactionHandler(s.reactionService, s.postService, rhOpts...)
 		r.Route("/v1/posts/{postId}/reactions", func(r chi.Router) {
 			if s.authMiddleware != nil {
 				r.Use(s.authMiddleware)
