@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Post } from "../api/types";
+import type { Post } from "../api/types";
 
 const DEBOUNCE_MS = 15_000;
 
@@ -22,7 +22,7 @@ export function useLiveFeed(
   const [pendingPosts, setPendingPosts] = useState<Post[]>([]);
   const bufferRef = useRef<Post[]>([]);
   const reactionBufferRef = useRef<ReactionNotification[]>([]);
-  const timerRef = useRef<ReturnType<typeof setInterval>>();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const existingIdsRef = useRef(existingPostIds);
   existingIdsRef.current = existingPostIds;
   const onReactionRef = useRef(onReaction);
