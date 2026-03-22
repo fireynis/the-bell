@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from "react-router";
 import { useAuth } from "../context/AuthContext.tsx";
+import Spinner from "./Spinner";
 
 const ROLE_RANK: Record<string, number> = {
   banned: 0,
@@ -19,7 +20,7 @@ export default function RequireRole({ minRole }: RequireRoleProps) {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+        <Spinner size="lg" />
       </div>
     );
   }
