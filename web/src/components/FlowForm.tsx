@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
 import type { KratosFlow, UiNode, UiNodeInputAttributes, UiText } from "../api/kratos-types.ts";
+import Spinner from "./Spinner.tsx";
 
 interface FlowFormProps {
   flow: KratosFlow;
@@ -14,13 +15,15 @@ function MessageList({ messages }: { messages?: UiText[] }) {
       {messages.map((m) => (
         <p
           key={m.id}
-          className={
-            m.type === "error"
-              ? "text-sm text-red-600"
-              : m.type === "success"
-                ? "text-sm text-green-600"
-                : "text-sm text-blue-600"
-          }
+          className="text-sm"
+          style={{
+            color:
+              m.type === "error"
+                ? "var(--color-danger)"
+                : m.type === "success"
+                  ? "var(--color-success)"
+                  : "var(--color-info)",
+          }}
         >
           {m.text}
         </p>
@@ -48,7 +51,17 @@ function InputNode({
           name={attrs.name}
           value={attrs.value ?? ""}
           disabled={attrs.disabled}
-          className="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:outline-none disabled:opacity-50"
+          className="w-full rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium focus:ring-2 focus:ring-offset-2 focus:outline-none disabled:opacity-50"
+          style={{
+            backgroundColor: "var(--color-primary)",
+            color: "var(--color-text-inverse)",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = "var(--color-primary-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = "var(--color-primary)";
+          }}
         >
           {node.meta.label?.text ?? "Submit"}
         </button>
@@ -62,7 +75,11 @@ function InputNode({
   return (
     <div>
       {label && (
-        <label htmlFor={attrs.name} className="mb-1 block text-sm font-medium text-gray-700">
+        <label
+          htmlFor={attrs.name}
+          className="mb-1 block text-sm font-medium"
+          style={{ color: "var(--color-text-secondary)" }}
+        >
           {label}
         </label>
       )}
@@ -75,7 +92,22 @@ function InputNode({
         disabled={attrs.disabled}
         autoComplete={attrs.autocomplete}
         pattern={attrs.pattern}
-        className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none disabled:bg-gray-50"
+        className="block w-full rounded-[var(--radius-sm)] px-3 py-2 text-sm shadow-sm focus:outline-none disabled:opacity-50"
+        style={{
+          borderWidth: "1px",
+          borderStyle: "solid",
+          borderColor: "var(--color-border)",
+          color: "var(--color-text)",
+          backgroundColor: "var(--color-surface)",
+        }}
+        onFocus={(e) => {
+          e.currentTarget.style.borderColor = "var(--color-primary)";
+          e.currentTarget.style.boxShadow = "0 0 0 1px var(--color-primary)";
+        }}
+        onBlur={(e) => {
+          e.currentTarget.style.borderColor = "var(--color-border)";
+          e.currentTarget.style.boxShadow = "none";
+        }}
       />
       <MessageList messages={node.messages} />
     </div>
@@ -143,7 +175,7 @@ export default function FlowForm({ flow, onSubmit, submitting }: FlowFormProps) 
       {inputs.map(renderNode)}
       {submitting ? (
         <div className="flex justify-center py-2">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+          <Spinner />
         </div>
       ) : (
         submits.map(renderNode)
