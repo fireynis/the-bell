@@ -9,79 +9,14 @@ import type {
   VouchesResponse,
   Vouch,
 } from "../api/types";
+import Avatar from "../components/Avatar";
+import ErrorBanner from "../components/ErrorBanner";
 import PostCard from "../components/PostCard";
+import RoleBadge from "../components/RoleBadge";
+import Spinner from "../components/Spinner";
+import TrustBar from "../components/TrustBar";
 
 type Tab = "posts" | "vouches";
-
-function RoleBadge({ role }: { role: string }) {
-  const colors: Record<string, string> = {
-    council: "bg-purple-100 text-purple-800",
-    moderator: "bg-blue-100 text-blue-800",
-    member: "bg-green-100 text-green-800",
-    pending: "bg-gray-100 text-gray-600",
-    banned: "bg-red-100 text-red-800",
-  };
-  const colorClass = colors[role] ?? "bg-gray-100 text-gray-600";
-
-  return (
-    <span
-      className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${colorClass}`}
-    >
-      {role}
-    </span>
-  );
-}
-
-function TrustBar({ score }: { score: number }) {
-  const clamped = Math.max(0, Math.min(100, score));
-  let barColor = "bg-red-500";
-  if (clamped >= 60) barColor = "bg-green-500";
-  else if (clamped >= 30) barColor = "bg-yellow-500";
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-sm font-medium text-gray-700">Trust</span>
-      <div className="h-2 w-24 rounded-full bg-gray-200">
-        <div
-          className={`h-2 rounded-full ${barColor}`}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <span className="text-sm text-gray-600">{Math.round(clamped)}</span>
-    </div>
-  );
-}
-
-function Avatar({
-  url,
-  name,
-  size = "lg",
-}: {
-  url: string;
-  name: string;
-  size?: "sm" | "lg";
-}) {
-  const sizeClass = size === "lg" ? "h-16 w-16 text-2xl" : "h-10 w-10 text-base";
-
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt={name}
-        className={`${sizeClass} rounded-full object-cover`}
-      />
-    );
-  }
-
-  const initial = (name || "?").charAt(0).toUpperCase();
-  return (
-    <div
-      className={`${sizeClass} flex items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-600`}
-    >
-      {initial}
-    </div>
-  );
-}
 
 function EditProfileForm({
   user,
@@ -101,7 +36,8 @@ function EditProfileForm({
     return (
       <button
         onClick={() => setEditing(true)}
-        className="text-sm text-indigo-600 hover:text-indigo-500"
+        className="text-sm"
+        style={{ color: "var(--color-primary)" }}
       >
         Edit profile
       </button>
@@ -129,15 +65,20 @@ function EditProfileForm({
     }
   }
 
+  const inputClass =
+    "w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1";
+  const inputStyle = {
+    border: "1px solid var(--color-border)",
+  };
+
   return (
     <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-      {error && (
-        <div className="rounded-md bg-red-50 p-2 text-sm text-red-700">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBanner message={error} />}
       <div>
-        <label className="mb-1 block text-sm font-medium text-gray-700">
+        <label
+          className="mb-1 block text-sm font-medium"
+          style={{ color: "var(--color-text-secondary)" }}
+        >
           Display name
         </label>
         <input
@@ -145,11 +86,21 @@ function EditProfileForm({
           onChange={(e) => setDisplayName(e.target.value)}
           maxLength={100}
           required
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          className={inputClass}
+          style={inputStyle}
+          onFocus={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-primary)")
+          }
+          onBlur={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-border)")
+          }
         />
       </div>
       <div>
-        <label className="mb-1 block text-sm font-medium text-gray-700">
+        <label
+          className="mb-1 block text-sm font-medium"
+          style={{ color: "var(--color-text-secondary)" }}
+        >
           Bio
         </label>
         <textarea
@@ -157,35 +108,63 @@ function EditProfileForm({
           onChange={(e) => setBio(e.target.value)}
           maxLength={500}
           rows={3}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          className={inputClass}
+          style={inputStyle}
+          onFocus={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-primary)")
+          }
+          onBlur={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-border)")
+          }
         />
-        <p className="mt-1 text-right text-xs text-gray-400">
+        <p
+          className="mt-1 text-right text-xs"
+          style={{ color: "var(--color-text-tertiary)" }}
+        >
           {bio.length} / 500
         </p>
       </div>
       <div>
-        <label className="mb-1 block text-sm font-medium text-gray-700">
+        <label
+          className="mb-1 block text-sm font-medium"
+          style={{ color: "var(--color-text-secondary)" }}
+        >
           Avatar URL
         </label>
         <input
           value={avatarUrl}
           onChange={(e) => setAvatarUrl(e.target.value)}
           type="url"
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          className={inputClass}
+          style={inputStyle}
+          onFocus={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-primary)")
+          }
+          onBlur={(e) =>
+            (e.currentTarget.style.borderColor = "var(--color-border)")
+          }
         />
       </div>
       <div className="flex gap-2">
         <button
           type="submit"
           disabled={saving || !displayName.trim()}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+          style={{
+            backgroundColor: "var(--color-primary)",
+            color: "var(--color-text-inverse)",
+          }}
         >
           {saving ? "Saving..." : "Save"}
         </button>
         <button
           type="button"
           onClick={() => setEditing(false)}
-          className="rounded-md bg-gray-100 px-4 py-2 text-sm text-gray-700 hover:bg-gray-200"
+          className="rounded-md px-4 py-2 text-sm"
+          style={{
+            backgroundColor: "var(--color-surface-tertiary)",
+            color: "var(--color-text-secondary)",
+          }}
         >
           Cancel
         </button>
@@ -204,26 +183,49 @@ function VouchList({
   if (vouches.length === 0) {
     return (
       <div>
-        <h3 className="mb-2 text-sm font-medium text-gray-700">{title}</h3>
-        <p className="text-sm text-gray-500">None yet.</p>
+        <h3
+          className="mb-2 text-sm font-medium"
+          style={{ color: "var(--color-text-secondary)" }}
+        >
+          {title}
+        </h3>
+        <p className="text-sm" style={{ color: "var(--color-text-tertiary)" }}>
+          None yet.
+        </p>
       </div>
     );
   }
 
   return (
     <div>
-      <h3 className="mb-2 text-sm font-medium text-gray-700">{title}</h3>
+      <h3
+        className="mb-2 text-sm font-medium"
+        style={{ color: "var(--color-text-secondary)" }}
+      >
+        {title}
+      </h3>
       <ul className="space-y-2">
         {vouches.map((v) => (
-          <li key={v.id} className="rounded-md bg-white p-3 shadow-sm">
+          <li
+            key={v.id}
+            className="rounded-md p-3"
+            style={{
+              backgroundColor: "var(--color-surface)",
+              boxShadow: "var(--shadow-sm)",
+            }}
+          >
             <div className="flex items-center justify-between">
               <Link
                 to={`/profile/${title === "Received" ? v.voucher_id : v.vouchee_id}`}
-                className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+                className="text-sm font-medium"
+                style={{ color: "var(--color-primary)" }}
               >
                 {(title === "Received" ? v.voucher_id : v.vouchee_id).slice(0, 8)}...
               </Link>
-              <span className="text-xs text-gray-500">
+              <span
+                className="text-xs"
+                style={{ color: "var(--color-text-tertiary)" }}
+              >
                 {new Date(v.created_at).toLocaleDateString()}
               </span>
             </div>
@@ -280,7 +282,7 @@ export default function Profile() {
     return (
       <div className="mx-auto max-w-2xl p-4">
         <div className="flex justify-center py-12">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-600" />
+          <Spinner size="lg" />
         </div>
       </div>
     );
@@ -289,111 +291,140 @@ export default function Profile() {
   if (error || !user) {
     return (
       <div className="mx-auto max-w-2xl p-4">
-        <div className="mb-4">
-          <Link to="/" className="text-sm text-indigo-600 hover:text-indigo-500">
-            &larr; Back to feed
-          </Link>
-        </div>
-        <div className="rounded-md bg-red-50 p-4 text-sm text-red-700">
-          {error ?? "User not found."}
-          <button
-            onClick={fetchProfile}
-            className="ml-2 font-medium underline"
-          >
-            Retry
-          </button>
-        </div>
+        <ErrorBanner
+          message={error ?? "User not found."}
+          onRetry={fetchProfile}
+        />
       </div>
     );
   }
 
-  const tabClasses = (tab: Tab) =>
-    `px-4 py-2 text-sm font-medium border-b-2 ${
-      activeTab === tab
-        ? "border-indigo-600 text-indigo-600"
-        : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-    }`;
+  const tabClasses = (_tab: Tab) => {
+    const base = "px-4 py-2 text-sm font-medium border-b-2";
+    return base;
+  };
+
+  const tabStyle = (tab: Tab): React.CSSProperties =>
+    activeTab === tab
+      ? {
+          borderColor: "var(--color-primary)",
+          color: "var(--color-primary)",
+        }
+      : {
+          borderColor: "transparent",
+          color: "var(--color-text-secondary)",
+        };
 
   return (
-    <div className="mx-auto max-w-2xl p-4">
-      <div className="mb-6">
-        <Link to="/" className="text-sm text-indigo-600 hover:text-indigo-500">
-          &larr; Back to feed
-        </Link>
-      </div>
-
-      {/* Profile Header */}
-      <div className="rounded-lg bg-white p-6 shadow">
-        <div className="flex items-start gap-4">
-          <Avatar url={user.avatar_url} name={user.display_name} />
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-gray-900">
-                {user.display_name || user.id.slice(0, 8)}
-              </h1>
-              <RoleBadge role={user.role} />
-            </div>
-            {user.bio && (
-              <p className="mt-1 text-sm text-gray-600">{user.bio}</p>
-            )}
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <TrustBar score={user.trust_score} />
-              <span className="text-sm text-gray-500">
-                Joined {new Date(user.joined_at).toLocaleDateString()}
-              </span>
+    <div className="py-5">
+      <div className="mx-auto max-w-2xl px-4">
+        {/* Profile Header */}
+        <div
+          className="rounded-lg p-6"
+          style={{
+            backgroundColor: "var(--color-surface)",
+            boxShadow: "var(--shadow-md)",
+            borderRadius: "var(--radius-lg)",
+          }}
+        >
+          <div className="flex items-start gap-4">
+            <Avatar url={user.avatar_url} name={user.display_name} size="lg" />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <h1
+                  className="text-xl font-bold"
+                  style={{ color: "var(--color-text)" }}
+                >
+                  {user.display_name || user.id.slice(0, 8)}
+                </h1>
+                <RoleBadge role={user.role} />
+              </div>
+              {user.bio && (
+                <p
+                  className="mt-1 text-sm"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  {user.bio}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-4">
+                <TrustBar score={user.trust_score} />
+                <span
+                  className="text-sm"
+                  style={{ color: "var(--color-text-tertiary)" }}
+                >
+                  Joined {new Date(user.joined_at).toLocaleDateString()}
+                </span>
+              </div>
             </div>
           </div>
+
+          {isOwnProfile && (
+            <div
+              className="mt-4 border-t pt-4"
+              style={{ borderColor: "var(--color-border-light)" }}
+            >
+              <EditProfileForm
+                user={user}
+                onSave={(updated) => setUser(updated)}
+              />
+            </div>
+          )}
         </div>
 
-        {isOwnProfile && (
-          <div className="mt-4 border-t border-gray-100 pt-4">
-            <EditProfileForm
-              user={user}
-              onSave={(updated) => setUser(updated)}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div className="mt-6 flex border-b border-gray-200">
-        <button className={tabClasses("posts")} onClick={() => setActiveTab("posts")}>
-          Posts ({posts.length})
-        </button>
-        <button
-          className={tabClasses("vouches")}
-          onClick={() => setActiveTab("vouches")}
+        {/* Tabs */}
+        <div
+          className="mt-6 flex border-b"
+          style={{ borderColor: "var(--color-border-light)" }}
         >
-          Vouches (
-          {vouches
-            ? vouches.received.length + vouches.given.length
-            : 0}
-          )
-        </button>
-      </div>
+          <button
+            className={tabClasses("posts")}
+            style={tabStyle("posts")}
+            onClick={() => setActiveTab("posts")}
+          >
+            Posts ({posts.length})
+          </button>
+          <button
+            className={tabClasses("vouches")}
+            style={tabStyle("vouches")}
+            onClick={() => setActiveTab("vouches")}
+          >
+            Vouches (
+            {vouches
+              ? vouches.received.length + vouches.given.length
+              : 0}
+            )
+          </button>
+        </div>
 
-      {/* Tab Content */}
-      <div className="mt-4">
-        {activeTab === "posts" && (
-          <div>
-            {posts.length === 0 ? (
-              <p className="text-sm text-gray-500">No posts yet.</p>
-            ) : (
-              <div className="flex flex-col gap-4">
-                {posts.map((post) => (
-                  <PostCard key={post.id} post={post} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        {/* Tab Content */}
+        <div className="mt-4">
+          {activeTab === "posts" && (
+            <div>
+              {posts.length === 0 ? (
+                <p
+                  className="text-sm"
+                  style={{ color: "var(--color-text-tertiary)" }}
+                >
+                  No posts yet.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  {posts.map((post) => (
+                    <PostCard key={post.id} post={post} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-        {activeTab === "vouches" && vouches && (
-          <div className="space-y-6">
-            <VouchList title="Received" vouches={vouches.received} />
-            <VouchList title="Given" vouches={vouches.given} />
-          </div>
-        )}
+          {activeTab === "vouches" && vouches && (
+            <div className="space-y-6">
+              <VouchList title="Received" vouches={vouches.received} />
+              <VouchList title="Given" vouches={vouches.given} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

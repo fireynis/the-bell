@@ -19,6 +19,7 @@ type KratosAdmin interface {
 type ConfigRepository interface {
 	SetTownConfig(ctx context.Context, key, value string) error
 	GetTownConfig(ctx context.Context, key string) (string, error)
+	ListTownConfig(ctx context.Context) (map[string]string, error)
 }
 
 // Transactor wraps a function in a database transaction, providing

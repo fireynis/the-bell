@@ -1,76 +1,46 @@
 import { useRef } from "react";
 import { Link } from "react-router";
-import { useAuth } from "../context/AuthContext.tsx";
 import PostCard from "../components/PostCard.tsx";
+import ErrorBanner from "../components/ErrorBanner.tsx";
+import Spinner from "../components/Spinner.tsx";
 import { useFeed } from "../hooks/useFeed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 
 export default function Home() {
-  const { session, user, logout } = useAuth();
   const { posts, loading, hasMore, error, loadMore, retry } = useFeed();
   const sentinelRef = useRef<HTMLDivElement>(null);
 
   useIntersectionObserver(sentinelRef, loadMore, hasMore && !loading);
 
   return (
-    <div className="mx-auto max-w-2xl p-4">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Feed</h1>
-        <div className="flex items-center gap-3">
-          {session && (
-            <span className="text-sm text-gray-600">
-              {session.identity.traits.name ?? session.identity.traits.email}
-            </span>
-          )}
-          <Link
-            to="/compose"
-            className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500"
-          >
-            New Post
-          </Link>
-          <Link
-            to="/profile"
-            className="text-sm text-indigo-600 hover:text-indigo-500"
-          >
-            Profile
-          </Link>
-          {user?.role === "council" && (
-            <Link
-              to="/admin"
-              className="text-sm text-indigo-600 hover:text-indigo-500"
-            >
-              Admin
-            </Link>
-          )}
-          <Link
-            to="/auth/settings"
-            className="text-sm text-indigo-600 hover:text-indigo-500"
-          >
-            Settings
-          </Link>
-          <button
-            onClick={logout}
-            className="rounded-md bg-gray-100 px-3 py-1 text-sm text-gray-700 hover:bg-gray-200"
-          >
-            Sign out
-          </button>
-        </div>
-      </div>
+    <div className="py-5">
+      <Link
+        to="/compose"
+        className="mb-5 flex items-center gap-3 p-4 lg:hidden"
+        style={{
+          backgroundColor: "var(--color-surface)",
+          boxShadow: "var(--shadow-sm)",
+          borderRadius: "var(--radius-lg)",
+          color: "var(--color-text-tertiary)",
+        }}
+      >
+        <div className="h-8 w-8 rounded-full" style={{ backgroundColor: "var(--color-primary-light)" }} />
+        <span className="text-sm">What's happening in town?</span>
+      </Link>
 
       {error && (
-        <div className="mb-4 rounded-md bg-red-50 p-3 text-sm text-red-700">
-          {error}
-          <button onClick={retry} className="ml-2 font-medium underline">
-            Retry
-          </button>
+        <div className="mb-4">
+          <ErrorBanner message={error} onRetry={retry} />
         </div>
       )}
 
       {posts.length === 0 && !loading && !error && (
-        <p className="text-gray-500">No posts yet.</p>
+        <p className="text-center text-sm" style={{ color: "var(--color-text-tertiary)" }}>
+          No posts yet. Be the first to ring the bell!
+        </p>
       )}
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 stagger-children">
         {posts.map((post) => (
           <PostCard key={post.id} post={post} />
         ))}
@@ -78,7 +48,7 @@ export default function Home() {
 
       {loading && (
         <div className="flex justify-center py-6">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-600" />
+          <Spinner />
         </div>
       )}
 

@@ -145,3 +145,10 @@ export interface TakeActionRequest {
   reason: string;
   duration_seconds?: number;
 }
+
+export interface TownConfig {
+  town_name?: string;
+  primary_color?: string;
+  accent_color?: string;
+  [key: string]: string | undefined;
+}

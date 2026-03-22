@@ -28,6 +28,7 @@ type Server struct {
 	approvalService         *service.ApprovalService
 	votingService           *service.VotingService
 	statsService            *service.StatsService
+	configRepo              service.ConfigRepository
 	imageStore              storage.Storage
 	authMiddleware          func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
@@ -74,6 +75,11 @@ func WithVotingService(vs *service.VotingService) Option {
 // WithStatsService sets the StatsService used by admin stats handlers.
 func WithStatsService(ss *service.StatsService) Option {
 	return func(s *Server) { s.statsService = ss }
+}
+
+// WithConfigRepo sets the config repository for town configuration endpoints.
+func WithConfigRepo(cr service.ConfigRepository) Option {
+	return func(s *Server) { s.configRepo = cr }
 }
 
 // WithImageStore sets the image storage backend for uploads.

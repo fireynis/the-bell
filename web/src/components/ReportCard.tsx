@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { moderationApi } from "../api/client.ts";
 import type { Report, Post, ApiError } from "../api/types.ts";
+import Spinner from "./Spinner.tsx";
 
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
@@ -65,62 +66,87 @@ export default function ReportCard({
   const isOwnPost = post?.author_id === currentUserId;
 
   return (
-    <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+    <article
+      className="rounded-lg border p-4"
+      style={{
+        backgroundColor: "var(--color-surface)",
+        boxShadow: "var(--shadow-sm)",
+        borderRadius: "var(--radius-lg)",
+        borderWidth: "1px",
+        borderColor: "var(--color-border-light)",
+      }}
+    >
       {/* Report metadata */}
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-medium text-red-600 uppercase">
+        <span
+          className="text-xs font-medium uppercase"
+          style={{ color: "var(--color-danger)" }}
+        >
           Report
         </span>
         <span
-          className="text-xs text-gray-500"
+          className="text-xs"
           title={new Date(report.created_at).toLocaleString()}
+          style={{ color: "var(--color-text-tertiary)" }}
         >
           {formatRelativeTime(report.created_at)}
         </span>
       </div>
 
-      <p className="mb-3 text-sm text-gray-700">
+      <p className="mb-3 text-sm" style={{ color: "var(--color-text-secondary)" }}>
         <span className="font-medium">Reason:</span> {report.reason}
       </p>
 
       {/* Reported post content */}
-      <div className="mb-3 rounded-md border border-gray-100 bg-gray-50 p-3">
+      <div
+        className="mb-3 rounded-md border p-3"
+        style={{
+          backgroundColor: "var(--color-surface-secondary)",
+          borderColor: "var(--color-border-light)",
+        }}
+      >
         {postError ? (
-          <p className="text-sm text-gray-500 italic">
+          <p className="text-sm italic" style={{ color: "var(--color-text-tertiary)" }}>
             Post no longer available.
           </p>
         ) : post ? (
           <>
             <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-medium text-gray-600">
+              <span className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
                 {post.author_id.slice(0, 8)}
               </span>
               <Link
                 to={`/moderation/users/${post.author_id}`}
-                className="text-xs text-indigo-600 hover:text-indigo-500"
+                className="text-xs hover:underline"
+                style={{ color: "var(--color-primary)" }}
               >
                 View history
               </Link>
             </div>
-            <p className="whitespace-pre-wrap break-words text-sm text-gray-800">
+            <p
+              className="whitespace-pre-wrap break-words text-sm"
+              style={{ color: "var(--color-text)" }}
+            >
               {post.body}
             </p>
           </>
         ) : (
           <div className="flex justify-center py-2">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-indigo-600" />
+            <Spinner size="sm" />
           </div>
         )}
       </div>
 
       {/* Reporter info */}
-      <p className="mb-3 text-xs text-gray-500">
+      <p className="mb-3 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
         Reporter: {report.reporter_id.slice(0, 8)}
       </p>
 
       {/* Dismiss error */}
       {dismissError && (
-        <p className="mb-2 text-sm text-red-600">{dismissError}</p>
+        <p className="mb-2 text-sm" style={{ color: "var(--color-danger)" }}>
+          {dismissError}
+        </p>
       )}
 
       {/* Actions */}
@@ -128,14 +154,34 @@ export default function ReportCard({
         <button
           onClick={handleDismiss}
           disabled={dismissing}
-          className="rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+          className="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+          style={{
+            backgroundColor: "var(--color-surface-tertiary)",
+            color: "var(--color-text-secondary)",
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.filter = "";
+          }}
         >
           {dismissing ? "Dismissing..." : "Dismiss"}
         </button>
         {post && !isOwnPost && (
           <button
             onClick={() => onTakeAction(report, post.author_id)}
-            className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500"
+            className="rounded-md px-3 py-1.5 text-sm font-medium"
+            style={{
+              backgroundColor: "var(--color-danger)",
+              color: "var(--color-text-inverse)",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.filter = "brightness(1.1)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.filter = "";
+            }}
           >
             Take Action
           </button>

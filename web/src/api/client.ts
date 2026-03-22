@@ -82,3 +82,9 @@ export const moderationApi = {
   getPost: (postId: string) =>
     api.get<import("./types").Post>(`/posts/${postId}`),
 };
+
+export const configApi = {
+  getConfig: () => api.get<import("./types").TownConfig>("/config"),
+  updateConfig: (config: Record<string, string>) =>
+    api.put<void>("/admin/config", config),
+};
