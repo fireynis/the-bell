@@ -78,7 +78,13 @@ export default function PostCard({ post }: PostCardProps) {
 
       <div className="flex gap-1.5">
         {REACTION_TYPES.map((type) => (
-          <ReactionButton key={type} postId={post.id} type={type} count={0} active={false} />
+          <ReactionButton
+            key={type}
+            postId={post.id}
+            type={type}
+            count={post.reaction_counts?.[type] ?? 0}
+            active={post.user_reactions?.includes(type) ?? false}
+          />
         ))}
       </div>
     </article>

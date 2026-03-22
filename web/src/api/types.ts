@@ -8,6 +8,8 @@ export interface Post {
   edited_at: string | null;
   author_display_name?: string;
   author_avatar_url?: string;
+  reaction_counts?: Record<string, number>;
+  user_reactions?: string[];
 }
 
 export interface User {
