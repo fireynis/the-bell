@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { moderationApi } from "../api/client.ts";
 import type { ApiError } from "../api/types.ts";
+import ErrorBanner from "./ErrorBanner.tsx";
 
 const ACTION_TYPES = ["warn", "mute", "suspend", "ban"] as const;
 
@@ -12,6 +13,17 @@ const SEVERITY_MAP: Record<string, number[]> = {
 };
 
 const NEEDS_DURATION = new Set(["mute", "suspend"]);
+
+const inputStyle: React.CSSProperties = {
+  borderColor: "var(--color-border)",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderRadius: "var(--radius-md)",
+  padding: "0.5rem 0.75rem",
+  width: "100%",
+  display: "block",
+  outline: "none",
+};
 
 interface ActionDialogProps {
   targetUserId: string;
@@ -30,6 +42,7 @@ export default function ActionDialog({
   const [durationHours, setDurationHours] = useState(24);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
 
   // Auto-set severity when action type changes
   useEffect(() => {
@@ -47,6 +60,12 @@ export default function ActionDialog({
     severity > 0 &&
     reason.trim().length > 0 &&
     !submitting;
+
+  function getFocusedStyle(fieldId: string): React.CSSProperties {
+    return focusedField === fieldId
+      ? { ...inputStyle, borderColor: "var(--color-primary)", boxShadow: `0 0 0 1px var(--color-primary)` }
+      : inputStyle;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -76,8 +95,18 @@ export default function ActionDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-        <h2 className="mb-4 text-lg font-semibold text-gray-900">
+      <div
+        className="w-full max-w-md p-6"
+        style={{
+          backgroundColor: "var(--color-surface)",
+          boxShadow: "var(--shadow-lg)",
+          borderRadius: "var(--radius-lg)",
+        }}
+      >
+        <h2
+          className="mb-4 text-lg font-semibold"
+          style={{ color: "var(--color-text)" }}
+        >
           Take Moderation Action
         </h2>
 
@@ -86,7 +115,8 @@ export default function ActionDialog({
           <div>
             <label
               htmlFor="action-type"
-              className="mb-1 block text-sm font-medium text-gray-700"
+              className="mb-1 block text-sm font-medium"
+              style={{ color: "var(--color-text-secondary)" }}
             >
               Action Type
             </label>
@@ -94,7 +124,9 @@ export default function ActionDialog({
               id="action-type"
               value={actionType}
               onChange={(e) => setActionType(e.target.value)}
-              className="block w-full rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+              style={getFocusedStyle("action-type")}
+              onFocus={() => setFocusedField("action-type")}
+              onBlur={() => setFocusedField(null)}
             >
               <option value="">Select action...</option>
               {ACTION_TYPES.map((type) => (
@@ -110,7 +142,8 @@ export default function ActionDialog({
             <div>
               <label
                 htmlFor="severity"
-                className="mb-1 block text-sm font-medium text-gray-700"
+                className="mb-1 block text-sm font-medium"
+                style={{ color: "var(--color-text-secondary)" }}
               >
                 Severity
               </label>
@@ -118,7 +151,9 @@ export default function ActionDialog({
                 id="severity"
                 value={severity}
                 onChange={(e) => setSeverity(Number(e.target.value))}
-                className="block w-full rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                style={getFocusedStyle("severity")}
+                onFocus={() => setFocusedField("severity")}
+                onBlur={() => setFocusedField(null)}
               >
                 {SEVERITY_MAP[actionType]?.map((s) => (
                   <option key={s} value={s}>
@@ -134,7 +169,8 @@ export default function ActionDialog({
             <div>
               <label
                 htmlFor="duration"
-                className="mb-1 block text-sm font-medium text-gray-700"
+                className="mb-1 block text-sm font-medium"
+                style={{ color: "var(--color-text-secondary)" }}
               >
                 Duration (hours)
               </label>
@@ -145,7 +181,9 @@ export default function ActionDialog({
                 max={8760}
                 value={durationHours}
                 onChange={(e) => setDurationHours(Number(e.target.value))}
-                className="block w-full rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                style={getFocusedStyle("duration")}
+                onFocus={() => setFocusedField("duration")}
+                onBlur={() => setFocusedField(null)}
               />
             </div>
           )}
@@ -154,7 +192,8 @@ export default function ActionDialog({
           <div>
             <label
               htmlFor="reason"
-              className="mb-1 block text-sm font-medium text-gray-700"
+              className="mb-1 block text-sm font-medium"
+              style={{ color: "var(--color-text-secondary)" }}
             >
               Reason
             </label>
@@ -164,32 +203,52 @@ export default function ActionDialog({
               onChange={(e) => setReason(e.target.value)}
               maxLength={1000}
               rows={3}
-              className="block w-full resize-none rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+              style={{ ...getFocusedStyle("reason"), resize: "none" }}
+              onFocus={() => setFocusedField("reason")}
+              onBlur={() => setFocusedField(null)}
               placeholder="Describe why this action is being taken..."
             />
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
               {reason.length}/1000
             </p>
           </div>
 
           {error && (
-            <div className="rounded-md bg-red-50 p-3 text-sm text-red-700">
-              {error}
-            </div>
+            <ErrorBanner message={error} />
           )}
 
           <div className="flex justify-end gap-3">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+              className="rounded-md px-4 py-2 text-sm font-medium"
+              style={{
+                backgroundColor: "var(--color-surface-tertiary)",
+                color: "var(--color-text-secondary)",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.filter = "";
+              }}
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSubmit}
-              className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+              className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
+              style={{
+                backgroundColor: "var(--color-danger)",
+                color: "var(--color-text-inverse)",
+              }}
+              onMouseEnter={(e) => {
+                if (canSubmit) (e.currentTarget as HTMLButtonElement).style.filter = "brightness(1.1)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.filter = "";
+              }}
             >
               {submitting ? "Submitting..." : "Take Action"}
             </button>
