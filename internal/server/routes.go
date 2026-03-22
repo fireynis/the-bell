@@ -104,6 +104,9 @@ func (s *Server) apiRoutes(r chi.Router) {
 		if s.reactionRepo != nil {
 			phOpts = append(phOpts, handler.WithReactionEnricher(s.reactionRepo))
 		}
+		if s.sseBroker != nil {
+			phOpts = append(phOpts, handler.WithPostPublisher(s.sseBroker))
+		}
 		ph := handler.NewPostHandler(s.postService, phOpts...)
 		r.Route("/v1/posts", func(r chi.Router) {
 			r.Get("/", ph.ListFeed)

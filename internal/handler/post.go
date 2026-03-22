@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,11 +43,22 @@ func WithReactionEnricher(re ReactionEnricher) PostHandlerOption {
 	return func(h *PostHandler) { h.reactionEnricher = re }
 }
 
+// PostEventPublisher publishes post events for real-time SSE delivery.
+type PostEventPublisher interface {
+	PublishPost(ctx context.Context, postJSON []byte) error
+}
+
+// WithPostPublisher attaches an event publisher for SSE post events.
+func WithPostPublisher(pub PostEventPublisher) PostHandlerOption {
+	return func(h *PostHandler) { h.publisher = pub }
+}
+
 // PostHandler handles HTTP requests for post operations.
 type PostHandler struct {
 	posts            *service.PostService
 	store            storage.Storage
 	reactionEnricher ReactionEnricher
+	publisher        PostEventPublisher
 }
 
 // NewPostHandler creates a PostHandler.
@@ -111,6 +123,18 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		serviceError(w, err)
 		return
+	}
+
+	// Populate denormalized author fields from the authenticated user so the
+	// response (and any SSE event) includes display name and avatar.
+	post.AuthorDisplayName = user.DisplayName
+	post.AuthorAvatarURL = user.AvatarURL
+
+	// Publish for SSE after author fields are populated.
+	if h.publisher != nil {
+		if data, err := json.Marshal(post); err == nil {
+			_ = h.publisher.PublishPost(r.Context(), data)
+		}
 	}
 
 	JSON(w, http.StatusCreated, post)

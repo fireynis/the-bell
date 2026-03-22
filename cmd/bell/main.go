@@ -93,7 +93,6 @@ func runServe(logger *slog.Logger) {
 		logger.Info("feed cache enabled", "redis", cfg.RedisURL)
 
 		sseBroker = sse.NewBroker(rdb, logger)
-		postSvc.SetPublisher(sseBroker)
 		logger.Info("SSE broker enabled")
 	}
 
