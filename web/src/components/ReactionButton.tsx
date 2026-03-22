@@ -50,11 +50,17 @@ export default function ReactionButton({ postId, type, count, active: initialAct
       type="button"
       onClick={toggle}
       disabled={toggling}
-      className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm transition-colors ${
-        localActive
-          ? "bg-indigo-100 text-indigo-700"
-          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-      }`}
+      className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm transition-colors"
+      style={{
+        backgroundColor: localActive ? "var(--color-primary-light)" : "var(--color-surface-tertiary)",
+        color: localActive ? "var(--color-primary)" : "var(--color-text-secondary)",
+      }}
+      onMouseEnter={(e) => {
+        if (!localActive) e.currentTarget.style.backgroundColor = "var(--color-surface-hover)";
+      }}
+      onMouseLeave={(e) => {
+        if (!localActive) e.currentTarget.style.backgroundColor = "var(--color-surface-tertiary)";
+      }}
     >
       <span>{emoji}</span>
       {localCount > 0 && <span>{localCount}</span>}
