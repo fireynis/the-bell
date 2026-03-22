@@ -72,9 +72,12 @@ func runServe(logger *slog.Logger) {
 	ageQuerier := postgres.NewAGEQuerier(pool)
 	voteRepo := postgres.NewVoteRepo(queries)
 
+	reactionRepo := postgres.NewReactionRepo(queries)
+
 	// Services
 	userSvc := service.NewUserService(userRepo, nil)
 	postSvc := service.NewPostService(postRepo, nil)
+	reactionSvc := service.NewReactionService(reactionRepo, nil)
 
 	// Optional Redis feed cache
 	if cfg.RedisURL != "" {
@@ -158,6 +161,7 @@ func runServe(logger *slog.Logger) {
 		server.WithModerationActionService(modActionSvc),
 		server.WithApprovalService(approvalSvc),
 		server.WithVotingService(votingSvc),
+		server.WithReactionService(reactionSvc),
 		server.WithStatsService(statsSvc),
 		server.WithConfigRepo(configRepo),
 		server.WithRateLimiter(rateLimiter),

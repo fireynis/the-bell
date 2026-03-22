@@ -110,6 +110,22 @@ func (s *Server) apiRoutes(r chi.Router) {
 		})
 	}
 
+	if s.reactionService != nil {
+		rh := handler.NewReactionHandler(s.reactionService, s.postService)
+		r.Route("/v1/posts/{postId}/reactions", func(r chi.Router) {
+			if s.authMiddleware != nil {
+				r.Use(s.authMiddleware)
+			}
+			r.Use(middleware.RequireActive)
+			r.Use(middleware.RequireRole(domain.RoleMember))
+			if s.rateLimiter != nil {
+				r.Use(s.rateLimiter.Limit("reactions", 60, time.Minute))
+			}
+			r.Post("/", rh.Add)
+			r.Delete("/{type}", rh.Remove)
+		})
+	}
+
 	if s.userService != nil {
 		uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
 
