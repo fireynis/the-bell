@@ -81,12 +81,29 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, e
 }
 
 const getPostByID = `-- name: GetPostByID :one
-SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts WHERE id = $1
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.id = $1
 `
 
-func (q *Queries) GetPostByID(ctx context.Context, id string) (Post, error) {
+type GetPostByIDRow struct {
+	ID                string             `json:"id"`
+	AuthorID          string             `json:"author_id"`
+	Body              string             `json:"body"`
+	ImagePath         string             `json:"image_path"`
+	Status            string             `json:"status"`
+	RemovalReason     string             `json:"removal_reason"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	EditedAt          pgtype.Timestamptz `json:"edited_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+}
+
+func (q *Queries) GetPostByID(ctx context.Context, id string) (GetPostByIDRow, error) {
 	row := q.db.QueryRow(ctx, getPostByID, id)
-	var i Post
+	var i GetPostByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.AuthorID,
@@ -96,12 +113,20 @@ func (q *Queries) GetPostByID(ctx context.Context, id string) (Post, error) {
 		&i.RemovalReason,
 		&i.CreatedAt,
 		&i.EditedAt,
+		&i.AuthorDisplayName,
+		&i.AuthorAvatarUrl,
 	)
 	return i, err
 }
 
 const listPostsByAuthor = `-- name: ListPostsByAuthor :many
-SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.author_id = $1
+ORDER BY p.created_at DESC
+LIMIT $2
 `
 
 type ListPostsByAuthorParams struct {
@@ -109,15 +134,28 @@ type ListPostsByAuthorParams struct {
 	Limit    int32  `json:"limit"`
 }
 
-func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorParams) ([]Post, error) {
+type ListPostsByAuthorRow struct {
+	ID                string             `json:"id"`
+	AuthorID          string             `json:"author_id"`
+	Body              string             `json:"body"`
+	ImagePath         string             `json:"image_path"`
+	Status            string             `json:"status"`
+	RemovalReason     string             `json:"removal_reason"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	EditedAt          pgtype.Timestamptz `json:"edited_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+}
+
+func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorParams) ([]ListPostsByAuthorRow, error) {
 	rows, err := q.db.Query(ctx, listPostsByAuthor, arg.AuthorID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Post{}
+	items := []ListPostsByAuthorRow{}
 	for rows.Next() {
-		var i Post
+		var i ListPostsByAuthorRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AuthorID,
@@ -127,6 +165,8 @@ func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorPa
 			&i.RemovalReason,
 			&i.CreatedAt,
 			&i.EditedAt,
+			&i.AuthorDisplayName,
+			&i.AuthorAvatarUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -139,9 +179,12 @@ func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorPa
 }
 
 const listPostsFeed = `-- name: ListPostsFeed :many
-SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts
-WHERE status = 'visible' AND id < $1
-ORDER BY id DESC
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.status = 'visible' AND p.id < $1
+ORDER BY p.id DESC
 LIMIT $2
 `
 
@@ -150,15 +193,28 @@ type ListPostsFeedParams struct {
 	Limit int32  `json:"limit"`
 }
 
-func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([]Post, error) {
+type ListPostsFeedRow struct {
+	ID                string             `json:"id"`
+	AuthorID          string             `json:"author_id"`
+	Body              string             `json:"body"`
+	ImagePath         string             `json:"image_path"`
+	Status            string             `json:"status"`
+	RemovalReason     string             `json:"removal_reason"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	EditedAt          pgtype.Timestamptz `json:"edited_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+}
+
+func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([]ListPostsFeedRow, error) {
 	rows, err := q.db.Query(ctx, listPostsFeed, arg.ID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Post{}
+	items := []ListPostsFeedRow{}
 	for rows.Next() {
-		var i Post
+		var i ListPostsFeedRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AuthorID,
@@ -168,6 +224,8 @@ func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([
 			&i.RemovalReason,
 			&i.CreatedAt,
 			&i.EditedAt,
+			&i.AuthorDisplayName,
+			&i.AuthorAvatarUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -180,21 +238,37 @@ func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([
 }
 
 const listPostsFeedFirst = `-- name: ListPostsFeedFirst :many
-SELECT id, author_id, body, image_path, status, removal_reason, created_at, edited_at FROM posts
-WHERE status = 'visible'
-ORDER BY id DESC
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.status = 'visible'
+ORDER BY p.id DESC
 LIMIT $1
 `
 
-func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]Post, error) {
+type ListPostsFeedFirstRow struct {
+	ID                string             `json:"id"`
+	AuthorID          string             `json:"author_id"`
+	Body              string             `json:"body"`
+	ImagePath         string             `json:"image_path"`
+	Status            string             `json:"status"`
+	RemovalReason     string             `json:"removal_reason"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	EditedAt          pgtype.Timestamptz `json:"edited_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+}
+
+func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]ListPostsFeedFirstRow, error) {
 	rows, err := q.db.Query(ctx, listPostsFeedFirst, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Post{}
+	items := []ListPostsFeedFirstRow{}
 	for rows.Next() {
-		var i Post
+		var i ListPostsFeedFirstRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AuthorID,
@@ -204,6 +278,8 @@ func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]Post, 
 			&i.RemovalReason,
 			&i.CreatedAt,
 			&i.EditedAt,
+			&i.AuthorDisplayName,
+			&i.AuthorAvatarUrl,
 		); err != nil {
 			return nil, err
 		}

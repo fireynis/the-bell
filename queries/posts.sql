@@ -4,18 +4,28 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetPostByID :one
-SELECT * FROM posts WHERE id = $1;
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.id = $1;
 
 -- name: ListPostsFeed :many
-SELECT * FROM posts
-WHERE status = 'visible' AND id < $1
-ORDER BY id DESC
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.status = 'visible' AND p.id < $1
+ORDER BY p.id DESC
 LIMIT $2;
 
 -- name: ListPostsFeedFirst :many
-SELECT * FROM posts
-WHERE status = 'visible'
-ORDER BY id DESC
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.status = 'visible'
+ORDER BY p.id DESC
 LIMIT $1;
 
 -- name: UpdatePostBody :one
@@ -26,7 +36,13 @@ RETURNING *;
 UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1;
 
 -- name: ListPostsByAuthor :many
-SELECT * FROM posts WHERE author_id = $1 ORDER BY created_at DESC LIMIT $2;
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+       u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
+FROM posts p
+JOIN users u ON p.author_id = u.id
+WHERE p.author_id = $1
+ORDER BY p.created_at DESC
+LIMIT $2;
 
 -- name: CountPostsByAuthorSince :one
 SELECT COUNT(*) FROM posts

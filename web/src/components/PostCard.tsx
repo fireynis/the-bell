@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import type { Post } from "../api/types";
+import Avatar from "./Avatar";
 import ReactionButton from "./ReactionButton";
 
 const REACTION_TYPES = ["bell", "heart", "celebrate"];
@@ -24,7 +25,7 @@ interface PostCardProps {
 }
 
 export default function PostCard({ post }: PostCardProps) {
-  const authorShort = post.author_id.slice(0, 8);
+  const authorName = post.author_display_name || post.author_id.slice(0, 8);
 
   return (
     <article
@@ -38,6 +39,7 @@ export default function PostCard({ post }: PostCardProps) {
       onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "var(--shadow-sm)")}
     >
       <div className="mb-3 flex items-center gap-2">
+        <Avatar url={post.author_avatar_url || ""} name={authorName} size="sm" />
         <Link
           to={`/profile/${post.author_id}`}
           className="text-sm font-semibold transition-colors"
@@ -45,7 +47,7 @@ export default function PostCard({ post }: PostCardProps) {
           onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-primary)")}
           onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text)")}
         >
-          {authorShort}
+          {authorName}
         </Link>
         <span style={{ color: "var(--color-text-tertiary)" }}>&middot;</span>
         <span

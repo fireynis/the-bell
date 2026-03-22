@@ -40,28 +40,32 @@ func (r *PostRepo) GetPostByID(ctx context.Context, id string) (*domain.Post, er
 	if err != nil {
 		return nil, err
 	}
-	return postFromRow(row), nil
+	return postFromGetRow(row), nil
 }
 
 func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
-	var rows []Post
-	var err error
-
 	if cursor == "" {
-		rows, err = r.q.ListPostsFeedFirst(ctx, int32(limit))
-	} else {
-		rows, err = r.q.ListPostsFeed(ctx, ListPostsFeedParams{
-			ID:    cursor,
-			Limit: int32(limit),
-		})
+		rows, err := r.q.ListPostsFeedFirst(ctx, int32(limit))
+		if err != nil {
+			return nil, err
+		}
+		posts := make([]*domain.Post, len(rows))
+		for i, row := range rows {
+			posts[i] = postFromFeedFirstRow(row)
+		}
+		return posts, nil
 	}
+
+	rows, err := r.q.ListPostsFeed(ctx, ListPostsFeedParams{
+		ID:    cursor,
+		Limit: int32(limit),
+	})
 	if err != nil {
 		return nil, err
 	}
-
 	posts := make([]*domain.Post, len(rows))
 	for i, row := range rows {
-		posts[i] = postFromRow(row)
+		posts[i] = postFromFeedRow(row)
 	}
 	return posts, nil
 }
@@ -77,7 +81,7 @@ func (r *PostRepo) ListPostsByAuthor(ctx context.Context, authorID string, limit
 
 	posts := make([]*domain.Post, len(rows))
 	for i, row := range rows {
-		posts[i] = postFromRow(row)
+		posts[i] = postFromAuthorRow(row)
 	}
 	return posts, nil
 }
@@ -113,6 +117,82 @@ func postFromRow(row Post) *domain.Post {
 		Status:        domain.PostStatus(row.Status),
 		RemovalReason: row.RemovalReason,
 		CreatedAt:     row.CreatedAt.Time,
+	}
+	if row.EditedAt.Valid {
+		t := row.EditedAt.Time
+		p.EditedAt = &t
+	}
+	return p
+}
+
+func postFromGetRow(row GetPostByIDRow) *domain.Post {
+	p := &domain.Post{
+		ID:                row.ID,
+		AuthorID:          row.AuthorID,
+		Body:              row.Body,
+		ImagePath:         row.ImagePath,
+		Status:            domain.PostStatus(row.Status),
+		RemovalReason:     row.RemovalReason,
+		CreatedAt:         row.CreatedAt.Time,
+		AuthorDisplayName: row.AuthorDisplayName,
+		AuthorAvatarURL:   row.AuthorAvatarUrl,
+	}
+	if row.EditedAt.Valid {
+		t := row.EditedAt.Time
+		p.EditedAt = &t
+	}
+	return p
+}
+
+func postFromFeedRow(row ListPostsFeedRow) *domain.Post {
+	p := &domain.Post{
+		ID:                row.ID,
+		AuthorID:          row.AuthorID,
+		Body:              row.Body,
+		ImagePath:         row.ImagePath,
+		Status:            domain.PostStatus(row.Status),
+		RemovalReason:     row.RemovalReason,
+		CreatedAt:         row.CreatedAt.Time,
+		AuthorDisplayName: row.AuthorDisplayName,
+		AuthorAvatarURL:   row.AuthorAvatarUrl,
+	}
+	if row.EditedAt.Valid {
+		t := row.EditedAt.Time
+		p.EditedAt = &t
+	}
+	return p
+}
+
+func postFromFeedFirstRow(row ListPostsFeedFirstRow) *domain.Post {
+	p := &domain.Post{
+		ID:                row.ID,
+		AuthorID:          row.AuthorID,
+		Body:              row.Body,
+		ImagePath:         row.ImagePath,
+		Status:            domain.PostStatus(row.Status),
+		RemovalReason:     row.RemovalReason,
+		CreatedAt:         row.CreatedAt.Time,
+		AuthorDisplayName: row.AuthorDisplayName,
+		AuthorAvatarURL:   row.AuthorAvatarUrl,
+	}
+	if row.EditedAt.Valid {
+		t := row.EditedAt.Time
+		p.EditedAt = &t
+	}
+	return p
+}
+
+func postFromAuthorRow(row ListPostsByAuthorRow) *domain.Post {
+	p := &domain.Post{
+		ID:                row.ID,
+		AuthorID:          row.AuthorID,
+		Body:              row.Body,
+		ImagePath:         row.ImagePath,
+		Status:            domain.PostStatus(row.Status),
+		RemovalReason:     row.RemovalReason,
+		CreatedAt:         row.CreatedAt.Time,
+		AuthorDisplayName: row.AuthorDisplayName,
+		AuthorAvatarURL:   row.AuthorAvatarUrl,
 	}
 	if row.EditedAt.Valid {
 		t := row.EditedAt.Time
