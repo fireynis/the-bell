@@ -80,17 +80,31 @@ func runServe(logger *slog.Logger) {
 	postSvc := service.NewPostService(postRepo, nil)
 	reactionSvc := service.NewReactionService(reactionRepo, nil)
 
-	// Optional Redis feed cache + SSE broker
-	var sseBroker *sse.Broker
+	// One Redis client is shared by the feed cache, the SSE broker, the trust
+	// cache and the rate limiter. Building a client per feature would open four
+	// independent connection pools against the same server.
+	var rdb *redis.Client
 	if cfg.RedisURL != "" {
-		rdb, err := cache.NewRedisClient(cfg.RedisURL)
+		client, err := cache.NewRedisClient(cfg.RedisURL)
 		if err != nil {
+			logger.Error("parsing REDIS_URL", "error", err)
+			os.Exit(1)
+		}
+		if err := client.Ping(ctx).Err(); err != nil {
 			logger.Error("connecting to redis", "error", err)
 			os.Exit(1)
 		}
-		feedCache := cache.NewFeedCache(rdb, postRepo, logger)
-		postSvc.SetFeedCache(feedCache)
-		logger.Info("feed cache enabled", "redis", cfg.RedisURL)
+		defer client.Close()
+		rdb = client
+		logger.Info("redis connected")
+	} else {
+		logger.Info("REDIS_URL not set: feed cache, SSE, trust worker and rate limiting disabled")
+	}
+
+	var sseBroker *sse.Broker
+	if rdb != nil {
+		postSvc.SetFeedCache(cache.NewFeedCache(rdb, postRepo, logger))
+		logger.Info("feed cache enabled")
 
 		sseBroker = sse.NewBroker(rdb, logger)
 		logger.Info("SSE broker enabled")
@@ -113,22 +127,11 @@ func runServe(logger *slog.Logger) {
 	}
 
 	// Trust score cache + background worker (requires Redis)
-	if cfg.RedisURL != "" {
-		opts, err := redis.ParseURL(cfg.RedisURL)
-		if err != nil {
-			logger.Error("parsing redis url", "error", err)
-			os.Exit(1)
-		}
-		rdb := redis.NewClient(opts)
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			logger.Error("connecting to redis", "error", err)
-			os.Exit(1)
-		}
-		logger.Info("redis connected")
-
+	if rdb != nil {
 		trustCache := cache.NewTrustCache(rdb)
 		trustWorker := cache.NewTrustWorker(trustCache, penaltyRepo, userRepo, logger)
 		go trustWorker.Run(ctx)
+		logger.Info("trust score worker started")
 	}
 
 	// Kratos auth middleware
@@ -139,22 +142,9 @@ func runServe(logger *slog.Logger) {
 
 	// Rate limiter (optional, requires REDIS_URL)
 	var rateLimiter *middleware.RateLimiter
-	if cfg.RedisURL != "" {
-		opts, err := redis.ParseURL(cfg.RedisURL)
-		if err != nil {
-			logger.Error("parsing REDIS_URL", "error", err)
-			os.Exit(1)
-		}
-		rdb := redis.NewClient(opts)
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			logger.Warn("redis not reachable, rate limiting disabled", "error", err)
-		} else {
-			logger.Info("redis connected, rate limiting enabled")
-		}
-		rlClient := middleware.NewRedisRateLimiterClient(rdb)
-		rateLimiter = middleware.NewRateLimiter(rlClient, logger)
-	} else {
-		logger.Info("REDIS_URL not set, rate limiting disabled")
+	if rdb != nil {
+		rateLimiter = middleware.NewRateLimiter(middleware.NewRedisRateLimiterClient(rdb), logger)
+		logger.Info("rate limiting enabled")
 	}
 
 	var serverOpts []server.Option
@@ -292,13 +282,7 @@ func runSetup(logger *slog.Logger) {
 		}
 	}
 
-	var emails []string
-	for _, e := range strings.Split(*council, ",") {
-		e = strings.TrimSpace(e)
-		if e != "" {
-			emails = append(emails, e)
-		}
-	}
+	emails := parseCouncilEmails(*council)
 	if len(emails) == 0 {
 		fmt.Fprintf(os.Stderr, "error: no valid emails provided\n")
 		os.Exit(1)
@@ -368,6 +352,34 @@ func runSetup(logger *slog.Logger) {
 		fmt.Println()
 	}
 	fmt.Println("NOTE: Save these passwords! Users can reset them via the Kratos recovery flow.")
+}
+
+// parseCouncilEmails splits the --council flag into individual addresses.
+//
+// Blank entries are dropped so a trailing comma or a stray space does not
+// become an empty council member, and duplicates are removed because the
+// bootstrap creates one Kratos identity per address — the same email twice
+// would fail partway through with some members already created.
+// Comparison is case-insensitive since email local parts are treated as such
+// in practice, but the first spelling seen is kept for display.
+func parseCouncilEmails(raw string) []string {
+	var emails []string
+	seen := make(map[string]bool)
+
+	for _, e := range strings.Split(raw, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		key := strings.ToLower(e)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		emails = append(emails, e)
+	}
+
+	return emails
 }
 
 // checkPostgres verifies Postgres connectivity by parsing the DSN and
