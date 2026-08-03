@@ -75,6 +75,51 @@ func cypherParams(kvs ...any) (string, error) {
 	return string(b), nil
 }
 
+// validateGraphDepth bounds a traversal depth. An unbounded or very deep
+// variable-length pattern can walk most of the graph, so callers must stay
+// within maxGraphDepth.
+func validateGraphDepth(name string, depth int) error {
+	if depth <= 0 {
+		return fmt.Errorf("%s must be positive, got %d", name, depth)
+	}
+	if depth > maxGraphDepth {
+		return fmt.Errorf("%s %d exceeds maximum %d", name, depth, maxGraphDepth)
+	}
+	return nil
+}
+
+// parseAgtypeString reads a string value returned by AGE.
+//
+// AGE renders string values with JSON quoting ("user-123"), so the quotes are
+// removed by decoding rather than trimming: trimming would also strip quotes
+// that are genuinely part of the value and would leave any escape sequence
+// (\" or \\) undecoded. Values that are not quoted JSON are returned as-is,
+// which is what AGE does for an unquoted scalar.
+func parseAgtypeString(raw string) string {
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return raw
+	}
+	return s
+}
+
+// parseAgtypeInt reads an integer value returned by AGE, such as the hop count
+// from min(length(p)).
+func parseAgtypeInt(raw string) (int, error) {
+	var n int
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &n); err != nil {
+		return 0, fmt.Errorf("parsing agtype integer %q: %w", raw, err)
+	}
+	return n, nil
+}
+
+// parseAgtypeBool reads a boolean returned by AGE. Anything that is not
+// literally true is treated as false, so an unexpected value fails closed —
+// for the cycle check that means reporting no cycle rather than a phantom one.
+func parseAgtypeBool(raw string) bool {
+	return strings.TrimSpace(raw) == "true"
+}
+
 // AddVouchEdge creates a VOUCHES_FOR edge between two User vertices in the
 // trust graph. Vertices are created if they don't exist (MERGE).
 func (q *AGEQuerier) AddVouchEdge(ctx context.Context, voucherID, voucheeID string) error {
@@ -120,11 +165,8 @@ func (q *AGEQuerier) RemoveVouchEdge(ctx context.Context, voucherID, voucheeID s
 // FindVouchersUpToDepth returns the IDs of all users who have vouched for
 // userID, traversing up to depth hops in the trust graph.
 func (q *AGEQuerier) FindVouchersUpToDepth(ctx context.Context, userID string, depth int) ([]string, error) {
-	if depth <= 0 {
-		return nil, fmt.Errorf("depth must be positive, got %d", depth)
-	}
-	if depth > maxGraphDepth {
-		return nil, fmt.Errorf("depth %d exceeds maximum %d", depth, maxGraphDepth)
+	if err := validateGraphDepth("depth", depth); err != nil {
+		return nil, err
 	}
 
 	var ids []string
@@ -152,8 +194,7 @@ func (q *AGEQuerier) FindVouchersUpToDepth(ctx context.Context, userID string, d
 			if err := rows.Scan(&raw); err != nil {
 				return fmt.Errorf("scanning voucher id: %w", err)
 			}
-			// AGE returns agtype string values with JSON quoting: "user-123"
-			ids = append(ids, strings.Trim(raw, `"`))
+			ids = append(ids, parseAgtypeString(raw))
 		}
 		return rows.Err()
 	})
@@ -168,11 +209,8 @@ func (q *AGEQuerier) FindVouchersUpToDepth(ctx context.Context, userID string, d
 // maxDepth hops. Used for penalty propagation where hop depth determines the
 // decay multiplier.
 func (q *AGEQuerier) FindVouchersWithDepth(ctx context.Context, userID string, maxDepth int) (map[string]int, error) {
-	if maxDepth <= 0 {
-		return nil, fmt.Errorf("maxDepth must be positive, got %d", maxDepth)
-	}
-	if maxDepth > maxGraphDepth {
-		return nil, fmt.Errorf("maxDepth %d exceeds maximum %d", maxDepth, maxGraphDepth)
+	if err := validateGraphDepth("maxDepth", maxDepth); err != nil {
+		return nil, err
 	}
 
 	result := make(map[string]int)
@@ -200,9 +238,9 @@ func (q *AGEQuerier) FindVouchersWithDepth(ctx context.Context, userID string, m
 			if err := rows.Scan(&rawID, &rawDepth); err != nil {
 				return fmt.Errorf("scanning voucher depth: %w", err)
 			}
-			id := strings.Trim(rawID, `"`)
-			var depth int
-			if _, err := fmt.Sscanf(rawDepth, "%d", &depth); err != nil {
+			id := parseAgtypeString(rawID)
+			depth, err := parseAgtypeInt(rawDepth)
+			if err != nil {
 				return fmt.Errorf("parsing hop depth for %s: %w", id, err)
 			}
 			result[id] = depth
