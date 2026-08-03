@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/fireynis/the-bell/internal/repository/postgres"
@@ -33,7 +34,7 @@ func (m *mockTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row 
 }
 
 func (m *mockTx) Commit(ctx context.Context) error   { m.committed = true; return nil }
-func (m *mockTx) Rollback(ctx context.Context) error  { return nil }
+func (m *mockTx) Rollback(ctx context.Context) error { return nil }
 
 type mockRow struct {
 	err error
@@ -88,9 +89,14 @@ func TestAddVouchEdge_LoadsAGE(t *testing.T) {
 	if tx.execCalls[0] != "LOAD 'age'" {
 		t.Errorf("first exec = %q, want LOAD 'age'", tx.execCalls[0])
 	}
-	wantSet := `SET search_path = ag_catalog, "$user", public`
+	// SET LOCAL is load-bearing: a plain SET would survive the commit and leave
+	// ag_catalog ahead of public on the pooled connection for every later query.
+	wantSet := `SET LOCAL search_path = ag_catalog, "$user", public`
 	if tx.execCalls[1] != wantSet {
 		t.Errorf("second exec = %q, want %q", tx.execCalls[1], wantSet)
+	}
+	if !strings.HasPrefix(tx.execCalls[1], "SET LOCAL ") {
+		t.Errorf("search_path is set with %q; it must be scoped to the transaction", tx.execCalls[1])
 	}
 	if !tx.committed {
 		t.Error("expected transaction to be committed")

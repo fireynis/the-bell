@@ -119,18 +119,17 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	post, err := h.posts.Create(r.Context(), user.ID, req.Body, req.ImagePath)
+	post, err := h.posts.Create(r.Context(), service.PostAuthor{
+		ID:          user.ID,
+		DisplayName: user.DisplayName,
+		AvatarURL:   user.AvatarURL,
+	}, req.Body, req.ImagePath)
 	if err != nil {
 		serviceError(w, err)
 		return
 	}
 
-	// Populate denormalized author fields from the authenticated user so the
-	// response (and any SSE event) includes display name and avatar.
-	post.AuthorDisplayName = user.DisplayName
-	post.AuthorAvatarURL = user.AvatarURL
-
-	// Publish for SSE after author fields are populated.
+	// Publish for SSE.
 	if h.publisher != nil {
 		if data, err := json.Marshal(post); err == nil {
 			_ = h.publisher.PublishPost(r.Context(), data)

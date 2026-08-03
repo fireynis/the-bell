@@ -49,7 +49,18 @@ func (s *PostService) SetFeedCache(fc FeedCacher) {
 	s.feedCache = fc
 }
 
-func (s *PostService) Create(ctx context.Context, authorID, body, imagePath string) (*domain.Post, error) {
+// PostAuthor carries the author fields denormalized onto each post.
+//
+// They are supplied at creation rather than filled in by the caller afterwards
+// because the post is written to the feed cache before Create returns: a post
+// completed after the fact would be cached, and served, with no author name.
+type PostAuthor struct {
+	ID          string
+	DisplayName string
+	AvatarURL   string
+}
+
+func (s *PostService) Create(ctx context.Context, author PostAuthor, body, imagePath string) (*domain.Post, error) {
 	if err := validateBody(body); err != nil {
 		return nil, err
 	}
@@ -60,12 +71,14 @@ func (s *PostService) Create(ctx context.Context, authorID, body, imagePath stri
 	}
 
 	post := &domain.Post{
-		ID:        id.String(),
-		AuthorID:  authorID,
-		Body:      body,
-		ImagePath: imagePath,
-		Status:    domain.PostVisible,
-		CreatedAt: s.now(),
+		ID:                id.String(),
+		AuthorID:          author.ID,
+		AuthorDisplayName: author.DisplayName,
+		AuthorAvatarURL:   author.AvatarURL,
+		Body:              body,
+		ImagePath:         imagePath,
+		Status:            domain.PostVisible,
+		CreatedAt:         s.now(),
 	}
 
 	if err := s.repo.CreatePost(ctx, post); err != nil {

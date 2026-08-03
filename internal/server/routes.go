@@ -19,7 +19,10 @@ import (
 
 func (s *Server) routes() http.Handler {
 	r := chi.NewRouter()
+	// RequestLogger first so Recoverer can see the statusWriter and tell whether
+	// a response was already committed before the panic.
 	r.Use(middleware.RequestLogger(s.logger))
+	r.Use(middleware.Recoverer(s.logger))
 	r.Get("/healthz", handler.Health)
 
 	// SSE endpoint — registered before /api to avoid ContentTypeJSON middleware.

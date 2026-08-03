@@ -43,7 +43,11 @@ func (q *AGEQuerier) withAGE(ctx context.Context, fn func(tx pgx.Tx) error) erro
 	if _, err := tx.Exec(ctx, "LOAD 'age'"); err != nil {
 		return fmt.Errorf("loading age extension: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `SET search_path = ag_catalog, "$user", public`); err != nil {
+	// SET LOCAL, not SET: a plain SET outlives the transaction and stays on the
+	// pooled connection, so every later query on that connection would resolve
+	// ag_catalog ahead of public. This is the same search_path hazard the
+	// migrations guard against, and pgxpool hands the connection to anyone next.
+	if _, err := tx.Exec(ctx, `SET LOCAL search_path = ag_catalog, "$user", public`); err != nil {
 		return fmt.Errorf("setting search path: %w", err)
 	}
 

@@ -12,6 +12,24 @@ import (
 
 const sseHeartbeatInterval = 10 * time.Second
 
+// shouldDeliver reports whether an event may be sent to the given viewer.
+//
+// New posts go to everyone. Reaction events are private to the post's author,
+// since they say who reacted to whose post — so an undecodable reaction
+// payload is dropped rather than delivered. Failing open here would broadcast
+// every reaction to every connected client.
+func shouldDeliver(evt sse.Event, viewerID string) bool {
+	if evt.Type != sse.EventReaction {
+		return true
+	}
+
+	var re sse.ReactionEvent
+	if err := json.Unmarshal(evt.Data, &re); err != nil {
+		return false
+	}
+	return re.PostAuthorID == viewerID
+}
+
 // SSEHandler serves Server-Sent Events for real-time feed updates.
 type SSEHandler struct {
 	broker *sse.Broker
@@ -67,14 +85,8 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 			}
 			_ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeatInterval + 10*time.Second))
 
-			// For reaction events, only send to the post author.
-			if evt.Type == sse.EventReaction {
-				var re sse.ReactionEvent
-				if err := json.Unmarshal(evt.Data, &re); err == nil {
-					if re.PostAuthorID != user.ID {
-						continue
-					}
-				}
+			if !shouldDeliver(evt, user.ID) {
+				continue
 			}
 
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, evt.Data)

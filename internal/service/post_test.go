@@ -137,7 +137,7 @@ func TestPostService_Create(t *testing.T) {
 			repo := newMockPostRepo()
 			svc := NewPostService(repo, clock)
 
-			post, err := svc.Create(context.Background(), tt.authorID, tt.body, tt.imagePath)
+			post, err := svc.Create(context.Background(), PostAuthor{ID: tt.authorID}, tt.body, tt.imagePath)
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -463,5 +463,51 @@ func TestPostService_Delete(t *testing.T) {
 				t.Errorf("Status = %q, want %q", p.Status, domain.PostRemovedByAuthor)
 			}
 		})
+	}
+}
+
+// recordingFeedCache captures what Create hands to the cache.
+type recordingFeedCache struct {
+	created *domain.Post
+}
+
+func (c *recordingFeedCache) GetFeed(context.Context, string, int) ([]*domain.Post, error) {
+	return nil, nil
+}
+func (c *recordingFeedCache) InvalidateOnCreate(_ context.Context, p *domain.Post) {
+	// Copy, because the caller may keep mutating the post afterwards.
+	cp := *p
+	c.created = &cp
+}
+func (c *recordingFeedCache) InvalidateOnDelete(context.Context, string) {}
+
+// The post is written to the feed cache before Create returns, so the author
+// fields must already be set. Filling them in afterwards cached — and served —
+// a post with no author name, which json omitempty dropped entirely.
+func TestPostService_Create_CachesPostWithAuthorFields(t *testing.T) {
+	repo := newMockPostRepo()
+	cache := &recordingFeedCache{}
+	svc := NewPostService(repo, nil)
+	svc.SetFeedCache(cache)
+
+	author := PostAuthor{ID: "u1", DisplayName: "Ada Lovelace", AvatarURL: "/avatars/ada.png"}
+
+	post, err := svc.Create(context.Background(), author, "hello town", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if post.AuthorDisplayName != author.DisplayName {
+		t.Errorf("returned post display name = %q, want %q", post.AuthorDisplayName, author.DisplayName)
+	}
+
+	if cache.created == nil {
+		t.Fatal("post was never handed to the feed cache")
+	}
+	if cache.created.AuthorDisplayName != author.DisplayName {
+		t.Errorf("cached display name = %q, want %q", cache.created.AuthorDisplayName, author.DisplayName)
+	}
+	if cache.created.AuthorAvatarURL != author.AvatarURL {
+		t.Errorf("cached avatar = %q, want %q", cache.created.AuthorAvatarURL, author.AvatarURL)
 	}
 }

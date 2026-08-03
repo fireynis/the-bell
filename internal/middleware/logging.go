@@ -29,6 +29,18 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// Unwrap exposes the wrapped ResponseWriter to http.ResponseController.
+//
+// The embedded field is the http.ResponseWriter *interface*, which declares
+// only Header/Write/WriteHeader, so optional methods like SetWriteDeadline are
+// not promoted through it. Without this, ResponseController finds no way down
+// to the real connection and every SetWriteDeadline call returns
+// http.ErrNotSupported — which silently caps SSE streams at the server's
+// WriteTimeout.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // RequestLogger returns middleware that logs each request with method, path,
 // status code, and duration.
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
