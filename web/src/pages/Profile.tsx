@@ -299,10 +299,9 @@ export default function Profile() {
     );
   }
 
-  const tabClasses = (_tab: Tab) => {
-    const base = "px-4 py-2 text-sm font-medium border-b-2";
-    return base;
-  };
+  // Both tabs share one style; the active tab is distinguished by the inline
+  // colours applied at each call site.
+  const tabClasses = "px-4 py-2 text-sm font-medium border-b-2";
 
   const tabStyle = (tab: Tab): React.CSSProperties =>
     activeTab === tab
@@ -378,14 +377,14 @@ export default function Profile() {
           style={{ borderColor: "var(--color-border-light)" }}
         >
           <button
-            className={tabClasses("posts")}
+            className={tabClasses}
             style={tabStyle("posts")}
             onClick={() => setActiveTab("posts")}
           >
             Posts ({posts.length})
           </button>
           <button
-            className={tabClasses("vouches")}
+            className={tabClasses}
             style={tabStyle("vouches")}
             onClick={() => setActiveTab("vouches")}
           >

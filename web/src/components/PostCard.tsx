@@ -4,23 +4,9 @@ import type { Post } from "../api/types";
 import Avatar from "./Avatar";
 import { ImageLightbox } from "./ImageLightbox";
 import ReactionButton from "./ReactionButton";
+import { formatAbsoluteTime, formatRelativeTime } from "../lib/time";
 
 const REACTION_TYPES = ["bell", "heart", "celebrate"];
-
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = Date.now();
-  const diffMs = now - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 
 interface PostCardProps {
   post: Post;
@@ -56,7 +42,7 @@ export default function PostCard({ post }: PostCardProps) {
         <span
           className="text-xs"
           style={{ color: "var(--color-text-tertiary)" }}
-          title={new Date(post.created_at).toLocaleString()}
+          title={formatAbsoluteTime(post.created_at)}
         >
           {formatRelativeTime(post.created_at)}
           {post.edited_at && " (edited)"}

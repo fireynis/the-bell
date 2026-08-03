@@ -3,22 +3,7 @@ import { Link } from "react-router";
 import { moderationApi } from "../api/client.ts";
 import type { Report, Post, ApiError } from "../api/types.ts";
 import Spinner from "./Spinner.tsx";
-
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = Date.now();
-  const diffMs = now - date.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+import { formatAbsoluteTime, formatRelativeTime } from "../lib/time.ts";
 
 interface ReportCardProps {
   report: Report;
@@ -86,10 +71,10 @@ export default function ReportCard({
         </span>
         <span
           className="text-xs"
-          title={new Date(report.created_at).toLocaleString()}
+          title={formatAbsoluteTime(report.created_at)}
           style={{ color: "var(--color-text-tertiary)" }}
         >
-          {formatRelativeTime(report.created_at)}
+          {formatRelativeTime(report.created_at, { suffix: true })}
         </span>
       </div>
 

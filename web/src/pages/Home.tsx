@@ -8,6 +8,7 @@ import Spinner from "../components/Spinner.tsx";
 import { useFeed } from "../hooks/useFeed.ts";
 import { useLiveFeed } from "../hooks/useLiveFeed.ts";
 import type { ReactionNotification } from "../hooks/useLiveFeed.ts";
+import { describeReactions } from "../lib/liveFeed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 import { useSound } from "../hooks/useSound.ts";
 import type { Post } from "../api/types.ts";
@@ -29,14 +30,10 @@ export default function Home() {
     });
   };
 
-  const handleReaction = useCallback((notification: ReactionNotification) => {
-    const emoji: Record<string, string> = { bell: "\uD83D\uDD14", heart: "\u2764\uFE0F", celebrate: "\uD83C\uDF89" };
-    const e = emoji[notification.reaction_type] || "\uD83D\uDC4D";
-    if (notification.count === 1) {
-      setToast(`Someone reacted ${e} to your post`);
-    } else {
-      setToast(`${notification.count} reactions on your post`);
-    }
+  const handleReactions = useCallback((notifications: ReactionNotification[]) => {
+    const message = describeReactions(notifications);
+    if (!message) return;
+    setToast(message);
     if (!muted) {
       playChime();
     }
@@ -45,7 +42,7 @@ export default function Home() {
   const allPosts = useMemo(() => [...newPosts, ...posts], [newPosts, posts]);
   const postIds = useMemo(() => new Set(allPosts.map((p) => p.id)), [allPosts]);
 
-  const { pendingCount, pendingPosts, flush } = useLiveFeed(postIds, handleReaction);
+  const { pendingCount, pendingPosts, flush } = useLiveFeed(postIds, handleReactions);
 
   useIntersectionObserver(sentinelRef, loadMore, hasMore && !loading);
 
