@@ -101,70 +101,58 @@ func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 }
 
 // checkPromotion evaluates whether a member should be promoted to moderator.
+// The policy itself lives in evaluatePromotionGate/evaluatePromotion; this
+// method only supplies the vouch count and applies the outcome.
 func (rc *RoleChecker) checkPromotion(ctx context.Context, u RoleCheckerUser, now time.Time, result *RoleCheckResult) error {
-	// Only members can be promoted.
-	if u.Role != domain.RoleMember {
+	gate := evaluatePromotionGate(u, now)
+	if !gate.Eligible {
 		return nil
 	}
 
-	// Trust must meet the promotion threshold.
-	if u.TrustScore < domain.PromotionTrustThreshold {
-		return nil
-	}
-
-	// Must have been a member for at least PromotionMinDays.
-	daysSinceJoin := now.Sub(u.JoinedAt).Hours() / 24
-	if daysSinceJoin < float64(domain.PromotionMinDays) {
-		return nil
-	}
-
-	// Must be vouched by at least PromotionMinModVouches moderators/council.
 	modVouches, err := rc.repo.CountActiveModeratorVouchesForUser(ctx, u.ID)
 	if err != nil {
 		return fmt.Errorf("counting mod vouches: %w", err)
 	}
-	if modVouches < int64(domain.PromotionMinModVouches) {
+
+	promote, reason := evaluatePromotion(u, gate, modVouches)
+	if !promote {
 		return nil
 	}
-
-	// All criteria met -- promote.
-	reason := fmt.Sprintf("auto-promotion: trust %.1f >= %.1f, member for %d days, %d moderator vouches",
-		u.TrustScore, domain.PromotionTrustThreshold, int(daysSinceJoin), modVouches)
 
 	if err := rc.changeRole(ctx, u, domain.RoleModerator, reason, now); err != nil {
 		return err
 	}
 
-	change := RoleChange{
+	result.Promotions = append(result.Promotions, RoleChange{
 		UserID:      u.ID,
 		DisplayName: u.DisplayName,
 		OldRole:     u.Role,
 		NewRole:     domain.RoleModerator,
 		Reason:      reason,
-	}
-	result.Promotions = append(result.Promotions, change)
+	})
 	rc.logger.Info("user promoted", "user_id", u.ID, "display_name", u.DisplayName, "old_role", u.Role, "new_role", domain.RoleModerator)
 
 	return nil
 }
 
-// checkDemotion evaluates whether a user's trust has fallen below the demotion threshold.
+// checkDemotion applies the sustained-low-trust policy decided by
+// evaluateDemotion.
 func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now time.Time, result *RoleCheckResult) error {
-	if u.TrustScore >= domain.DemotionTrustThreshold {
-		// Trust is above threshold. If TrustBelowSince was set, clear it.
-		if u.TrustBelowSince != nil {
-			if err := rc.repo.ClearUserTrustBelowSince(ctx, u.ID); err != nil {
-				return fmt.Errorf("clearing trust_below_since: %w", err)
-			}
-			result.Cleared++
-			rc.logger.Info("trust recovered, cleared trust_below_since", "user_id", u.ID, "trust", u.TrustScore)
-		}
-		return nil
-	}
+	decision := evaluateDemotion(u, now)
 
-	// Trust is below the demotion threshold.
-	if u.TrustBelowSince == nil {
-		// First time below threshold -- mark the timestamp.
+	switch decision.Outcome {
+	case demotionNone, demotionWait:
+		return nil
+
+	case demotionClear:
+		if err := rc.repo.ClearUserTrustBelowSince(ctx, u.ID); err != nil {
+			return fmt.Errorf("clearing trust_below_since: %w", err)
+		}
+		result.Cleared++
+		rc.logger.Info("trust recovered, cleared trust_below_since", "user_id", u.ID, "trust", u.TrustScore)
+		return nil
+
+	case demotionMark:
 		if err := rc.repo.UpdateUserTrustBelowSince(ctx, u.ID, now); err != nil {
 			return fmt.Errorf("setting trust_below_since: %w", err)
 		}
@@ -173,44 +161,23 @@ func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now
 		return nil
 	}
 
-	// Trust has been below threshold for some time -- check if it's been long enough.
-	daysBelowThreshold := now.Sub(*u.TrustBelowSince).Hours() / 24
-	if daysBelowThreshold < float64(domain.DemotionConsecutiveDays) {
-		return nil
-	}
-
-	// Demotion criteria met.
-	var newRole domain.Role
-	switch u.Role {
-	case domain.RoleModerator:
-		newRole = domain.RoleMember
-	case domain.RoleMember:
-		newRole = domain.RolePending
-	default:
-		return nil
-	}
-
-	reason := fmt.Sprintf("auto-demotion: trust %.1f < %.1f for %d consecutive days",
-		u.TrustScore, domain.DemotionTrustThreshold, int(daysBelowThreshold))
-
-	if err := rc.changeRole(ctx, u, newRole, reason, now); err != nil {
+	if err := rc.changeRole(ctx, u, decision.NewRole, decision.Reason, now); err != nil {
 		return err
 	}
 
-	// Clear trust_below_since after demotion so the clock resets.
+	// Clear trust_below_since after demotion so the clock resets at the new role.
 	if err := rc.repo.ClearUserTrustBelowSince(ctx, u.ID); err != nil {
 		rc.logger.Error("failed to clear trust_below_since after demotion", "user_id", u.ID, "error", err)
 	}
 
-	change := RoleChange{
+	result.Demotions = append(result.Demotions, RoleChange{
 		UserID:      u.ID,
 		DisplayName: u.DisplayName,
 		OldRole:     u.Role,
-		NewRole:     newRole,
-		Reason:      reason,
-	}
-	result.Demotions = append(result.Demotions, change)
-	rc.logger.Info("user demoted", "user_id", u.ID, "display_name", u.DisplayName, "old_role", u.Role, "new_role", newRole)
+		NewRole:     decision.NewRole,
+		Reason:      decision.Reason,
+	})
+	rc.logger.Info("user demoted", "user_id", u.ID, "display_name", u.DisplayName, "old_role", u.Role, "new_role", decision.NewRole)
 
 	return nil
 }

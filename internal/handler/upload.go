@@ -50,19 +50,31 @@ func parseImageUpload(r *http.Request, maxSize int64) ([]byte, string, error) {
 		return nil, "", errFileTooLarge
 	}
 
-	// Detect MIME type from magic bytes (first 512 bytes is sufficient).
-	detected := http.DetectContentType(data)
-	ext, ok := allowedImageTypes[detected]
-	if !ok {
-		// http.DetectContentType may not recognise WebP; check RIFF header.
-		if isWebP(data) {
-			ext = ".webp"
-		} else {
-			return nil, "", errUnsupportedType
-		}
+	ext, err := detectImageExt(data)
+	if err != nil {
+		return nil, "", err
 	}
 
 	return data, ext, nil
+}
+
+// detectImageExt identifies an image by its magic bytes and returns the
+// canonical extension to store it under.
+//
+// The extension deliberately comes from the content rather than the filename
+// the client supplied, so a file named "photo.jpg" that actually contains a
+// script is rejected instead of being saved and served as an image.
+func detectImageExt(data []byte) (string, error) {
+	// http.DetectContentType only reads the first 512 bytes, which is all the
+	// magic bytes of these formats need.
+	if ext, ok := allowedImageTypes[http.DetectContentType(data)]; ok {
+		return ext, nil
+	}
+	// http.DetectContentType may not recognise WebP; check the RIFF header.
+	if isWebP(data) {
+		return ".webp", nil
+	}
+	return "", errUnsupportedType
 }
 
 // isWebP checks for the RIFF....WEBP magic bytes.

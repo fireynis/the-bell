@@ -35,6 +35,21 @@ const (
 	channelReactions = "bell:reactions:new"
 )
 
+// eventFromMessage maps a Redis pub/sub channel and payload onto an Event.
+// The second return is false for any channel this broker does not own, so an
+// unrecognized message is dropped rather than delivered as a zero-value Event
+// with an empty type that clients cannot dispatch on.
+func eventFromMessage(channel, payload string) (Event, bool) {
+	switch channel {
+	case channelPosts:
+		return Event{Type: EventNewPost, Data: json.RawMessage(payload)}, true
+	case channelReactions:
+		return Event{Type: EventReaction, Data: json.RawMessage(payload)}, true
+	default:
+		return Event{}, false
+	}
+}
+
 // Broker manages Redis pub/sub for real-time SSE events.
 type Broker struct {
 	rdb    redis.Cmdable
@@ -96,12 +111,9 @@ func (b *Broker) Subscribe(ctx context.Context) (<-chan Event, error) {
 				if !ok {
 					return
 				}
-				var evt Event
-				switch msg.Channel {
-				case channelPosts:
-					evt = Event{Type: EventNewPost, Data: json.RawMessage(msg.Payload)}
-				case channelReactions:
-					evt = Event{Type: EventReaction, Data: json.RawMessage(msg.Payload)}
+				evt, known := eventFromMessage(msg.Channel, msg.Payload)
+				if !known {
+					continue
 				}
 				select {
 				case events <- evt:

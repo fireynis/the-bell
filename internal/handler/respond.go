@@ -35,19 +35,31 @@ func Decode(r *http.Request, dst any) error {
 	return dec.Decode(dst)
 }
 
-func serviceError(w http.ResponseWriter, err error) {
+// statusForError maps a service-layer error onto the HTTP status and the
+// message sent to the client.
+//
+// Only validation errors expose their text, because those describe what the
+// caller got wrong. Everything else is reported with a fixed message so that
+// internal failures cannot leak database or infrastructure detail through the
+// API.
+func statusForError(err error) (status int, message string) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):
-		Error(w, http.StatusNotFound, "not found")
+		return http.StatusNotFound, "not found"
 	case errors.Is(err, service.ErrForbidden):
-		Error(w, http.StatusForbidden, "forbidden")
+		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, service.ErrRateLimit):
-		Error(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return http.StatusTooManyRequests, "rate limit exceeded"
 	case errors.Is(err, service.ErrValidation):
-		Error(w, http.StatusBadRequest, err.Error())
+		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrEditWindow):
-		Error(w, http.StatusConflict, "edit window expired")
+		return http.StatusConflict, "edit window expired"
 	default:
-		Error(w, http.StatusInternalServerError, "internal error")
+		return http.StatusInternalServerError, "internal error"
 	}
+}
+
+func serviceError(w http.ResponseWriter, err error) {
+	status, message := statusForError(err)
+	Error(w, status, message)
 }

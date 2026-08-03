@@ -2,12 +2,44 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/google/uuid"
 )
+
+// simpleMajority returns the number of votes needed to carry a proposal for a
+// council of the given size: strictly more than half.
+func simpleMajority(councilSize int64) int64 {
+	if councilSize <= 0 {
+		return 0
+	}
+	return councilSize/2 + 1
+}
+
+// evaluateProposal decides a proposal's status from its tallies. A proposal is
+// decided as soon as either side reaches a simple majority of the whole
+// council; approval is checked first so a council that somehow recorded a
+// majority both ways resolves to approved.
+//
+// A council size of zero has no reachable majority and always stays pending,
+// which keeps an empty or miscounted council from auto-approving everything.
+func evaluateProposal(approveCount, rejectCount, councilSize int64) domain.ProposalStatus {
+	majority := simpleMajority(councilSize)
+	if majority <= 0 {
+		return domain.ProposalPending
+	}
+	switch {
+	case approveCount >= majority:
+		return domain.ProposalApproved
+	case rejectCount >= majority:
+		return domain.ProposalRejected
+	default:
+		return domain.ProposalPending
+	}
+}
 
 // VoteRepository is the subset of vote persistence needed by VotingService.
 type VoteRepository interface {
@@ -43,7 +75,7 @@ func (s *VotingService) CastVote(ctx context.Context, proposalID, voterID string
 	}
 
 	existing, err := s.votes.GetVoteByProposalAndVoter(ctx, proposalID, voterID)
-	if err != nil && err != ErrNotFound {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("checking existing vote: %w", err)
 	}
 	if existing != nil {
@@ -67,8 +99,12 @@ func (s *VotingService) CastVote(ctx context.Context, proposalID, voterID string
 		return nil, fmt.Errorf("casting vote: %w", err)
 	}
 
-	return s.buildSummary(ctx, proposalID)
+	council, err := s.votes.CountCouncilMembers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("counting council members: %w", err)
+	}
 
+	return s.buildSummary(ctx, proposalID, council)
 }
 
 // ListPendingProposals returns summaries for all proposals that have votes.
@@ -94,7 +130,9 @@ func (s *VotingService) ListPendingProposals(ctx context.Context) ([]domain.Prop
 	return summaries, nil
 }
 
-func (s *VotingService) buildSummary(ctx context.Context, proposalID string, totalCouncil ...int64) (*domain.ProposalSummary, error) {
+// buildSummary gathers the tallies for one proposal. The caller supplies the
+// council size so that listing many proposals counts the council only once.
+func (s *VotingService) buildSummary(ctx context.Context, proposalID string, councilSize int64) (*domain.ProposalSummary, error) {
 	approveCount, err := s.votes.CountVotes(ctx, proposalID, domain.VoteApprove)
 	if err != nil {
 		return nil, fmt.Errorf("counting approvals: %w", err)
@@ -104,35 +142,17 @@ func (s *VotingService) buildSummary(ctx context.Context, proposalID string, tot
 		return nil, fmt.Errorf("counting rejections: %w", err)
 	}
 
-	var council int64
-	if len(totalCouncil) > 0 {
-		council = totalCouncil[0]
-	} else {
-		council, err = s.votes.CountCouncilMembers(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("counting council members: %w", err)
-		}
-	}
-
 	votes, err := s.votes.ListVotesByProposal(ctx, proposalID)
 	if err != nil {
 		return nil, fmt.Errorf("listing votes: %w", err)
-	}
-
-	majority := council/2 + 1
-	status := domain.ProposalPending
-	if approveCount >= majority {
-		status = domain.ProposalApproved
-	} else if rejectCount >= majority {
-		status = domain.ProposalRejected
 	}
 
 	return &domain.ProposalSummary{
 		ProposalID:   proposalID,
 		ApproveCount: approveCount,
 		RejectCount:  rejectCount,
-		TotalCouncil: council,
-		Status:       status,
+		TotalCouncil: councilSize,
+		Status:       evaluateProposal(approveCount, rejectCount, councilSize),
 		Votes:        votes,
 	}, nil
 }

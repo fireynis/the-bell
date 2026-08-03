@@ -21,6 +21,117 @@ var allowedSeverity = map[domain.ActionType][]int{
 	domain.ActionBan:     {5},
 }
 
+// actionRequest is a validated moderation action request. Building one can
+// only succeed if every rule in validateActionRequest passed, so the caller
+// does not need to re-check the fields.
+type actionRequest struct {
+	ModeratorID  string
+	TargetUserID string
+	ActionType   domain.ActionType
+	Severity     int
+	Reason       string
+	Duration     *time.Duration
+}
+
+// validateActionRequest enforces the rules governing what a moderator may do,
+// independent of whether the target exists or the write succeeds:
+//
+//   - the action type must be known, and its severity must match (a "warn"
+//     cannot carry ban-level severity, which is what drives the trust penalty)
+//   - a reason is mandatory and bounded, because actions are shown in the
+//     public audit trail
+//   - nobody may moderate themselves
+//   - mutes and suspensions are temporary and need a duration; bans are
+//     permanent and must not have one
+func validateActionRequest(
+	moderatorID, targetUserID string,
+	actionType domain.ActionType,
+	severity int,
+	reason string,
+	durationSeconds *int64,
+) (actionRequest, error) {
+	allowed, ok := allowedSeverity[actionType]
+	if !ok {
+		return actionRequest{}, fmt.Errorf("%w: invalid action type %q", ErrValidation, actionType)
+	}
+	if !slices.Contains(allowed, severity) {
+		return actionRequest{}, fmt.Errorf("%w: severity %d not valid for action type %q", ErrValidation, severity, actionType)
+	}
+
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return actionRequest{}, fmt.Errorf("%w: reason must not be empty", ErrValidation)
+	}
+	if len(reason) > maxActionReasonLen {
+		return actionRequest{}, fmt.Errorf("%w: reason exceeds %d characters", ErrValidation, maxActionReasonLen)
+	}
+
+	if moderatorID == targetUserID {
+		return actionRequest{}, fmt.Errorf("%w: cannot moderate yourself", ErrValidation)
+	}
+
+	if actionType == domain.ActionBan && durationSeconds != nil {
+		return actionRequest{}, fmt.Errorf("%w: bans cannot have a duration", ErrValidation)
+	}
+	if (actionType == domain.ActionMute || actionType == domain.ActionSuspend) && durationSeconds == nil {
+		return actionRequest{}, fmt.Errorf("%w: %s requires a duration", ErrValidation, actionType)
+	}
+
+	var duration *time.Duration
+	if durationSeconds != nil {
+		if *durationSeconds <= 0 {
+			return actionRequest{}, fmt.Errorf("%w: duration must be positive", ErrValidation)
+		}
+		d := time.Duration(*durationSeconds) * time.Second
+		duration = &d
+	}
+
+	return actionRequest{
+		ModeratorID:  moderatorID,
+		TargetUserID: targetUserID,
+		ActionType:   actionType,
+		Severity:     severity,
+		Reason:       reason,
+		Duration:     duration,
+	}, nil
+}
+
+// enforcementStep is one immediate state change to apply to the target user.
+type enforcementStep int
+
+const (
+	// enforceDropBelowPostingThreshold silences a user by pushing their trust
+	// just under the posting threshold.
+	enforceDropBelowPostingThreshold enforcementStep = iota
+	// enforceDeactivate suspends the account.
+	enforceDeactivate
+	// enforceBanRole moves the user to the banned role.
+	enforceBanRole
+	// enforceZeroTrust wipes the trust score.
+	enforceZeroTrust
+)
+
+// planEnforcement decides which immediate state changes an action implies.
+//
+// A mute only needs to act when the user is currently above the posting
+// threshold: someone already below it cannot post, and lowering their score
+// further would stack extra punishment on top of the trust penalty.
+func planEnforcement(actionType domain.ActionType, user *domain.User) []enforcementStep {
+	switch actionType {
+	case domain.ActionMute:
+		if user != nil && user.TrustScore >= domain.PostingThreshold {
+			return []enforcementStep{enforceDropBelowPostingThreshold}
+		}
+		return nil
+	case domain.ActionSuspend:
+		return []enforcementStep{enforceDeactivate}
+	case domain.ActionBan:
+		return []enforcementStep{enforceBanRole, enforceZeroTrust}
+	default:
+		return nil
+	}
+}
+
 // ModerationActionRepository abstracts moderation action persistence.
 type ModerationActionRepository interface {
 	CreateModerationAction(ctx context.Context, action *domain.ModerationAction) error
@@ -98,54 +209,22 @@ func (s *ModerationActionService) TakeAction(
 	reason string,
 	durationSeconds *int64,
 ) (*TakeActionResult, error) {
-	// Validate action type
-	allowed, ok := allowedSeverity[actionType]
-	if !ok {
-		return nil, fmt.Errorf("%w: invalid action type %q", ErrValidation, actionType)
-	}
-
-	// Validate severity matches action type
-	if !slices.Contains(allowed, severity) {
-		return nil, fmt.Errorf("%w: severity %d not valid for action type %q", ErrValidation, severity, actionType)
-	}
-
-	// Validate reason
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return nil, fmt.Errorf("%w: reason must not be empty", ErrValidation)
-	}
-	if len(reason) > maxActionReasonLen {
-		return nil, fmt.Errorf("%w: reason exceeds %d characters", ErrValidation, maxActionReasonLen)
-	}
-
-	// Prevent self-moderation
-	if moderatorID == targetUserID {
-		return nil, fmt.Errorf("%w: cannot moderate yourself", ErrValidation)
-	}
-
-	// Verify target user exists and capture for enforcement
-	targetUser, err := s.users.GetUserByID(ctx, targetUserID)
+	req, err := validateActionRequest(moderatorID, targetUserID, actionType, severity, reason, durationSeconds)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate duration rules
-	if actionType == domain.ActionBan && durationSeconds != nil {
-		return nil, fmt.Errorf("%w: bans cannot have a duration", ErrValidation)
-	}
-	if (actionType == domain.ActionMute || actionType == domain.ActionSuspend) && durationSeconds == nil {
-		return nil, fmt.Errorf("%w: %s requires a duration", ErrValidation, actionType)
+	// Verify target user exists and capture for enforcement.
+	targetUser, err := s.users.GetUserByID(ctx, req.TargetUserID)
+	if err != nil {
+		return nil, err
 	}
 
 	now := s.now()
 
-	// Compute expires_at
 	var expiresAt *time.Time
-	var dur *time.Duration
-	if durationSeconds != nil {
-		d := time.Duration(*durationSeconds) * time.Second
-		dur = &d
-		t := now.Add(d)
+	if req.Duration != nil {
+		t := now.Add(*req.Duration)
 		expiresAt = &t
 	}
 
@@ -156,12 +235,12 @@ func (s *ModerationActionService) TakeAction(
 
 	action := &domain.ModerationAction{
 		ID:           id.String(),
-		TargetUserID: targetUserID,
-		ModeratorID:  moderatorID,
-		Action:       actionType,
-		Severity:     severity,
-		Reason:       reason,
-		Duration:     dur,
+		TargetUserID: req.TargetUserID,
+		ModeratorID:  req.ModeratorID,
+		Action:       req.ActionType,
+		Severity:     req.Severity,
+		Reason:       req.Reason,
+		Duration:     req.Duration,
 		CreatedAt:    now,
 		ExpiresAt:    expiresAt,
 	}
@@ -170,7 +249,7 @@ func (s *ModerationActionService) TakeAction(
 		return nil, fmt.Errorf("creating moderation action: %w", err)
 	}
 
-	penalties, err := s.moderation.PropagatePenalties(ctx, action.ID, targetUserID, severity)
+	penalties, err := s.moderation.PropagatePenalties(ctx, action.ID, req.TargetUserID, req.Severity)
 	if err != nil {
 		// Action was persisted; return partial result with error.
 		return &TakeActionResult{Action: action, Penalties: penalties}, fmt.Errorf("propagating penalties: %w", err)
@@ -178,7 +257,7 @@ func (s *ModerationActionService) TakeAction(
 
 	result := &TakeActionResult{Action: action, Penalties: penalties}
 
-	if err := s.enforce(ctx, actionType, targetUser); err != nil {
+	if err := s.enforce(ctx, req.ActionType, targetUser); err != nil {
 		return result, fmt.Errorf("enforcing action: %w", err)
 	}
 
@@ -228,23 +307,27 @@ func (s *ModerationActionService) GetActionHistory(
 	return entries, nil
 }
 
+// enforce applies the state changes planned by planEnforcement.
 func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User) error {
 	if s.enforcer == nil {
 		return nil
 	}
 
-	switch actionType {
-	case domain.ActionMute:
-		if user.TrustScore >= domain.PostingThreshold {
-			return s.enforcer.UpdateUserTrustScore(ctx, user.ID, domain.PostingThreshold-1.0)
+	for _, step := range planEnforcement(actionType, user) {
+		var err error
+		switch step {
+		case enforceDropBelowPostingThreshold:
+			err = s.enforcer.UpdateUserTrustScore(ctx, user.ID, domain.PostingThreshold-1.0)
+		case enforceDeactivate:
+			err = s.enforcer.DeactivateUser(ctx, user.ID)
+		case enforceBanRole:
+			err = s.enforcer.UpdateUserRole(ctx, user.ID, domain.RoleBanned)
+		case enforceZeroTrust:
+			err = s.enforcer.UpdateUserTrustScore(ctx, user.ID, 0)
 		}
-	case domain.ActionSuspend:
-		return s.enforcer.DeactivateUser(ctx, user.ID)
-	case domain.ActionBan:
-		if err := s.enforcer.UpdateUserRole(ctx, user.ID, domain.RoleBanned); err != nil {
+		if err != nil {
 			return err
 		}
-		return s.enforcer.UpdateUserTrustScore(ctx, user.ID, 0)
 	}
 	return nil
 }

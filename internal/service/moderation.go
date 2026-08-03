@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -18,6 +19,73 @@ type PenaltyRepository interface {
 // PenaltyGraphQuerier abstracts graph traversal for penalty propagation.
 type PenaltyGraphQuerier interface {
 	FindVouchersWithDepth(ctx context.Context, userID string, maxDepth int) (map[string]int, error)
+}
+
+// PenaltySpec describes one penalty to be applied, before it is given an
+// identity or persisted. Depth 0 is the direct penalty on the offender;
+// deeper entries are propagated to the people who vouched for them.
+type PenaltySpec struct {
+	UserID string
+	Amount float64
+	Depth  int
+}
+
+// planDirectPenalty returns the penalty applied to the offender themselves.
+func planDirectPenalty(targetUserID string, severity int) PenaltySpec {
+	return PenaltySpec{
+		UserID: targetUserID,
+		Amount: domain.DirectPenalty[severity],
+		Depth:  0,
+	}
+}
+
+// planPropagatedPenalties computes the penalties owed by the people who
+// vouched for the offender, decayed geometrically by hop distance. This is the
+// mechanism that gives vouchers a stake in who they endorse.
+//
+// The result is ordered by depth and then user ID so that the same inputs
+// always produce the same plan — Go map iteration order is randomized, so
+// building this list straight from the vouchers map would make both the stored
+// order and any test assertion over it unstable.
+//
+// A voucher at depth 0, or one that is the offender themselves, would
+// double-penalize the offender on top of the direct penalty, so both are
+// skipped.
+func planPropagatedPenalties(targetUserID string, severity int, vouchers map[string]int) []PenaltySpec {
+	basePenalty := domain.DirectPenalty[severity]
+	decayRate := domain.PropagationDecay[severity]
+
+	specs := make([]PenaltySpec, 0, len(vouchers))
+	for voucherID, depth := range vouchers {
+		if depth <= 0 || voucherID == targetUserID {
+			continue
+		}
+		specs = append(specs, PenaltySpec{
+			UserID: voucherID,
+			Amount: basePenalty * math.Pow(decayRate, float64(depth)),
+			Depth:  depth,
+		})
+	}
+
+	sort.Slice(specs, func(i, j int) bool {
+		if specs[i].Depth != specs[j].Depth {
+			return specs[i].Depth < specs[j].Depth
+		}
+		return specs[i].UserID < specs[j].UserID
+	})
+
+	return specs
+}
+
+// penaltyDecayTime returns when penalties from an action of this severity stop
+// applying, or nil when the severity carries a permanent penalty.
+func penaltyDecayTime(severity int, now time.Time) *time.Time {
+	decayDays := domain.PenaltyDecayDays[severity]
+	if decayDays <= 0 {
+		return nil
+	}
+	t := now.AddDate(0, 0, decayDays)
+	return &t
 }
 
 // ModerationService orchestrates trust penalty propagation.
@@ -47,61 +115,46 @@ func (s *ModerationService) PropagatePenalties(ctx context.Context, actionID, ta
 	}
 
 	now := s.now()
-	basePenalty := domain.DirectPenalty[severity]
-	decayRate := domain.PropagationDecay[severity]
-	maxHops := domain.PropagationDepth[severity]
-	decayDays := domain.PenaltyDecayDays[severity]
+	decaysAt := penaltyDecayTime(severity, now)
 
-	var decaysAt *time.Time
-	if decayDays > 0 {
-		t := now.AddDate(0, 0, decayDays)
-		decaysAt = &t
-	}
-
-	// Create direct penalty for the target user.
-	directID, err := uuid.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("generating penalty id: %w", err)
-	}
-	direct := domain.TrustPenalty{
-		ID:                 directID.String(),
-		UserID:             targetUserID,
-		ModerationActionID: actionID,
-		PenaltyAmount:      basePenalty,
-		HopDepth:           0,
-		CreatedAt:          now,
-		DecaysAt:           decaysAt,
-	}
-	if err := s.penalties.CreateTrustPenalty(ctx, &direct); err != nil {
-		return nil, fmt.Errorf("creating direct penalty: %w", err)
-	}
-
-	results := []domain.TrustPenalty{direct}
-
-	// Find vouchers and apply propagated penalties.
-	vouchers, err := s.graph.FindVouchersWithDepth(ctx, targetUserID, maxHops)
-	if err != nil {
-		return results, fmt.Errorf("querying vouch graph: %w", err)
-	}
-
-	for voucherID, depth := range vouchers {
-		amount := basePenalty * math.Pow(decayRate, float64(depth))
-
+	persist := func(spec PenaltySpec) (domain.TrustPenalty, error) {
 		penaltyID, err := uuid.NewV7()
 		if err != nil {
-			return results, fmt.Errorf("generating penalty id: %w", err)
+			return domain.TrustPenalty{}, fmt.Errorf("generating penalty id: %w", err)
 		}
 		penalty := domain.TrustPenalty{
 			ID:                 penaltyID.String(),
-			UserID:             voucherID,
+			UserID:             spec.UserID,
 			ModerationActionID: actionID,
-			PenaltyAmount:      amount,
-			HopDepth:           depth,
+			PenaltyAmount:      spec.Amount,
+			HopDepth:           spec.Depth,
 			CreatedAt:          now,
 			DecaysAt:           decaysAt,
 		}
 		if err := s.penalties.CreateTrustPenalty(ctx, &penalty); err != nil {
-			return results, fmt.Errorf("creating propagated penalty for %s: %w", voucherID, err)
+			return domain.TrustPenalty{}, err
+		}
+		return penalty, nil
+	}
+
+	// The offender's own penalty is written first and deliberately does not
+	// depend on the vouch graph: if the graph is unavailable the offender must
+	// still lose trust, otherwise a ban would leave their score untouched.
+	direct, err := persist(planDirectPenalty(targetUserID, severity))
+	if err != nil {
+		return nil, fmt.Errorf("creating direct penalty: %w", err)
+	}
+	results := []domain.TrustPenalty{direct}
+
+	vouchers, err := s.graph.FindVouchersWithDepth(ctx, targetUserID, domain.PropagationDepth[severity])
+	if err != nil {
+		return results, fmt.Errorf("querying vouch graph: %w", err)
+	}
+
+	for _, spec := range planPropagatedPenalties(targetUserID, severity, vouchers) {
+		penalty, err := persist(spec)
+		if err != nil {
+			return results, fmt.Errorf("creating propagated penalty for %s: %w", spec.UserID, err)
 		}
 		results = append(results, penalty)
 	}
