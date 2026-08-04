@@ -103,6 +103,24 @@ func TestVotingHandler_CastVote_BadRequest(t *testing.T) {
 	}
 }
 
+func TestVotingHandler_CastVote_InvalidJSON(t *testing.T) {
+	svc := &mockVotingService{}
+	h := NewVotingHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/council/votes", strings.NewReader(`{bad`))
+	ctx := middleware.WithUser(req.Context(), &domain.User{
+		ID: "council-1", Role: domain.RoleCouncil, IsActive: true,
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	h.CastVote(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
 func TestVotingHandler_CastVote_ValidationError(t *testing.T) {
 	svc := &mockVotingService{
 		castErr: service.ErrValidation,

@@ -2,11 +2,11 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/fireynis/the-bell/internal/httpjson"
 	kratos "github.com/ory/kratos-client-go"
 )
 
@@ -122,7 +122,5 @@ func RequireRole(minRole domain.Role) func(http.Handler) http.Handler {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	httpjson.WriteError(w, status, msg)
 }

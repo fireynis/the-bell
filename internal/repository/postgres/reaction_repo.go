@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,10 @@ func NewReactionRepo(q *Queries) *ReactionRepo {
 	return &ReactionRepo{q: q}
 }
 
+// AddReaction is idempotent: reacting twice is ordinary user behaviour — a
+// double-tap, a retried request — so queries/reactions.sql upserts rather than
+// raising a unique violation. A repeat returns nil and leaves the original
+// created_at intact. Callers must not expect a duplicate to be reported.
 func (r *ReactionRepo) AddReaction(ctx context.Context, reaction *domain.Reaction) error {
 	_, err := r.q.AddReaction(ctx, AddReactionParams{
 		ID:           reaction.ID,
@@ -34,6 +39,13 @@ func (r *ReactionRepo) RemoveReaction(ctx context.Context, userID, postID string
 		UserID:       userID,
 		PostID:       postID,
 		ReactionType: string(reactionType),
+	})
+}
+
+func (r *ReactionRepo) CountReactionsReceivedByAuthorSince(ctx context.Context, authorID string, since time.Time) (int64, error) {
+	return r.q.CountReactionsReceivedByAuthorSince(ctx, CountReactionsReceivedByAuthorSinceParams{
+		AuthorID:  authorID,
+		CreatedAt: pgtype.Timestamptz{Time: since, Valid: true},
 	})
 }
 

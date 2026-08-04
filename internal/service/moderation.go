@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"time"
@@ -90,9 +91,11 @@ func penaltyDecayTime(severity int, now time.Time) *time.Time {
 
 // ModerationService orchestrates trust penalty propagation.
 type ModerationService struct {
-	penalties PenaltyRepository
-	graph     PenaltyGraphQuerier
-	now       func() time.Time
+	penalties  PenaltyRepository
+	graph      PenaltyGraphQuerier
+	now        func() time.Time
+	trustQueue TrustRecalcQueue
+	logger     *slog.Logger
 }
 
 func NewModerationService(penalties PenaltyRepository, graph PenaltyGraphQuerier, clock func() time.Time) *ModerationService {
@@ -103,6 +106,26 @@ func NewModerationService(penalties PenaltyRepository, graph PenaltyGraphQuerier
 		penalties: penalties,
 		graph:     graph,
 		now:       clock,
+		logger:    slog.Default(),
+	}
+}
+
+// SetTrustQueue attaches an optional trust recalculation queue, mirroring
+// PostService.SetFeedCache. Deployments without Redis leave it nil and simply
+// do not recalculate.
+func (s *ModerationService) SetTrustQueue(q TrustRecalcQueue) {
+	s.trustQueue = q
+}
+
+// enqueueRecalc asks for a user's trust score to be recomputed. A penalty that
+// is already committed must not be undone because the queue is unreachable, so
+// this only ever logs.
+func (s *ModerationService) enqueueRecalc(ctx context.Context, userID string) {
+	if s.trustQueue == nil {
+		return
+	}
+	if err := s.trustQueue.EnqueueRecalc(ctx, userID); err != nil {
+		s.logger.Warn("enqueueing trust recalculation failed", "user_id", userID, "error", err)
 	}
 }
 
@@ -134,6 +157,9 @@ func (s *ModerationService) PropagatePenalties(ctx context.Context, actionID, ta
 		if err := s.penalties.CreateTrustPenalty(ctx, &penalty); err != nil {
 			return domain.TrustPenalty{}, err
 		}
+		// The penalty has landed, so this user's moderation component has
+		// changed and their score is now stale.
+		s.enqueueRecalc(ctx, spec.UserID)
 		return penalty, nil
 	}
 

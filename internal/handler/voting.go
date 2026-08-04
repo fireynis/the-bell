@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -32,6 +33,26 @@ type listProposalsResponse struct {
 	Proposals []domain.ProposalSummary `json:"proposals"`
 }
 
+var (
+	errMissingProposalID = errors.New("proposal_id is required")
+	errInvalidVoteChoice = errors.New("vote must be 'approve' or 'reject'")
+)
+
+// validateCastVote checks a cast-vote request before it reaches the service.
+//
+// The choice is matched against the two known values here so that an unknown
+// one is rejected as a bad request rather than recorded as a vote that no
+// tally will ever count.
+func validateCastVote(req castVoteRequest) error {
+	if req.ProposalID == "" {
+		return errMissingProposalID
+	}
+	if req.Vote != string(domain.VoteApprove) && req.Vote != string(domain.VoteReject) {
+		return errInvalidVoteChoice
+	}
+	return nil
+}
+
 // CastVote handles POST /api/v1/admin/council/votes.
 func (h *VotingHandler) CastVote(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
@@ -46,12 +67,8 @@ func (h *VotingHandler) CastVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ProposalID == "" {
-		Error(w, http.StatusBadRequest, "proposal_id is required")
-		return
-	}
-	if req.Vote != "approve" && req.Vote != "reject" {
-		Error(w, http.StatusBadRequest, "vote must be 'approve' or 'reject'")
+	if err := validateCastVote(req); err != nil {
+		Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

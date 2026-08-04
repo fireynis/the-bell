@@ -8,14 +8,29 @@ import (
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
-	"github.com/fireynis/the-bell/internal/service"
 )
+
+// timestampFormat is the wire format for every timestamp this handler emits.
+// The frontend parses profile and vouch timestamps with the same code, so the
+// two must not drift.
+const timestampFormat = "2006-01-02T15:04:05Z07:00"
 
 // UserHandler handles HTTP requests for user profile operations.
 type UserHandler struct {
-	users   *service.UserService
-	posts   *service.PostService
+	users   profileService
+	posts   authorPostLister
 	vouches VouchLister
+}
+
+// profileService abstracts the user profile reads and writes the handler needs.
+type profileService interface {
+	GetByID(ctx context.Context, id string) (*domain.User, error)
+	UpdateProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error)
+}
+
+// authorPostLister abstracts listing a single author's posts.
+type authorPostLister interface {
+	ListByAuthor(ctx context.Context, authorID string, limit int) ([]*domain.Post, error)
 }
 
 // VouchLister abstracts reading vouches for profile display.
@@ -25,7 +40,7 @@ type VouchLister interface {
 }
 
 // NewUserHandler creates a UserHandler.
-func NewUserHandler(users *service.UserService, posts *service.PostService, vouches VouchLister) *UserHandler {
+func NewUserHandler(users profileService, posts authorPostLister, vouches VouchLister) *UserHandler {
 	return &UserHandler{users: users, posts: posts, vouches: vouches}
 }
 
@@ -55,7 +70,7 @@ func toProfileResponse(u *domain.User) userProfileResponse {
 		TrustScore:  u.TrustScore,
 		Role:        string(u.Role),
 		IsActive:    u.IsActive,
-		JoinedAt:    u.JoinedAt.Format("2006-01-02T15:04:05Z07:00"),
+		JoinedAt:    u.JoinedAt.Format(timestampFormat),
 	}
 }
 
@@ -147,7 +162,7 @@ func toVouchEntry(v *domain.Vouch) vouchEntry {
 		VoucherID: v.VoucherID,
 		VoucheeID: v.VoucheeID,
 		Status:    string(v.Status),
-		CreatedAt: v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt: v.CreatedAt.Format(timestampFormat),
 	}
 }
 

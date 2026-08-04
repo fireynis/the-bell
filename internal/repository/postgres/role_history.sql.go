@@ -46,36 +46,3 @@ func (q *Queries) CreateRoleHistoryEntry(ctx context.Context, arg CreateRoleHist
 	)
 	return i, err
 }
-
-const listRoleHistoryByUser = `-- name: ListRoleHistoryByUser :many
-SELECT id, user_id, old_role, new_role, reason, created_at FROM role_history
-WHERE user_id = $1
-ORDER BY created_at DESC
-`
-
-func (q *Queries) ListRoleHistoryByUser(ctx context.Context, userID string) ([]RoleHistory, error) {
-	rows, err := q.db.Query(ctx, listRoleHistoryByUser, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []RoleHistory{}
-	for rows.Next() {
-		var i RoleHistory
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.OldRole,
-			&i.NewRole,
-			&i.Reason,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}

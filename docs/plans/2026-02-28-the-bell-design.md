@@ -107,15 +107,24 @@ Caps prevent gaming by spam-posting. 90-day rolling window.
 ### Voucher Score (35%)
 
 ```
-people_i_vouched = count of active vouches I've given
-their_avg_trust = average trust score of my vouchees
+vouches_received = count of active vouches I have received
+their_avg_trust = average trust score of the people who vouched for me
 
 voucher_health = their_avg_trust / 100.0
-base_voucher = min(100, people_i_vouched × 15)   # caps at ~7 vouches
+base_voucher = min(100, vouches_received × 15)   # caps at ~7 vouches
 voucher_score = base_voucher × voucher_health
 ```
 
-Your score depends on the behavior of people you vouch for.
+Your score depends on how many people have vouched for you and how trusted
+they are: an endorsement from a high-trust member is worth more than one from
+a member who is barely above the threshold.
+
+> **The SQL is authoritative for trust semantics.** Where this document and the
+> queries disagree, the queries win. `CountActiveVouchesWithAvgTrust` in
+> `queries/vouches.sql` filters on `vouchee_id` and joins `users` on
+> `voucher_id` — vouches *received*, averaged over the *vouchers*. An earlier
+> revision of this section described it backwards (vouches given, averaged over
+> vouchees); `docs/user-guide.md` has always been correct.
 
 ### Moderation Score (30%)
 

@@ -79,6 +79,16 @@ func TestValidateActionRequest_Rejects(t *testing.T) {
 			wantMsg: "not valid for action type",
 		},
 		{
+			name: "severity below the range", moderator: "mod", target: "t",
+			actionType: domain.ActionWarn, severity: 0, reason: "x",
+			wantMsg: "not valid for action type",
+		},
+		{
+			name: "severity above the range", moderator: "mod", target: "t",
+			actionType: domain.ActionBan, severity: 6, reason: "x",
+			wantMsg: "not valid for action type",
+		},
+		{
 			name: "empty reason", moderator: "mod", target: "t",
 			actionType: domain.ActionWarn, severity: 1, reason: "",
 			wantMsg: "reason must not be empty",

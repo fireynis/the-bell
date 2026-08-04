@@ -1,14 +1,5 @@
 import type { ActionHistoryEntry } from "../api/types.ts";
-
-function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
+import { formatDateTime } from "../lib/time.ts";
 
 const ACTION_BADGE_STYLES: Record<string, React.CSSProperties> = {
   warn: {
@@ -59,7 +50,7 @@ export default function ActionHistoryCard({ entry }: ActionHistoryCardProps) {
           {action.action.toUpperCase()}
         </span>
         <span className="text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-          {formatDate(action.created_at)}
+          {formatDateTime(action.created_at)}
         </span>
       </div>
 
@@ -74,7 +65,7 @@ export default function ActionHistoryCard({ entry }: ActionHistoryCardProps) {
         <span>Severity: {action.severity}</span>
         <span>Moderator: {action.moderator_id.slice(0, 8)}</span>
         {action.expires_at && (
-          <span>Expires: {formatDate(action.expires_at)}</span>
+          <span>Expires: {formatDateTime(action.expires_at)}</span>
         )}
       </div>
 
@@ -103,7 +94,7 @@ export default function ActionHistoryCard({ entry }: ActionHistoryCardProps) {
                 </span>
                 {p.decays_at && (
                   <span style={{ color: "var(--color-text-tertiary)" }}>
-                    Decays {formatDate(p.decays_at)}
+                    Decays {formatDateTime(p.decays_at)}
                   </span>
                 )}
               </div>

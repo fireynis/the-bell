@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,7 @@ type mockActionRepo struct {
 	actions            []*domain.ModerationAction
 	actionsByTarget    []*domain.ModerationAction
 	actionsByModerator []*domain.ModerationAction
+	listErr            error
 }
 
 func newMockActionRepoH() *mockActionRepo {
@@ -31,7 +33,7 @@ func (m *mockActionRepo) CreateModerationAction(_ context.Context, action *domai
 }
 
 func (m *mockActionRepo) ListActionsByTarget(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
-	return m.actionsByTarget, nil
+	return m.actionsByTarget, m.listErr
 }
 
 func (m *mockActionRepo) ListActionsByModerator(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
@@ -93,6 +95,7 @@ func (m *mockPenaltyListerH) ListPenaltiesByActionID(_ context.Context, actionID
 
 type mockPenaltyGraph struct {
 	vouchers map[string]int
+	err      error
 }
 
 func newMockPenaltyGraphH() *mockPenaltyGraph {
@@ -100,6 +103,9 @@ func newMockPenaltyGraphH() *mockPenaltyGraph {
 }
 
 func (m *mockPenaltyGraph) FindVouchersWithDepth(_ context.Context, _ string, _ int) (map[string]int, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
 	return m.vouchers, nil
 }
 
@@ -399,5 +405,68 @@ func TestModerationHandler_ListActions_Pagination(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+// --- ListActions: service failure ---
+
+func TestModerationHandler_ListActions_ServiceError(t *testing.T) {
+	actionRepo := newMockActionRepoH()
+	actionRepo.listErr = errors.New("query timed out")
+
+	svc := newTestModerationActionServiceWithPenalties(
+		actionRepo, newMockActionUserLookup(),
+		newMockPenaltyRepoH(), newMockPenaltyGraphH(), newMockPenaltyListerH(),
+	)
+	h := handler.NewModerationHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/actions/user-1", nil)
+	req = withUser(req, testModerator())
+	req = withChiURLParam(req, "user_id", "user-1")
+	rec := httptest.NewRecorder()
+
+	h.ListActions(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- TakeAction: penalty propagation failure ---
+
+// The action row is written before penalties are propagated, so a vouch-graph
+// failure leaves a real, un-retractable action behind. Reporting an error would
+// invite the moderator to retry and duplicate it, so the response stays 201 and
+// carries the action that was created.
+func TestModerationHandler_TakeAction_PenaltyFailureStillReports201(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+
+	graph := newMockPenaltyGraphH()
+	graph.err = errors.New("age: connection refused")
+
+	svc := newTestModerationActionService(newMockActionRepoH(), users, newMockPenaltyRepoH(), graph)
+	h := handler.NewModerationHandler(svc)
+
+	body := `{"target_user_id":"target-1","action_type":"warn","severity":1,"reason":"first warning"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/actions", strings.NewReader(body))
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.TakeAction(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var result service.TakeActionResult
+	decodeBody(t, rec, &result)
+	if result.Action == nil || result.Action.TargetUserID != "target-1" {
+		t.Fatalf("response = %+v, want the created action", result.Action)
+	}
+	// The offender's own penalty is written before the graph is consulted, so
+	// it survives the failure.
+	if len(result.Penalties) != 1 {
+		t.Errorf("penalties = %d, want the direct penalty to be reported", len(result.Penalties))
 	}
 }

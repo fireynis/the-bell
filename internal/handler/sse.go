@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,14 +31,31 @@ func shouldDeliver(evt sse.Event, viewerID string) bool {
 	return re.PostAuthorID == viewerID
 }
 
+// EventSubscriber hands out a stream of events for one connected client.
+// ServeFeed depends on this rather than on *sse.Broker so the streaming loop
+// can be driven directly in tests; *sse.Broker satisfies it as-is.
+type EventSubscriber interface {
+	Subscribe(ctx context.Context) (<-chan sse.Event, error)
+}
+
 // SSEHandler serves Server-Sent Events for real-time feed updates.
 type SSEHandler struct {
-	broker *sse.Broker
+	broker EventSubscriber
+	// heartbeatInterval is how often a comment frame is written to keep the
+	// connection alive; tests shorten it so they need not wait for the real one.
+	heartbeatInterval time.Duration
 }
 
 // NewSSEHandler creates a new SSEHandler backed by the given broker.
-func NewSSEHandler(broker *sse.Broker) *SSEHandler {
-	return &SSEHandler{broker: broker}
+func NewSSEHandler(broker EventSubscriber) *SSEHandler {
+	return &SSEHandler{broker: broker, heartbeatInterval: sseHeartbeatInterval}
+}
+
+// extendDeadline pushes the connection's write deadline past the next
+// heartbeat. The server's WriteTimeout (15s) would otherwise kill this
+// long-lived connection before the next frame is due.
+func (h *SSEHandler) extendDeadline(rc *http.ResponseController) {
+	_ = rc.SetWriteDeadline(time.Now().Add(h.heartbeatInterval + 10*time.Second))
 }
 
 // ServeFeed streams SSE events to an authenticated client.
@@ -54,6 +72,14 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Subscribe before committing to a stream: once the SSE headers are
+	// flushed the status is 200 and an error response can no longer be sent.
+	events, err := h.broker.Subscribe(r.Context())
+	if err != nil {
+		Error(w, http.StatusInternalServerError, "failed to subscribe")
+		return
+	}
+
 	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -64,15 +90,9 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 
 	// Extend write deadline immediately — the default WriteTimeout (15s) would
 	// kill this long-lived connection before the first heartbeat fires.
-	_ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeatInterval + 10*time.Second))
+	h.extendDeadline(rc)
 
-	events, err := h.broker.Subscribe(r.Context())
-	if err != nil {
-		Error(w, http.StatusInternalServerError, "failed to subscribe")
-		return
-	}
-
-	heartbeat := time.NewTicker(sseHeartbeatInterval)
+	heartbeat := time.NewTicker(h.heartbeatInterval)
 	defer heartbeat.Stop()
 
 	for {
@@ -83,7 +103,7 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			_ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeatInterval + 10*time.Second))
+			h.extendDeadline(rc)
 
 			if !shouldDeliver(evt, user.ID) {
 				continue
@@ -92,7 +112,7 @@ func (h *SSEHandler) ServeFeed(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, evt.Data)
 			flusher.Flush()
 		case <-heartbeat.C:
-			_ = rc.SetWriteDeadline(time.Now().Add(sseHeartbeatInterval + 10*time.Second))
+			h.extendDeadline(rc)
 			fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 		}

@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { FeedResponse, Post } from "../api/types";
+import type { FeedResponse } from "../api/types";
+import { applyFeedPage, initialFeedState, type FeedState } from "../lib/feed";
 
 const PAGE_SIZE = 20;
 
 export function useFeed() {
-  const [posts, setPosts] = useState<Post[]>([]);
+  const [feed, setFeed] = useState<FeedState>(initialFeedState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(true);
-  const cursorRef = useRef<string | undefined>(undefined);
   const fetchingRef = useRef(false);
 
   const fetchPage = useCallback(async (cursor?: string) => {
@@ -23,11 +22,7 @@ export function useFeed() {
       if (cursor) params.set("cursor", cursor);
 
       const data = await api.get<FeedResponse>(`/posts/?${params}`);
-      const newPosts = data.posts ?? [];
-
-      setPosts((prev) => (cursor ? [...prev, ...newPosts] : newPosts));
-      cursorRef.current = data.next_cursor;
-      setHasMore(!!data.next_cursor);
+      setFeed((prev) => applyFeedPage(prev, data, !!cursor));
     } catch {
       setError("Failed to load posts. Please try again.");
     } finally {
@@ -41,17 +36,22 @@ export function useFeed() {
   }, [fetchPage]);
 
   const loadMore = useCallback(() => {
-    if (!fetchingRef.current && hasMore && cursorRef.current) {
-      fetchPage(cursorRef.current);
+    if (!fetchingRef.current && feed.hasMore && feed.cursor) {
+      fetchPage(feed.cursor);
     }
-  }, [fetchPage, hasMore]);
+  }, [fetchPage, feed.hasMore, feed.cursor]);
 
   const retry = useCallback(() => {
-    setPosts([]);
-    cursorRef.current = undefined;
-    setHasMore(true);
+    setFeed(initialFeedState());
     fetchPage();
   }, [fetchPage]);
 
-  return { posts, loading, hasMore, error, loadMore, retry };
+  return {
+    posts: feed.posts,
+    loading,
+    hasMore: feed.hasMore,
+    error,
+    loadMore,
+    retry,
+  };
 }

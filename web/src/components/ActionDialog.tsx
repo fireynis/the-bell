@@ -2,17 +2,15 @@ import { useState, useEffect } from "react";
 import { moderationApi } from "../api/client.ts";
 import type { ApiError } from "../api/types.ts";
 import ErrorBanner from "./ErrorBanner.tsx";
-
-const ACTION_TYPES = ["warn", "mute", "suspend", "ban"] as const;
-
-const SEVERITY_MAP: Record<string, number[]> = {
-  warn: [1, 2],
-  mute: [3],
-  suspend: [4],
-  ban: [5],
-};
-
-const NEEDS_DURATION = new Set(["mute", "suspend"]);
+import {
+  ACTION_TYPES,
+  MAX_ACTION_REASON_LENGTH,
+  MAX_DURATION_HOURS,
+  buildActionRequest,
+  needsDuration as actionNeedsDuration,
+  severitiesFor,
+  validateAction,
+} from "../lib/moderation.ts";
 
 const inputStyle: React.CSSProperties = {
   borderColor: "var(--color-border)",
@@ -47,19 +45,16 @@ export default function ActionDialog({
   // Auto-set severity when action type changes
   useEffect(() => {
     if (actionType) {
-      const allowed = SEVERITY_MAP[actionType];
-      if (allowed) {
+      const allowed = severitiesFor(actionType);
+      if (allowed.length > 0) {
         setSeverity(allowed[0]);
       }
     }
   }, [actionType]);
 
-  const needsDuration = NEEDS_DURATION.has(actionType);
-  const canSubmit =
-    actionType !== "" &&
-    severity > 0 &&
-    reason.trim().length > 0 &&
-    !submitting;
+  const needsDuration = actionNeedsDuration(actionType);
+  const check = validateAction({ actionType, severity, reason }, durationHours);
+  const canSubmit = check.valid && !submitting;
 
   function getFocusedStyle(fieldId: string): React.CSSProperties {
     return focusedField === fieldId
@@ -69,21 +64,19 @@ export default function ActionDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (submitting) return;
+    if (!check.valid) {
+      setError(check.error ?? null);
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
 
     try {
-      await moderationApi.takeAction({
-        target_user_id: targetUserId,
-        action_type: actionType,
-        severity,
-        reason: reason.trim(),
-        duration_seconds: needsDuration
-          ? durationHours * 3600
-          : undefined,
-      });
+      await moderationApi.takeAction(
+        buildActionRequest(targetUserId, { actionType, severity, reason }, durationHours),
+      );
       onActionTaken();
     } catch (err) {
       const apiErr = err as ApiError;
@@ -155,7 +148,7 @@ export default function ActionDialog({
                 onFocus={() => setFocusedField("severity")}
                 onBlur={() => setFocusedField(null)}
               >
-                {SEVERITY_MAP[actionType]?.map((s) => (
+                {severitiesFor(actionType).map((s) => (
                   <option key={s} value={s}>
                     Level {s}
                   </option>
@@ -178,7 +171,7 @@ export default function ActionDialog({
                 id="duration"
                 type="number"
                 min={1}
-                max={8760}
+                max={MAX_DURATION_HOURS}
                 value={durationHours}
                 onChange={(e) => setDurationHours(Number(e.target.value))}
                 style={getFocusedStyle("duration")}
@@ -201,7 +194,7 @@ export default function ActionDialog({
               id="reason"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              maxLength={1000}
+              maxLength={MAX_ACTION_REASON_LENGTH}
               rows={3}
               style={{ ...getFocusedStyle("reason"), resize: "none" }}
               onFocus={() => setFocusedField("reason")}
@@ -209,7 +202,7 @@ export default function ActionDialog({
               placeholder="Describe why this action is being taken..."
             />
             <p className="mt-1 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-              {reason.length}/1000
+              {reason.length}/{MAX_ACTION_REASON_LENGTH}
             </p>
           </div>
 

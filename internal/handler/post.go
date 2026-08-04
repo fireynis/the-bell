@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -194,7 +195,7 @@ func (h *PostHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.enrichPosts(r.Context(), r, []*domain.Post{post})
+	h.enrichPosts(r.Context(), []*domain.Post{post})
 
 	JSON(w, http.StatusOK, post)
 }
@@ -214,14 +215,9 @@ func (h *PostHandler) ListFeed(w http.ResponseWriter, r *http.Request) {
 		posts = []*domain.Post{}
 	}
 
-	h.enrichPosts(r.Context(), r, posts)
+	h.enrichPosts(r.Context(), posts)
 
-	resp := listFeedResponse{Posts: posts}
-	if len(posts) == limit {
-		resp.NextCursor = posts[len(posts)-1].ID
-	}
-
-	JSON(w, http.StatusOK, resp)
+	JSON(w, http.StatusOK, listFeedResponse{Posts: posts, NextCursor: nextCursor(posts, limit)})
 }
 
 // Update handles PATCH /api/v1/posts/{id}.
@@ -267,8 +263,24 @@ func (h *PostHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// nextCursor returns the cursor for the page following posts, or "" when this
+// page is the last one.
+//
+// A full page is the only signal the feed query gives that more posts may
+// exist, so exactly limit posts always yields a cursor — even when it turns out
+// the next page is empty.
+func nextCursor(posts []*domain.Post, limit int) string {
+	if len(posts) == 0 || len(posts) != limit {
+		return ""
+	}
+	return posts[len(posts)-1].ID
+}
+
 // enrichPosts attaches reaction counts and user reactions to posts.
-func (h *PostHandler) enrichPosts(ctx context.Context, r *http.Request, posts []*domain.Post) {
+//
+// Enrichment is best-effort: a feed missing its reaction counts is still a
+// usable feed, so a failure is logged rather than failing the whole request.
+func (h *PostHandler) enrichPosts(ctx context.Context, posts []*domain.Post) {
 	if h.reactionEnricher == nil || len(posts) == 0 {
 		return
 	}
@@ -278,7 +290,10 @@ func (h *PostHandler) enrichPosts(ctx context.Context, r *http.Request, posts []
 		postIDs[i] = p.ID
 	}
 
-	if counts, err := h.reactionEnricher.BatchCountByPosts(ctx, postIDs); err == nil {
+	counts, err := h.reactionEnricher.BatchCountByPosts(ctx, postIDs)
+	if err != nil {
+		slog.Warn("loading reaction counts for feed", "error", err, "posts", len(postIDs))
+	} else {
 		for _, p := range posts {
 			if c, ok := counts[p.ID]; ok {
 				p.ReactionCounts = c
@@ -286,13 +301,19 @@ func (h *PostHandler) enrichPosts(ctx context.Context, r *http.Request, posts []
 		}
 	}
 
-	if user, ok := middleware.UserFromContext(ctx); ok {
-		if userReactions, err := h.reactionEnricher.BatchGetUserReactions(ctx, user.ID, postIDs); err == nil {
-			for _, p := range posts {
-				if ur, ok := userReactions[p.ID]; ok {
-					p.UserReactions = ur
-				}
-			}
+	user, ok := middleware.UserFromContext(ctx)
+	if !ok {
+		return
+	}
+
+	userReactions, err := h.reactionEnricher.BatchGetUserReactions(ctx, user.ID, postIDs)
+	if err != nil {
+		slog.Warn("loading user reactions for feed", "error", err, "user_id", user.ID)
+		return
+	}
+	for _, p := range posts {
+		if ur, ok := userReactions[p.ID]; ok {
+			p.UserReactions = ur
 		}
 	}
 }

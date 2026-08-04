@@ -28,6 +28,9 @@ func (r *VouchRepo) CreateVouch(ctx context.Context, vouch *domain.Vouch) error 
 		Status:    string(vouch.Status),
 		CreatedAt: pgtype.Timestamptz{Time: vouch.CreatedAt, Valid: true},
 	})
+	if isUniqueViolation(err) {
+		return service.ErrValidation
+	}
 	return err
 }
 
@@ -61,6 +64,17 @@ func (r *VouchRepo) CountVouchesByVoucherSince(ctx context.Context, voucherID st
 		VoucherID: voucherID,
 		CreatedAt: pgtype.Timestamptz{Time: since, Valid: true},
 	})
+}
+
+// CountActiveVouchesWithAvgTrust returns how many active vouches the user has
+// received and the mean trust score of the vouchers, which is 0 when there are
+// none.
+func (r *VouchRepo) CountActiveVouchesWithAvgTrust(ctx context.Context, voucheeID string) (int64, float64, error) {
+	row, err := r.q.CountActiveVouchesWithAvgTrust(ctx, voucheeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return row.VouchCount, row.AvgTrust, nil
 }
 
 func (r *VouchRepo) ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]*domain.Vouch, error) {

@@ -10,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/fireynis/the-bell/internal/testsupport"
 )
 
 func TestPostLifecycle(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	// Create a test user with member role and sufficient trust to post.
-	user := testUser(t, pool, uniqueKratosID("poster"), domain.RoleMember, 80.0)
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("poster"), domain.RoleMember, 80.0)
 	srv := testServer(t, pool, user)
 	handler := srv.Handler()
 
@@ -165,9 +166,9 @@ func TestPostLifecycle(t *testing.T) {
 }
 
 func TestPostPagination(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
-	user := testUser(t, pool, uniqueKratosID("paginator"), domain.RoleMember, 80.0)
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("paginator"), domain.RoleMember, 80.0)
 	srv := testServer(t, pool, user)
 	handler := srv.Handler()
 
@@ -268,9 +269,9 @@ func TestPostPagination(t *testing.T) {
 }
 
 func TestPostValidation(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
-	user := testUser(t, pool, uniqueKratosID("validator"), domain.RoleMember, 80.0)
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("validator"), domain.RoleMember, 80.0)
 	srv := testServer(t, pool, user)
 	handler := srv.Handler()
 
@@ -300,10 +301,10 @@ func TestPostValidation(t *testing.T) {
 }
 
 func TestPostAuthorizationLowTrust(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	// User with trust below posting threshold (30.0).
-	user := testUser(t, pool, uniqueKratosID("lowtrust"), domain.RoleMember, 20.0)
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("lowtrust"), domain.RoleMember, 20.0)
 	srv := testServer(t, pool, user)
 	handler := srv.Handler()
 

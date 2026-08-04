@@ -6,19 +6,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/fireynis/the-bell/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	workerPollTimeout = 5 * time.Second
-	baseTrustScore    = 100.0
-)
-
-// PenaltyQuerier retrieves active penalties for a user.
-type PenaltyQuerier interface {
-	ListActivePenaltiesByUser(ctx context.Context, userID string) ([]domain.TrustPenalty, error)
-}
+const workerPollTimeout = 5 * time.Second
 
 // TrustScoreUpdater persists a recalculated trust score to the database.
 type TrustScoreUpdater interface {
@@ -27,19 +19,25 @@ type TrustScoreUpdater interface {
 
 // TrustWorker polls the Redis recalculation queue and updates trust scores.
 type TrustWorker struct {
-	cache     *TrustCache
-	penalties PenaltyQuerier
-	users     TrustScoreUpdater
-	logger    *slog.Logger
+	cache  *TrustCache
+	inputs service.TrustInputs
+	users  TrustScoreUpdater
+	logger *slog.Logger
+	now    func() time.Time
+	// pollTimeout is how long each blocking dequeue waits before looping.
+	// Tests shorten it so the idle path can be exercised without a real wait.
+	pollTimeout time.Duration
 }
 
 // NewTrustWorker creates a TrustWorker.
-func NewTrustWorker(cache *TrustCache, penalties PenaltyQuerier, users TrustScoreUpdater, logger *slog.Logger) *TrustWorker {
+func NewTrustWorker(cache *TrustCache, inputs service.TrustInputs, users TrustScoreUpdater, logger *slog.Logger) *TrustWorker {
 	return &TrustWorker{
-		cache:     cache,
-		penalties: penalties,
-		users:     users,
-		logger:    logger,
+		cache:       cache,
+		inputs:      inputs,
+		users:       users,
+		logger:      logger,
+		now:         time.Now,
+		pollTimeout: workerPollTimeout,
 	}
 }
 
@@ -54,7 +52,7 @@ func (w *TrustWorker) Run(ctx context.Context) {
 		default:
 		}
 
-		userID, err := w.cache.DequeueRecalc(ctx, workerPollTimeout)
+		userID, err := w.cache.DequeueRecalc(ctx, w.pollTimeout)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				continue
@@ -74,24 +72,12 @@ func (w *TrustWorker) Run(ctx context.Context) {
 }
 
 // recalculate computes the trust score for a user and updates both cache and DB.
-// For now: base score (100) minus sum of active penalty amounts.
+// The score itself is the four-component composite; this method only moves the
+// result into storage.
 func (w *TrustWorker) recalculate(ctx context.Context, userID string) error {
-	penalties, err := w.penalties.ListActivePenaltiesByUser(ctx, userID)
+	score, err := service.CalcCompositeTrust(ctx, w.inputs, userID, w.now())
 	if err != nil {
 		return err
-	}
-
-	var totalPenalty float64
-	for _, p := range penalties {
-		totalPenalty += p.PenaltyAmount
-	}
-
-	score := baseTrustScore - totalPenalty
-	if score < 0 {
-		score = 0
-	}
-	if score > 100 {
-		score = 100
 	}
 
 	if err := w.users.UpdateUserTrustScore(ctx, userID, score); err != nil {
@@ -103,6 +89,6 @@ func (w *TrustWorker) recalculate(ctx context.Context, userID string) error {
 		// Non-fatal: DB is the source of truth.
 	}
 
-	w.logger.Debug("trust score recalculated", "user_id", userID, "score", score, "penalties", len(penalties))
+	w.logger.Debug("trust score recalculated", "user_id", userID, "score", score)
 	return nil
 }

@@ -45,6 +45,37 @@ export function remainingChars(body: string): number {
 }
 
 /**
+ * counterColor grades the character counter from calm to alarming as the limit
+ * approaches: green until 50 characters remain, amber from there, red for the
+ * last 20.
+ *
+ * Both boundaries are inclusive of the tighter colour, so the counter has
+ * already turned red by the time it reaches the number it warns about rather
+ * than one keystroke after.
+ */
+export function counterColor(remaining: number): string {
+  if (remaining <= 20) return "var(--color-danger)";
+  if (remaining <= 50) return "#ca8a04"; // yellow-600
+  return "#16a34a"; // green-600
+}
+
+/**
+ * counterOpacity fades the character counter in over the twenty characters
+ * before 100 remain, so it is invisible for an ordinary short post and fully
+ * present well before the limit matters.
+ *
+ * Returning a ramp rather than toggling visibility avoids the counter popping
+ * into existence mid-sentence and pulling the eye off the text box. The ramp is
+ * bounded by its own branch — `remaining` is in (80, 100] there, so the result
+ * lands in [0, 1) without needing a clamp.
+ */
+export function counterOpacity(remaining: number): number {
+  if (remaining > 100) return 0;
+  if (remaining > 80) return (100 - remaining) / 20;
+  return 1;
+}
+
+/**
  * validateImageFile checks type and size before upload. The server re-checks
  * the real magic bytes; this only avoids sending a file that cannot succeed.
  */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAbsoluteTime, formatRelativeTime } from "./time";
+import { formatAbsoluteTime, formatDateTime, formatRelativeTime } from "./time";
 
 const NOW = Date.parse("2026-03-01T12:00:00Z");
 
@@ -86,5 +86,37 @@ describe("formatAbsoluteTime", () => {
   it("returns an empty string for an unparseable date", () => {
     expect(formatAbsoluteTime("not a date")).toBe("");
     expect(formatAbsoluteTime("")).toBe("");
+  });
+});
+
+describe("formatDateTime", () => {
+  it("renders a parseable timestamp", () => {
+    expect(formatDateTime("2026-03-01T12:00:00Z")).not.toBe("");
+  });
+
+  // The audit trail needs the time of day, not just the date: two actions on
+  // the same user on the same day have to be told apart.
+  it("includes the time of day, so same-day actions are distinguishable", () => {
+    const morning = formatDateTime("2026-03-01T09:30:00Z");
+    const evening = formatDateTime("2026-03-01T21:30:00Z");
+    expect(morning).not.toBe(evening);
+  });
+
+  it("includes the year, since history outlives the current one", () => {
+    expect(formatDateTime("2026-03-01T12:00:00Z")).toContain("2026");
+  });
+
+  // The moderation card used to render the literal "Invalid Date" here.
+  it.each(["not a date", "", "0000-13-45"])(
+    "returns an empty string for the unparseable input %o",
+    (input) => {
+      expect(formatDateTime(input)).toBe("");
+    },
+  );
+
+  it("agrees with formatAbsoluteTime about what is unparseable", () => {
+    for (const input of ["not a date", "", "2026-03-01T12:00:00Z"]) {
+      expect(formatDateTime(input) === "").toBe(formatAbsoluteTime(input) === "");
+    }
   });
 });

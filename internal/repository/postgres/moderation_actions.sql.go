@@ -56,27 +56,6 @@ func (q *Queries) CreateModerationAction(ctx context.Context, arg CreateModerati
 	return i, err
 }
 
-const getModerationActionByID = `-- name: GetModerationActionByID :one
-SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions WHERE id = $1
-`
-
-func (q *Queries) GetModerationActionByID(ctx context.Context, id string) (ModerationAction, error) {
-	row := q.db.QueryRow(ctx, getModerationActionByID, id)
-	var i ModerationAction
-	err := row.Scan(
-		&i.ID,
-		&i.TargetUserID,
-		&i.ModeratorID,
-		&i.ActionType,
-		&i.Severity,
-		&i.Reason,
-		&i.DurationSeconds,
-		&i.CreatedAt,
-		&i.ExpiresAt,
-	)
-	return i, err
-}
-
 const listModerationActionsByModerator = `-- name: ListModerationActionsByModerator :many
 SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions
 WHERE moderator_id = $1

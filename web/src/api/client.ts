@@ -1,4 +1,16 @@
-import type { ApiError } from "./types";
+import type {
+  ActionHistoryEntry,
+  ActionHistoryResponse,
+  ApiError,
+  CreatePostRequest,
+  ModerationQueueResponse,
+  Post,
+  Report,
+  TakeActionRequest,
+  TownConfig,
+  UpdateProfileRequest,
+  User,
+} from "./types";
 
 class ApiClient {
   private baseUrl: string;
@@ -73,32 +85,33 @@ class ApiClient {
 
 export const api = new ApiClient();
 
-// Convenience wrappers used by context providers and hooks.
+// Convenience wrappers used by context providers, hooks and pages. Going
+// through these rather than calling api.post with an object literal is what
+// gets a request body type-checked against the shape the server parses.
 export const userApi = {
-  getMe: () => api.get<import("./types").User>("/me"),
+  getMe: () => api.get<User>("/me"),
+  updateProfile: (req: UpdateProfileRequest) => api.put<User>("/users/me", req),
+};
+
+export const postApi = {
+  create: (req: CreatePostRequest) => api.post<Post>("/posts/", req),
+  /** Multipart variant; the body and image are read from the form data. */
+  createWithImage: (form: FormData) => api.upload<Post>("/posts/", form),
 };
 
 export const moderationApi = {
   getModerationQueue: (limit: number, offset: number) =>
-    api.get<import("./types").ModerationQueueResponse>(
-      `/moderation/queue?limit=${limit}&offset=${offset}`,
-    ),
+    api.get<ModerationQueueResponse>(`/moderation/queue?limit=${limit}&offset=${offset}`),
   updateReportStatus: (reportId: string, status: string) =>
-    api.patch<import("./types").Report>(`/moderation/reports/${reportId}`, {
-      status,
-    }),
-  takeAction: (req: import("./types").TakeActionRequest) =>
-    api.post<import("./types").ActionHistoryEntry>("/moderation/actions", req),
+    api.patch<Report>(`/moderation/reports/${reportId}`, { status }),
+  takeAction: (req: TakeActionRequest) =>
+    api.post<ActionHistoryEntry>("/moderation/actions", req),
   getActionHistory: (userId: string, limit: number, offset: number) =>
-    api.get<import("./types").ActionHistoryResponse>(
-      `/moderation/actions/${userId}?limit=${limit}&offset=${offset}`,
-    ),
-  getPost: (postId: string) =>
-    api.get<import("./types").Post>(`/posts/${postId}`),
+    api.get<ActionHistoryResponse>(`/moderation/actions/${userId}?limit=${limit}&offset=${offset}`),
+  getPost: (postId: string) => api.get<Post>(`/posts/${postId}`),
 };
 
 export const configApi = {
-  getConfig: () => api.get<import("./types").TownConfig>("/config"),
-  updateConfig: (config: Record<string, string>) =>
-    api.put<void>("/admin/config", config),
+  getConfig: () => api.get<TownConfig>("/config"),
+  updateConfig: (config: Record<string, string>) => api.put<void>("/admin/config", config),
 };

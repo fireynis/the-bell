@@ -54,10 +54,6 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := chi.URLParam(r, "id")
-	if userID == "" {
-		Error(w, http.StatusBadRequest, "missing user id")
-		return
-	}
 
 	user, err := h.approvals.Approve(r.Context(), userID)
 	if err != nil {

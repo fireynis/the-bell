@@ -16,12 +16,12 @@ var (
 )
 
 // ReactionRepository abstracts reaction persistence using domain types.
+//
+// Reads are absent by design: the feed loads reactions for a page of posts in
+// one go through handler.ReactionEnricher, so this service only ever writes.
 type ReactionRepository interface {
 	AddReaction(ctx context.Context, reaction *domain.Reaction) error
 	RemoveReaction(ctx context.Context, userID, postID string, reactionType domain.ReactionType) error
-	CountByPost(ctx context.Context, postID string) (map[domain.ReactionType]int, error)
-	GetUserReaction(ctx context.Context, userID, postID string, reactionType domain.ReactionType) (*domain.Reaction, error)
-	ListByPost(ctx context.Context, postID string) ([]*domain.Reaction, error)
 }
 
 // ReactionService orchestrates reaction business logic.
@@ -65,12 +65,4 @@ func (s *ReactionService) Remove(ctx context.Context, userID, postID string, rea
 		return fmt.Errorf("%w: %s", ErrInvalidReactionType, reactionType)
 	}
 	return s.repo.RemoveReaction(ctx, userID, postID, reactionType)
-}
-
-func (s *ReactionService) CountByPost(ctx context.Context, postID string) (map[domain.ReactionType]int, error) {
-	return s.repo.CountByPost(ctx, postID)
-}
-
-func (s *ReactionService) ListByPost(ctx context.Context, postID string) ([]*domain.Reaction, error) {
-	return s.repo.ListByPost(ctx, postID)
 }

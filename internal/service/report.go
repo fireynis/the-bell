@@ -12,9 +12,25 @@ import (
 )
 
 const (
-	hourlyReportLimit   = 5
-	maxReportReasonLen  = 1000
+	hourlyReportLimit  = 5
+	maxReportReasonLen = 1000
 )
+
+// validateReportReason normalizes and checks the reason a reporter typed, and
+// returns the trimmed value that should be persisted. A reason is what a
+// moderator reads to triage the queue, so a whitespace-only one is worthless
+// and an unbounded one is a display hazard. The length bound is in bytes, not
+// runes, matching the column limit in the database.
+func validateReportReason(reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "", fmt.Errorf("%w: reason must not be empty", ErrValidation)
+	}
+	if len(reason) > maxReportReasonLen {
+		return "", fmt.Errorf("%w: reason exceeds %d characters", ErrValidation, maxReportReasonLen)
+	}
+	return reason, nil
+}
 
 // ReportRepository abstracts report persistence using domain types.
 type ReportRepository interface {
@@ -50,12 +66,9 @@ func NewReportService(reports ReportRepository, posts PostGetter, clock func() t
 
 // SubmitReport creates a new report for a post.
 func (s *ReportService) SubmitReport(ctx context.Context, reporterID, postID, reason string) (*domain.Report, error) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return nil, fmt.Errorf("%w: reason must not be empty", ErrValidation)
-	}
-	if len(reason) > maxReportReasonLen {
-		return nil, fmt.Errorf("%w: reason exceeds %d characters", ErrValidation, maxReportReasonLen)
+	reason, err := validateReportReason(reason)
+	if err != nil {
+		return nil, err
 	}
 
 	post, err := s.posts.GetPostByID(ctx, postID)

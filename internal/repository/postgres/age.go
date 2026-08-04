@@ -283,7 +283,7 @@ func (q *AGEQuerier) HasCyclicVouch(ctx context.Context, voucherID, voucheeID st
 		if err != nil {
 			return fmt.Errorf("checking cycle: %w", err)
 		}
-		hasCycle = strings.TrimSpace(raw) == "true"
+		hasCycle = parseAgtypeBool(raw)
 		return nil
 	})
 	return hasCycle, err

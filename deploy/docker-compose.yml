@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: apache/age:latest
+    # Pinned: apache/age:latest floats across Postgres majors (it moved to PG18
+    # and will move again), which would leave the server unable to start against
+    # an existing data directory. Keep this identical to docker-compose.yml and
+    # internal/testsupport so test and production cannot drift apart.
+    image: apache/age:release_PG18_1.7.0
     container_name: bell-postgres
     restart: unless-stopped
     mem_limit: 512m

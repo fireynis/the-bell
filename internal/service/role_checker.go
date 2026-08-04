@@ -138,8 +138,14 @@ func (rc *RoleChecker) checkPromotion(ctx context.Context, u RoleCheckerUser, no
 // checkDemotion applies the sustained-low-trust policy decided by
 // evaluateDemotion.
 func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now time.Time, result *RoleCheckResult) error {
-	decision := evaluateDemotion(u, now)
+	return rc.applyDemotion(ctx, u, evaluateDemotion(u, now), now, result)
+}
 
+// applyDemotion writes whatever evaluateDemotion decided. Every outcome is
+// handled explicitly and an unrecognized one is an error, so a demotionOutcome
+// added to the policy later cannot silently fall through into taking a role
+// away from someone.
+func (rc *RoleChecker) applyDemotion(ctx context.Context, u RoleCheckerUser, decision demotionDecision, now time.Time, result *RoleCheckResult) error {
 	switch decision.Outcome {
 	case demotionNone, demotionWait:
 		return nil
@@ -159,6 +165,12 @@ func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now
 		result.Marked++
 		rc.logger.Info("trust below threshold, marked trust_below_since", "user_id", u.ID, "trust", u.TrustScore)
 		return nil
+
+	case demotionDemote:
+		// Handled below, where the role change and its bookkeeping live.
+
+	default:
+		return fmt.Errorf("unhandled demotion outcome %d", decision.Outcome)
 	}
 
 	if err := rc.changeRole(ctx, u, decision.NewRole, decision.Reason, now); err != nil {

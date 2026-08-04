@@ -24,10 +24,6 @@ New users start as "pending" and must be vouched for by trusted members before t
 # Ensure the shared Docker network exists
 docker network create proxy
 
-# Create the required PostgreSQL databases
-psql -h postgres -U appuser -c "CREATE DATABASE bell;"
-psql -h postgres -U appuser -c "CREATE DATABASE bell_kratos;"
-
 # Configure
 cat > .env <<EOF
 POSTGRES_PASSWORD=your_db_password
@@ -38,8 +34,18 @@ EOF
 docker compose up -d
 
 # Bootstrap with initial council members
-docker exec bell ./bell setup --council=mayor@springfield.gov,clerk@springfield.gov
+docker exec -it bell ./bell setup --council=mayor@springfield.gov,clerk@springfield.gov
 ```
+
+You do not need to create the databases by hand. On first start the Postgres
+container creates `bell` from `POSTGRES_DB` and runs `deploy/init-db.sh`, which
+creates `bell_kratos`. Against a pre-existing Postgres that skipped those init
+hooks, run `bell setup --create-db` instead — it derives both names from
+`DATABASE_URL`, so a DSN ending in `/thebell` yields `thebell` and
+`thebell_kratos`.
+
+`bell setup` prompts for anything you omit, so `-it` matters if you leave off
+`--council` or `--town-name`.
 
 The application is then available at `http://bell.home.arpa` (or whatever domain your reverse proxy is configured with).
 

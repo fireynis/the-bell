@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -132,11 +133,27 @@ func planEnforcement(actionType domain.ActionType, user *domain.User) []enforcem
 	}
 }
 
+// ModerationActionLister reads the moderation audit trail. The history service
+// needs only these two, so it takes this rather than the full repository.
+type ModerationActionLister interface {
+	ListActionsByTarget(ctx context.Context, targetUserID string, limit, offset int) ([]*domain.ModerationAction, error)
+	ListActionsByModerator(ctx context.Context, moderatorID string, limit, offset int) ([]*domain.ModerationAction, error)
+}
+
 // ModerationActionRepository abstracts moderation action persistence.
 type ModerationActionRepository interface {
 	CreateModerationAction(ctx context.Context, action *domain.ModerationAction) error
-	ListActionsByTarget(ctx context.Context, targetUserID string, limit, offset int) ([]*domain.ModerationAction, error)
-	ListActionsByModerator(ctx context.Context, moderatorID string, limit, offset int) ([]*domain.ModerationAction, error)
+	ModerationActionLister
+}
+
+// PenaltyPropagator applies the trust penalties a moderation action implies.
+//
+// ModerationActionService depends on this rather than on *ModerationService so
+// that it names the one method it actually calls: constructing the concrete
+// service drags in a penalty repository and a vouch graph, which callers that
+// only take actions have no reason to supply.
+type PenaltyPropagator interface {
+	PropagatePenalties(ctx context.Context, actionID, targetUserID string, severity int) ([]domain.TrustPenalty, error)
 }
 
 // PenaltyLister extends PenaltyRepository with read operations for audit.
@@ -173,16 +190,16 @@ type ActionHistoryEntry struct {
 type ModerationActionService struct {
 	actions    ModerationActionRepository
 	users      ActionUserLookup
-	moderation *ModerationService
+	moderation PenaltyPropagator
 	enforcer   UserEnforcer
-	penalties  PenaltyLister
+	history    *ModerationHistoryService
 	now        func() time.Time
 }
 
 func NewModerationActionService(
 	actions ModerationActionRepository,
 	users ActionUserLookup,
-	moderation *ModerationService,
+	moderation PenaltyPropagator,
 	enforcer UserEnforcer,
 	penalties PenaltyLister,
 	clock func() time.Time,
@@ -195,7 +212,7 @@ func NewModerationActionService(
 		users:      users,
 		moderation: moderation,
 		enforcer:   enforcer,
-		penalties:  penalties,
+		history:    NewModerationHistoryService(actions, penalties),
 		now:        clock,
 	}
 }
@@ -249,25 +266,58 @@ func (s *ModerationActionService) TakeAction(
 		return nil, fmt.Errorf("creating moderation action: %w", err)
 	}
 
-	penalties, err := s.moderation.PropagatePenalties(ctx, action.ID, req.TargetUserID, req.Severity)
-	if err != nil {
-		// Action was persisted; return partial result with error.
-		return &TakeActionResult{Action: action, Penalties: penalties}, fmt.Errorf("propagating penalties: %w", err)
+	// Enforcement runs before propagation and deliberately does not depend on
+	// the vouch graph: it needs only the action type and the user. Running it
+	// second meant an unreachable graph returned early and left a banned user
+	// un-banned and still able to post.
+	enforceErr := s.enforce(ctx, req.ActionType, targetUser)
+	if enforceErr != nil {
+		enforceErr = fmt.Errorf("enforcing action: %w", enforceErr)
 	}
 
+	penalties, propagateErr := s.moderation.PropagatePenalties(ctx, action.ID, req.TargetUserID, req.Severity)
+	if propagateErr != nil {
+		propagateErr = fmt.Errorf("propagating penalties: %w", propagateErr)
+	}
+
+	// Action was persisted; return a partial result alongside any error so the
+	// caller does not retry and duplicate it.
 	result := &TakeActionResult{Action: action, Penalties: penalties}
+	return result, errors.Join(enforceErr, propagateErr)
+}
 
-	if err := s.enforce(ctx, req.ActionType, targetUser); err != nil {
-		return result, fmt.Errorf("enforcing action: %w", err)
-	}
+// GetActionHistory delegates to ModerationHistoryService.
+//
+// Reading the audit trail shares nothing with taking an action, so the logic
+// lives on its own type. This method remains only because the moderation
+// handler and cmd/bell reach for it through *ModerationActionService; once
+// those depend on ModerationHistoryService directly it should be deleted.
+func (s *ModerationActionService) GetActionHistory(
+	ctx context.Context,
+	userID string,
+	byModerator bool,
+	limit, offset int,
+) ([]ActionHistoryEntry, error) {
+	return s.history.GetActionHistory(ctx, userID, byModerator, limit, offset)
+}
 
-	return result, nil
+// ModerationHistoryService reads the moderation audit trail: the actions
+// recorded against (or by) a user, each paired with the trust penalties it
+// caused. It holds no clock, no enforcer and no penalty engine, because
+// reporting on past moderation decides nothing.
+type ModerationHistoryService struct {
+	actions   ModerationActionLister
+	penalties PenaltyLister
+}
+
+func NewModerationHistoryService(actions ModerationActionLister, penalties PenaltyLister) *ModerationHistoryService {
+	return &ModerationHistoryService{actions: actions, penalties: penalties}
 }
 
 // GetActionHistory returns moderation actions with their associated penalties.
 // If byModerator is true, it lists actions taken BY the user (for council audit).
 // Otherwise, it lists actions taken AGAINST the user.
-func (s *ModerationActionService) GetActionHistory(
+func (s *ModerationHistoryService) GetActionHistory(
 	ctx context.Context,
 	userID string,
 	byModerator bool,
@@ -317,7 +367,7 @@ func (s *ModerationActionService) enforce(ctx context.Context, actionType domain
 		var err error
 		switch step {
 		case enforceDropBelowPostingThreshold:
-			err = s.enforcer.UpdateUserTrustScore(ctx, user.ID, domain.PostingThreshold-1.0)
+			err = s.enforcer.UpdateUserTrustScore(ctx, user.ID, mutedTrustScore)
 		case enforceDeactivate:
 			err = s.enforcer.DeactivateUser(ctx, user.ID)
 		case enforceBanRole:

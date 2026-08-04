@@ -10,61 +10,6 @@ import (
 	"github.com/fireynis/the-bell/internal/domain"
 )
 
-// mockUserRepo is an in-memory UserRepository for testing.
-type mockUserRepo struct {
-	users    map[string]*domain.User // keyed by ID
-	byKratos map[string]*domain.User // keyed by KratosIdentityID
-
-	getByKratosErr error // if set, GetUserByKratosID returns this error
-	createErr      error // if set, CreateUser returns this error
-}
-
-func newMockUserRepo() *mockUserRepo {
-	return &mockUserRepo{
-		users:    make(map[string]*domain.User),
-		byKratos: make(map[string]*domain.User),
-	}
-}
-
-func (m *mockUserRepo) CreateUser(_ context.Context, user *domain.User) error {
-	if m.createErr != nil {
-		return m.createErr
-	}
-	m.users[user.ID] = user
-	m.byKratos[user.KratosIdentityID] = user
-	return nil
-}
-
-func (m *mockUserRepo) GetUserByID(_ context.Context, id string) (*domain.User, error) {
-	u, ok := m.users[id]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	return u, nil
-}
-
-func (m *mockUserRepo) GetUserByKratosID(_ context.Context, kratosID string) (*domain.User, error) {
-	if m.getByKratosErr != nil {
-		return nil, m.getByKratosErr
-	}
-	u, ok := m.byKratos[kratosID]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	return u, nil
-}
-
-func (m *mockUserRepo) UpdateUserProfile(_ context.Context, id, displayName, bio, avatarURL string) (*domain.User, error) {
-	u, ok := m.users[id]
-	if !ok {
-		return nil, ErrNotFound
-	}
-	u.DisplayName = displayName
-	u.Bio = bio
-	u.AvatarURL = avatarURL
-	return u, nil
-}
-
 func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	repo := newMockUserRepo()

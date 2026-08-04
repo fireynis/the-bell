@@ -9,11 +9,12 @@ import (
 	"github.com/fireynis/the-bell/internal/domain"
 )
 
-// mockVouchRepo is an in-memory VouchRepository for testing.
+// mockVouchRepo is an in-memory VouchRepository for testing. Counting is
+// derived from the stored vouches rather than a preset total, so the `since`
+// argument the service computes is actually applied.
 type mockVouchRepo struct {
-	vouches map[string]*domain.Vouch       // keyed by ID
-	byPair  map[[2]string]*domain.Vouch    // keyed by [voucher, vouchee]
-	counts  map[string]int64               // daily counts by voucherID
+	vouches map[string]*domain.Vouch    // keyed by ID
+	byPair  map[[2]string]*domain.Vouch // keyed by [voucher, vouchee]
 
 	createErr error
 	revokeErr error
@@ -23,8 +24,21 @@ func newMockVouchRepo() *mockVouchRepo {
 	return &mockVouchRepo{
 		vouches: make(map[string]*domain.Vouch),
 		byPair:  make(map[[2]string]*domain.Vouch),
-		counts:  make(map[string]int64),
 	}
+}
+
+// seedVouch records a vouch that already exists at the given time, so the
+// daily-limit window has something to count.
+func (m *mockVouchRepo) seedVouch(voucherID, voucheeID string, createdAt time.Time) {
+	v := &domain.Vouch{
+		ID:        voucherID + "->" + voucheeID,
+		VoucherID: voucherID,
+		VoucheeID: voucheeID,
+		Status:    domain.VouchActive,
+		CreatedAt: createdAt,
+	}
+	m.vouches[v.ID] = v
+	m.byPair[[2]string{voucherID, voucheeID}] = v
 }
 
 func (m *mockVouchRepo) CreateVouch(_ context.Context, vouch *domain.Vouch) error {
@@ -52,8 +66,15 @@ func (m *mockVouchRepo) GetVouchByPair(_ context.Context, voucherID, voucheeID s
 	return v, nil
 }
 
-func (m *mockVouchRepo) CountVouchesByVoucherSince(_ context.Context, voucherID string, _ time.Time) (int64, error) {
-	return m.counts[voucherID], nil
+// CountVouchesByVoucherSince mirrors the SQL: created_at >= since.
+func (m *mockVouchRepo) CountVouchesByVoucherSince(_ context.Context, voucherID string, since time.Time) (int64, error) {
+	var count int64
+	for _, v := range m.vouches {
+		if v.VoucherID == voucherID && !v.CreatedAt.Before(since) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (m *mockVouchRepo) ListActiveVouchesByVouchee(_ context.Context, voucheeID string) ([]*domain.Vouch, error) {
@@ -92,8 +113,8 @@ func (m *mockVouchRepo) RevokeVouch(_ context.Context, id string) error {
 
 // mockGraph is an in-memory GraphQuerier for testing.
 type mockGraph struct {
-	edges    map[[2]string]bool
-	cycles   map[[2]string]bool
+	edges  map[[2]string]bool
+	cycles map[[2]string]bool
 
 	addEdgeErr    error
 	removeEdgeErr error
@@ -131,12 +152,16 @@ type mockUserGetter struct {
 	users         map[string]*domain.User
 	updateRoleErr error
 	updatedRoles  map[string]domain.Role
+	// vanishing users disappear after their first successful lookup, standing
+	// in for an account removed between the two reads inside one Vouch call.
+	vanishing map[string]bool
 }
 
 func newMockUserGetter() *mockUserGetter {
 	return &mockUserGetter{
 		users:        make(map[string]*domain.User),
 		updatedRoles: make(map[string]domain.Role),
+		vanishing:    make(map[string]bool),
 	}
 }
 
@@ -144,6 +169,9 @@ func (m *mockUserGetter) GetUserByID(_ context.Context, id string) (*domain.User
 	u, ok := m.users[id]
 	if !ok {
 		return nil, ErrNotFound
+	}
+	if m.vanishing[id] {
+		delete(m.users, id)
 	}
 	return u, nil
 }
@@ -345,15 +373,94 @@ func TestVouchService_Vouch_DuplicatePair(t *testing.T) {
 
 func TestVouchService_Vouch_DailyLimitReached(t *testing.T) {
 	repo := newMockVouchRepo()
-	repo.counts["voucher-1"] = 3
 	users := newMockUserGetter()
 	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
 	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	for i := 0; i < dailyVouchLimit; i++ {
+		repo.seedVouch("voucher-1", "earlier-today-"+string(rune('a'+i)), fixedNow.Add(-time.Hour))
+	}
 
 	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
 	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Vouch() error = %v, want %v", err, ErrValidation)
+	}
+}
+
+// The daily limit counts from local midnight, so yesterday's vouches must not
+// be charged against today's allowance. Before startOfDay was extracted, the
+// mock discarded the `since` argument and this boundary was untested.
+func TestVouchService_Vouch_DailyLimitResetsAtMidnight(t *testing.T) {
+	// A minute past midnight, having spent the whole allowance a minute before.
+	justAfterMidnight := time.Date(2026, 3, 2, 0, 1, 0, 0, time.UTC)
+	justBeforeMidnight := time.Date(2026, 3, 1, 23, 59, 0, 0, time.UTC)
+
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	for i := 0; i < dailyVouchLimit; i++ {
+		repo.seedVouch("voucher-1", "yesterday-"+string(rune('a'+i)), justBeforeMidnight)
+	}
+
+	svc := NewVouchService(repo, newMockGraph(), users, func() time.Time { return justAfterMidnight })
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+}
+
+// The mirror of the above: vouches made just after midnight are still charged
+// against the same day right up until the next one.
+func TestVouchService_Vouch_DailyLimitCoversTheWholeDay(t *testing.T) {
+	justAfterMidnight := time.Date(2026, 3, 1, 0, 1, 0, 0, time.UTC)
+	justBeforeMidnight := time.Date(2026, 3, 1, 23, 59, 0, 0, time.UTC)
+
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	for i := 0; i < dailyVouchLimit; i++ {
+		repo.seedVouch("voucher-1", "this-morning-"+string(rune('a'+i)), justAfterMidnight)
+	}
+
+	svc := NewVouchService(repo, newMockGraph(), users, func() time.Time { return justBeforeMidnight })
+	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Vouch() error = %v, want %v", err, ErrValidation)
+	}
+}
+
+// The allowance is per voucher; one person exhausting theirs must not block
+// anyone else.
+func TestVouchService_Vouch_DailyLimitIsPerVoucher(t *testing.T) {
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["busy-voucher"] = activeMember("busy-voucher", 80.0)
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	for i := 0; i < dailyVouchLimit; i++ {
+		repo.seedVouch("busy-voucher", "vouchee-"+string(rune('a'+i)), fixedNow.Add(-time.Hour))
+	}
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+}
+
+// One under the limit is still allowed; the check is >=, not >.
+func TestVouchService_Vouch_JustUnderDailyLimit(t *testing.T) {
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	for i := 0; i < dailyVouchLimit-1; i++ {
+		repo.seedVouch("voucher-1", "earlier-today-"+string(rune('a'+i)), fixedNow.Add(-time.Hour))
+	}
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
 	}
 }
 
@@ -398,6 +505,79 @@ func TestVouchService_Vouch_GraphAddEdgeError(t *testing.T) {
 	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
 	if err == nil {
 		t.Fatal("Vouch() expected error, got nil")
+	}
+}
+
+// The promotion that follows a vouch is best-effort: the vouch and its graph
+// edge are already committed, so losing the vouchee between the two reads must
+// still return the vouch rather than an error the caller cannot act on.
+func TestVouchService_Vouch_PromotionLookupFailureStillReturnsTheVouch(t *testing.T) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = pendingUser("vouchee-1")
+	users.vanishing["vouchee-1"] = true
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+	if vouch == nil {
+		t.Fatal("Vouch() = nil, want the committed vouch")
+	}
+	if !graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+		t.Error("graph edge missing; the vouch itself should have committed")
+	}
+	if _, ok := users.updatedRoles["vouchee-1"]; ok {
+		t.Error("UpdateUserRole was called for a vouchee that could not be read")
+	}
+}
+
+func TestVouchService_Revoke_ActorNotFound(t *testing.T) {
+	repo := newMockVouchRepo()
+	repo.vouches["vouch-1"] = &domain.Vouch{
+		ID: "vouch-1", VoucherID: "voucher-1", VoucheeID: "vouchee-1",
+		Status: domain.VouchActive,
+	}
+
+	svc := NewVouchService(repo, newMockGraph(), newMockUserGetter(), fixedClock)
+	err := svc.Revoke(context.Background(), "vouch-1", "ghost")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Revoke() error = %v, want %v", err, ErrNotFound)
+	}
+	if repo.vouches["vouch-1"].Status != domain.VouchActive {
+		t.Error("vouch was revoked despite the actor lookup failing")
+	}
+}
+
+// --- Listing vouches ---
+
+// The two list methods differ only in direction, and their repository methods
+// have near-identical names. This pins that each one asks for the right side of
+// the edge.
+func TestVouchService_ListVouches_DirectionsDoNotCross(t *testing.T) {
+	repo := newMockVouchRepo()
+	repo.seedVouch("alice", "bob", fixedNow)
+	repo.seedVouch("carol", "alice", fixedNow)
+
+	svc := NewVouchService(repo, newMockGraph(), newMockUserGetter(), fixedClock)
+
+	given, err := svc.ListGivenVouches(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("ListGivenVouches() unexpected error: %v", err)
+	}
+	if len(given) != 1 || given[0].VoucheeID != "bob" {
+		t.Errorf("ListGivenVouches(alice) = %v, want the alice->bob vouch", given)
+	}
+
+	received, err := svc.ListReceivedVouches(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("ListReceivedVouches() unexpected error: %v", err)
+	}
+	if len(received) != 1 || received[0].VoucherID != "carol" {
+		t.Errorf("ListReceivedVouches(alice) = %v, want the carol->alice vouch", received)
 	}
 }
 
@@ -541,5 +721,137 @@ func TestVouchService_Revoke_GraphRemoveError(t *testing.T) {
 	err := svc.Revoke(context.Background(), "vouch-1", "voucher-1")
 	if err == nil {
 		t.Fatal("Revoke() expected error, got nil")
+	}
+}
+
+// --- Trust recalculation enqueueing ---
+
+// A vouch changes the vouchee's voucher component — CalcVoucherScore counts
+// vouches RECEIVED — so the vouchee must be requeued. The voucher is requeued
+// too, per the design doc's recalculation triggers.
+func TestVouchService_Vouch_EnqueuesTrustRecalc(t *testing.T) {
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	queue := &fakeTrustQueue{}
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	svc.SetTrustQueue(queue)
+
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+
+	if !queue.contains("vouchee-1") {
+		t.Errorf("vouchee not enqueued: %v", queue.enqueued)
+	}
+	if !queue.contains("voucher-1") {
+		t.Errorf("voucher not enqueued: %v", queue.enqueued)
+	}
+}
+
+// Revoking removes an endorsement, which lowers the vouchee's voucher
+// component just as gaining one raised it.
+func TestVouchService_Revoke_EnqueuesTrustRecalc(t *testing.T) {
+	repo := newMockVouchRepo()
+	repo.vouches["vouch-1"] = &domain.Vouch{
+		ID: "vouch-1", VoucherID: "voucher-1", VoucheeID: "vouchee-1",
+		Status: domain.VouchActive,
+	}
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	queue := &fakeTrustQueue{}
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	svc.SetTrustQueue(queue)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+
+	if !queue.contains("vouchee-1") {
+		t.Errorf("vouchee not enqueued: %v", queue.enqueued)
+	}
+	if !queue.contains("voucher-1") {
+		t.Errorf("voucher not enqueued: %v", queue.enqueued)
+	}
+}
+
+// A deployment without Redis leaves the queue unset; vouching must still work.
+func TestVouchService_Vouch_NoQueueConfigured(t *testing.T) {
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+}
+
+// The vouch and its graph edge are already committed when the enqueue runs, so
+// a broken queue must not fail the vouch.
+func TestVouchService_Vouch_EnqueueFailureIsNotFatal(t *testing.T) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetTrustQueue(&fakeTrustQueue{err: errors.New("redis unavailable")})
+	svc.logger = discardLogger()
+
+	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("Vouch() error = %v, want the vouch to survive a queue failure", err)
+	}
+	if vouch == nil {
+		t.Fatal("Vouch() = nil, want the committed vouch")
+	}
+	if !graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+		t.Error("graph edge missing; the vouch itself should have committed")
+	}
+}
+
+// Likewise for revocation: the edge is already gone by the time we enqueue.
+func TestVouchService_Revoke_EnqueueFailureIsNotFatal(t *testing.T) {
+	repo := newMockVouchRepo()
+	repo.vouches["vouch-1"] = &domain.Vouch{
+		ID: "vouch-1", VoucherID: "voucher-1", VoucheeID: "vouchee-1",
+		Status: domain.VouchActive,
+	}
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	svc.SetTrustQueue(&fakeTrustQueue{err: errors.New("redis unavailable")})
+	svc.logger = discardLogger()
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() error = %v, want the revocation to survive a queue failure", err)
+	}
+	if repo.vouches["vouch-1"].Status != domain.VouchRevoked {
+		t.Error("vouch was not revoked")
+	}
+}
+
+// A vouch rejected by validation changes nobody's score.
+func TestVouchService_Vouch_RejectedVouchEnqueuesNothing(t *testing.T) {
+	repo := newMockVouchRepo()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 50.0) // below the vouching threshold
+	queue := &fakeTrustQueue{}
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	svc.SetTrustQueue(queue)
+
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Vouch() error = %v, want %v", err, ErrForbidden)
+	}
+	if len(queue.enqueued) != 0 {
+		t.Errorf("enqueued %v, want nothing for a rejected vouch", queue.enqueued)
 	}
 }

@@ -7,6 +7,7 @@ import {
   canPost,
   canVouch,
   clampTrustScore,
+  hasMinRole,
   isCouncil,
   trustTier,
 } from "./trust";
@@ -151,5 +152,53 @@ describe("isCouncil", () => {
     expect(isCouncil(user({ role: "council", is_active: false }))).toBe(false);
     expect(isCouncil(user({ role: "moderator" }))).toBe(false);
     expect(isCouncil(null)).toBe(false);
+  });
+});
+
+describe("hasMinRole", () => {
+  it("admits a role above the minimum", () => {
+    expect(hasMinRole(user({ role: "council" }), "moderator")).toBe(true);
+  });
+
+  it("admits the exact minimum", () => {
+    expect(hasMinRole(user({ role: "moderator" }), "moderator")).toBe(true);
+  });
+
+  it("refuses the rank immediately below the minimum", () => {
+    expect(hasMinRole(user({ role: "member" }), "moderator")).toBe(false);
+  });
+
+  it.each([
+    ["banned", "member", false],
+    ["pending", "member", false],
+    ["member", "member", true],
+    ["member", "council", false],
+    ["moderator", "council", false],
+    ["council", "council", true],
+  ])("%s against a minimum of %s -> %s", (role, minRole, want) => {
+    expect(hasMinRole(user({ role }), minRole as "member" | "council")).toBe(want);
+  });
+
+  // The server can add a role this build has never heard of; the safe reading
+  // of an unknown role is that it grants nothing.
+  it("refuses a role it does not recognise", () => {
+    expect(hasMinRole(user({ role: "archivist" }), "member")).toBe(false);
+    expect(hasMinRole(user({ role: "" }), "banned")).toBe(false);
+  });
+
+  // Matches canModerate and isCouncil: deactivation removes every capability.
+  it("refuses a deactivated user whatever their role", () => {
+    expect(hasMinRole(user({ role: "council", is_active: false }), "member")).toBe(false);
+  });
+
+  it("refuses when there is no signed-in user", () => {
+    expect(hasMinRole(null, "member")).toBe(false);
+  });
+
+  // The nav shows moderation to anyone who can moderate, so the two must agree.
+  it("agrees with canModerate at the moderator boundary", () => {
+    for (const role of ["banned", "pending", "member", "moderator", "council"]) {
+      expect(hasMinRole(user({ role }), "moderator")).toBe(canModerate(user({ role })));
+    }
   });
 });

@@ -266,48 +266,6 @@ func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 	return items, nil
 }
 
-const listUsersByRole = `-- name: ListUsersByRole :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2
-`
-
-type ListUsersByRoleParams struct {
-	Role  string `json:"role"`
-	Limit int32  `json:"limit"`
-}
-
-func (q *Queries) ListUsersByRole(ctx context.Context, arg ListUsersByRoleParams) ([]User, error) {
-	rows, err := q.db.Query(ctx, listUsersByRole, arg.Role, arg.Limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []User{}
-	for rows.Next() {
-		var i User
-		if err := rows.Scan(
-			&i.ID,
-			&i.KratosIdentityID,
-			&i.DisplayName,
-			&i.Bio,
-			&i.AvatarUrl,
-			&i.TrustScore,
-			&i.Role,
-			&i.IsActive,
-			&i.JoinedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.TrustBelowSince,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET display_name = $2, bio = $3, avatar_url = $4, updated_at = NOW()

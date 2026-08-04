@@ -4,14 +4,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetPostByID :one
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT sqlc.embed(p),
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
 WHERE p.id = $1;
 
 -- name: ListPostsFeed :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT sqlc.embed(p),
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -20,7 +20,7 @@ ORDER BY p.id DESC
 LIMIT $2;
 
 -- name: ListPostsFeedFirst :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT sqlc.embed(p),
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -29,18 +29,27 @@ ORDER BY p.id DESC
 LIMIT $1;
 
 -- name: UpdatePostBody :one
-UPDATE posts SET body = $2, edited_at = NOW() WHERE id = $1
-RETURNING *;
+-- The updated row is joined back to users so that the post returned by an edit
+-- carries the same author fields as every read path. Without it the edit
+-- response alone would come back with a blank author name.
+UPDATE posts p SET body = $2, edited_at = NOW()
+FROM users u
+WHERE p.id = $1 AND u.id = p.author_id
+RETURNING sqlc.embed(p),
+          u.display_name AS author_display_name, u.avatar_url AS author_avatar_url;
 
 -- name: SoftDeletePost :exec
 UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1;
 
 -- name: ListPostsByAuthor :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+-- Removed posts are excluded here for the same reason they are excluded from
+-- the feed: a profile is a public listing, and a moderator-removed post carries
+-- removal_reason, which is a moderator's private note.
+SELECT sqlc.embed(p),
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
-WHERE p.author_id = $1
+WHERE p.author_id = $1 AND p.status = 'visible'
 ORDER BY p.created_at DESC
 LIMIT $2;
 

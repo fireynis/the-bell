@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -25,6 +26,10 @@ type FeedCache struct {
 	rdb    redis.Cmdable
 	repo   service.PostRepository
 	logger *slog.Logger
+
+	// warming is held for the duration of a background rebuild so that a
+	// burst of concurrent misses triggers one rebuild rather than one each.
+	warming atomic.Bool
 }
 
 // NewFeedCache creates a FeedCache.
@@ -57,9 +62,26 @@ func (c *FeedCache) GetFeed(ctx context.Context, cursor string, limit int) ([]*d
 	}
 
 	// Warm cache in the background so the current request isn't delayed.
-	go c.warmCache(context.WithoutCancel(ctx))
+	c.warmCacheOnce(context.WithoutCancel(ctx))
 
 	return posts, nil
+}
+
+// warmCacheOnce starts a background rebuild unless one is already running.
+//
+// Every concurrent miss used to launch its own rebuild, so a cold cache under
+// load fanned out into one full ListPosts(feedMaxLen) per in-flight request —
+// hitting Postgres hardest exactly when it could least absorb it. Callers that
+// lose the race simply skip: the winner's rebuild is the one they would have
+// performed, and they have already served their own read from Postgres.
+func (c *FeedCache) warmCacheOnce(ctx context.Context) {
+	if !c.warming.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer c.warming.Store(false)
+		c.warmCache(ctx)
+	}()
 }
 
 // InvalidateOnCreate adds the new post to the sorted set and trims it to
@@ -87,6 +109,26 @@ func (c *FeedCache) InvalidateOnCreate(ctx context.Context, post *domain.Post) {
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		c.logger.Error("feed cache: invalidate on create", "error", err)
+	}
+}
+
+// InvalidateOnUpdate clears the feed after a post's body changed.
+//
+// Members of the sorted set are the marshalled posts themselves, so an edited
+// post no longer matches the member holding its pre-edit body: adding the new
+// JSON would leave the stale member in place and serve the post twice. Removing
+// the old member instead would mean unmarshalling every member to find it, and
+// doing so outside a transaction.
+//
+// Writing the post back is doubly wrong here: UpdatePostBody returns only the
+// posts row, with no users join, so its author fields are empty — caching it
+// would serve the post with no author name, the bug PostAuthor exists to avoid.
+//
+// A full clear is the same trade InvalidateOnDelete makes — the next read
+// rebuilds from Postgres, and edits are rare (author-only, 15-minute window).
+func (c *FeedCache) InvalidateOnUpdate(ctx context.Context, post *domain.Post) {
+	if err := c.rdb.Del(ctx, feedKey).Err(); err != nil {
+		c.logger.Error("feed cache: invalidate on update", "error", err)
 	}
 }
 

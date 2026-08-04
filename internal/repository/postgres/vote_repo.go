@@ -27,14 +27,20 @@ func (r *VoteRepo) CreateVote(ctx context.Context, vote *domain.CouncilVote) err
 		Vote:       string(vote.Vote),
 		CreatedAt:  pgtype.Timestamptz{Time: vote.CreatedAt, Valid: true},
 	})
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return service.ErrValidation
-		}
-		return err
+	if isUniqueViolation(err) {
+		return service.ErrValidation
 	}
-	return nil
+	return err
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505). Repeating an action the schema only allows once —
+// voting twice, vouching twice, reacting twice — is ordinary user behaviour, so
+// callers map it to service.ErrValidation rather than letting it surface as a
+// server error.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (r *VoteRepo) GetVoteByProposalAndVoter(ctx context.Context, proposalID, voterID string) (*domain.CouncilVote, error) {

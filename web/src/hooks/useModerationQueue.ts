@@ -1,58 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { moderationApi } from "../api/client";
 import type { Report } from "../api/types";
-
-const PAGE_SIZE = 20;
+import { DEFAULT_PAGE_SIZE, useOffsetPagination } from "./useOffsetPagination";
 
 export function useModerationQueue() {
-  const [reports, setReports] = useState<Report[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(true);
-  const offsetRef = useRef(0);
-  const fetchingRef = useRef(false);
+  const fetcher = useCallback(
+    async (limit: number, offset: number) => {
+      const data = await moderationApi.getModerationQueue(limit, offset);
+      return data.reports ?? [];
+    },
+    [],
+  );
 
-  const fetchPage = useCallback(async (offset: number, append: boolean) => {
-    if (fetchingRef.current) return;
-    fetchingRef.current = true;
-    setLoading(true);
-    setError(null);
+  const { items, loading, hasMore, error, loadMore, retry, setItems } =
+    useOffsetPagination<Report>(fetcher, "Failed to load moderation queue.", DEFAULT_PAGE_SIZE);
 
-    try {
-      const data = await moderationApi.getModerationQueue(PAGE_SIZE, offset);
-      const newReports = data.reports ?? [];
+  // Resolving a report drops it from the queue without a refetch, so the
+  // moderator keeps their place in the list.
+  const removeReport = useCallback(
+    (reportId: string) => {
+      setItems((reports) => reports.filter((r) => r.id !== reportId));
+    },
+    [setItems],
+  );
 
-      setReports((prev) => (append ? [...prev, ...newReports] : newReports));
-      offsetRef.current = offset + newReports.length;
-      setHasMore(newReports.length >= PAGE_SIZE);
-    } catch {
-      setError("Failed to load moderation queue.");
-    } finally {
-      setLoading(false);
-      fetchingRef.current = false;
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchPage(0, false);
-  }, [fetchPage]);
-
-  const loadMore = useCallback(() => {
-    if (!fetchingRef.current && hasMore) {
-      fetchPage(offsetRef.current, true);
-    }
-  }, [fetchPage, hasMore]);
-
-  const removeReport = useCallback((reportId: string) => {
-    setReports((prev) => prev.filter((r) => r.id !== reportId));
-  }, []);
-
-  const retry = useCallback(() => {
-    setReports([]);
-    offsetRef.current = 0;
-    setHasMore(true);
-    fetchPage(0, false);
-  }, [fetchPage]);
-
-  return { reports, loading, hasMore, error, loadMore, removeReport, retry };
+  return { reports: items, loading, hasMore, error, loadMore, removeReport, retry };
 }

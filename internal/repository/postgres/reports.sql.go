@@ -64,24 +64,6 @@ func (q *Queries) CreateReport(ctx context.Context, arg CreateReportParams) (Rep
 	return i, err
 }
 
-const getReportByID = `-- name: GetReportByID :one
-SELECT id, reporter_id, post_id, reason, status, created_at FROM reports WHERE id = $1
-`
-
-func (q *Queries) GetReportByID(ctx context.Context, id string) (Report, error) {
-	row := q.db.QueryRow(ctx, getReportByID, id)
-	var i Report
-	err := row.Scan(
-		&i.ID,
-		&i.ReporterID,
-		&i.PostID,
-		&i.Reason,
-		&i.Status,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getReportByReporterAndPost = `-- name: GetReportByReporterAndPost :one
 SELECT id, reporter_id, post_id, reason, status, created_at FROM reports WHERE reporter_id = $1 AND post_id = $2
 `

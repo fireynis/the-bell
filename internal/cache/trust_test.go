@@ -5,21 +5,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fireynis/the-bell/internal/testsupport"
 	"github.com/redis/go-redis/v9"
 )
 
-// redisAvailable returns a connected redis client if Redis is reachable,
-// otherwise it skips the test.
+// redisAvailable returns a client for a Redis logical database isolated to the
+// calling test, backed by the container in internal/testsupport.
+//
+// It previously dialled a hardcoded localhost:6379 DB 15 and skipped the test
+// when nothing answered, which made these tests both unsound and invisible: any
+// other test binary running at the same time shared that one database, so a
+// user ID enqueued by one process was dequeued by another, and on a machine
+// with no local Redis every assertion here silently vanished.
 func redisAvailable(t *testing.T) *redis.Client {
 	t.Helper()
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379", DB: 15})
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skipf("redis not available: %v", err)
-	}
-	t.Cleanup(func() { rdb.FlushDB(context.Background()); rdb.Close() })
-	return rdb
+	return testsupport.TestRedis(t)
 }
 
 func TestTrustCache_GetSet(t *testing.T) {

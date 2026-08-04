@@ -17,12 +17,12 @@ const (
 
 // TrustCache provides Redis-backed caching for user trust scores.
 type TrustCache struct {
-	rdb *redis.Client
+	rdb redis.Cmdable
 	ttl time.Duration
 }
 
 // NewTrustCache creates a TrustCache backed by the given Redis client.
-func NewTrustCache(rdb *redis.Client) *TrustCache {
+func NewTrustCache(rdb redis.Cmdable) *TrustCache {
 	return &TrustCache{
 		rdb: rdb,
 		ttl: defaultTTL,

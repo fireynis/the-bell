@@ -5,27 +5,19 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/fireynis/the-bell/internal/httpjson"
 	"github.com/fireynis/the-bell/internal/service"
 )
 
 // JSON marshals data and writes it as a JSON response with the given status code.
 // If marshaling fails, it writes a 500 error instead.
 func JSON(w http.ResponseWriter, status int, data any) {
-	buf, err := json.Marshal(data)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"internal error"}`))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	w.Write(buf)
+	httpjson.Write(w, status, data)
 }
 
 // Error writes a JSON error response with the given status code and message.
 func Error(w http.ResponseWriter, status int, message string) {
-	JSON(w, status, map[string]string{"error": message})
+	httpjson.WriteError(w, status, message)
 }
 
 // Decode reads the request body into dst, rejecting unknown fields.
@@ -38,19 +30,23 @@ func Decode(r *http.Request, dst any) error {
 // statusForError maps a service-layer error onto the HTTP status and the
 // message sent to the client.
 //
-// Only validation errors expose their text, because those describe what the
-// caller got wrong. Everything else is reported with a fixed message so that
-// internal failures cannot leak database or infrastructure detail through the
-// API.
+// Only the errors describing what the caller got wrong expose their text.
+// Everything else is reported with a fixed message so that internal failures
+// cannot leak database or infrastructure detail through the API.
 func statusForError(err error) (status int, message string) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):
 		return http.StatusNotFound, "not found"
+	case errors.Is(err, service.ErrReactionNotFound):
+		return http.StatusNotFound, "reaction not found"
 	case errors.Is(err, service.ErrForbidden):
 		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, service.ErrRateLimit):
 		return http.StatusTooManyRequests, "rate limit exceeded"
 	case errors.Is(err, service.ErrValidation):
+		return http.StatusBadRequest, err.Error()
+	case errors.Is(err, service.ErrInvalidReactionType):
+		// Carries the rejected type, which is the caller's own input.
 		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrEditWindow):
 		return http.StatusConflict, "edit window expired"

@@ -24,6 +24,7 @@ type PostRepository interface {
 type FeedCacher interface {
 	GetFeed(ctx context.Context, cursor string, limit int) ([]*domain.Post, error)
 	InvalidateOnCreate(ctx context.Context, post *domain.Post)
+	InvalidateOnUpdate(ctx context.Context, post *domain.Post)
 	InvalidateOnDelete(ctx context.Context, postID string)
 }
 
@@ -121,7 +122,18 @@ func (s *PostService) UpdateBody(ctx context.Context, id, userID, body string) (
 		return nil, ErrEditWindow
 	}
 
-	return s.repo.UpdatePostBody(ctx, id, body)
+	updated, err := s.repo.UpdatePostBody(ctx, id, body)
+	if err != nil {
+		return nil, err
+	}
+
+	// The cache stores whole posts, so an edit leaves the old body in the feed
+	// until the entry is evicted by length — not bounded by the feed TTL.
+	if s.feedCache != nil {
+		s.feedCache.InvalidateOnUpdate(ctx, updated)
+	}
+
+	return updated, nil
 }
 
 func (s *PostService) Delete(ctx context.Context, id, userID string) error {

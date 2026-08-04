@@ -1,29 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { api } from "../api/client";
-import type { ApiError, Post } from "../api/types";
+import { postApi } from "../api/client";
+import type { ApiError } from "../api/types";
+import { useAuth } from "../context/AuthContext";
 import ErrorBanner from "../components/ErrorBanner.tsx";
 import Spinner from "../components/Spinner.tsx";
-
-const MAX_LENGTH = 1000;
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
-
-function counterColor(len: number): string {
-  if (len >= 980) return "var(--color-danger)";
-  if (len >= 950) return "#ca8a04"; // yellow-600
-  return "#16a34a"; // green-600
-}
-
-function counterOpacity(len: number): number {
-  if (len < 900) return 0;
-  // Fade in between 900-920
-  if (len < 920) return (len - 900) / 20;
-  return 1;
-}
+import {
+  ALLOWED_IMAGE_TYPES,
+  MAX_POST_BODY_LENGTH,
+  counterColor,
+  counterOpacity,
+  remainingChars,
+  validateImageFile,
+  validatePostBody,
+} from "../lib/post.ts";
+import { postingBlockReason } from "../lib/gating.ts";
 
 export default function Compose() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +26,13 @@ export default function Compose() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canSubmit = body.trim().length > 0 && !submitting;
+  // Null when the user may post. The server is still the authority; this only
+  // stops someone writing a whole post and submitting it into a certain 403.
+  const postBlock = postingBlockReason(user);
+
+  const bodyCheck = validatePostBody(body);
+  const canSubmit = bodyCheck.valid && !submitting && postBlock === null;
+  const remaining = remainingChars(body);
 
   // Clean up object URL on unmount or when preview changes
   useEffect(() => {
@@ -46,14 +47,9 @@ export default function Compose() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      setError("Invalid image type. Please use JPEG, PNG, or WebP.");
-      e.target.value = "";
-      return;
-    }
-
-    if (file.size > MAX_IMAGE_SIZE) {
-      setError("Image must be under 5 MB.");
+    const check = validateImageFile(file);
+    if (!check.valid) {
+      setError(check.error ?? null);
       e.target.value = "";
       return;
     }
@@ -82,7 +78,15 @@ export default function Compose() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (submitting) return;
+    if (postBlock) {
+      setError(postBlock);
+      return;
+    }
+    if (!bodyCheck.valid) {
+      setError(bodyCheck.error ?? null);
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -92,9 +96,9 @@ export default function Compose() {
         const formData = new FormData();
         formData.append("body", body.trim());
         formData.append("image", image);
-        await api.upload<Post>("/posts/", formData);
+        await postApi.createWithImage(formData);
       } else {
-        await api.post<Post>("/posts/", { body: body.trim() });
+        await postApi.create({ body: body.trim() });
       }
       navigate("/", { replace: true });
     } catch (err) {
@@ -115,6 +119,25 @@ export default function Compose() {
 
       {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
 
+      {/*
+        Shown rather than hiding the composer. Earning trust through vouches is
+        the platform's core mechanic, so a member who cannot post yet should see
+        what the box is and what it will take to use it — hiding it would leave
+        them with no idea the feature exists, let alone how to unlock it.
+      */}
+      {postBlock && (
+        <div
+          className="mb-4 rounded-[var(--radius-md)] p-3 text-sm"
+          style={{
+            backgroundColor: "var(--color-warning-light, var(--color-surface-tertiary))",
+            color: "var(--color-text-secondary)",
+          }}
+          role="status"
+        >
+          {postBlock}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit}>
         <div
           className="p-4"
@@ -124,13 +147,21 @@ export default function Compose() {
             borderRadius: "var(--radius-lg)",
           }}
         >
+          {/*
+            Disabled rather than merely unsubmittable: the point is to spend the
+            user's effort only where it can succeed, and a box that accepts a
+            thousand characters and then refuses to send them is the bug this
+            fixes, not a milder version of it.
+          */}
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            maxLength={MAX_LENGTH}
             rows={6}
-            placeholder="What's happening in town?"
-            className="w-full resize-none border-0 bg-transparent leading-relaxed focus:outline-none"
+            disabled={postBlock !== null}
+            placeholder={
+              postBlock ? "You cannot post yet" : "What's happening in town?"
+            }
+            className="w-full resize-none border-0 bg-transparent leading-relaxed focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
             style={{ color: "var(--color-text)", fontSize: "0.9375rem" }}
           />
 
@@ -164,14 +195,15 @@ export default function Compose() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept={ALLOWED_IMAGE_TYPES.join(",")}
                 onChange={handleFileSelect}
                 className="hidden"
               />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center justify-center rounded-md p-1.5 transition-colors hover:opacity-70"
+                disabled={postBlock !== null}
+                className="flex items-center justify-center rounded-md p-1.5 transition-colors hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-40"
                 style={{ color: "var(--color-text-tertiary)" }}
                 aria-label="Attach image"
                 title="Attach image"
@@ -197,12 +229,12 @@ export default function Compose() {
               <p
                 className="text-xs"
                 style={{
-                  color: counterColor(body.length),
-                  opacity: counterOpacity(body.length),
+                  color: counterColor(remaining),
+                  opacity: counterOpacity(remaining),
                   transition: "color 0.3s, opacity 0.3s",
                 }}
               >
-                {body.length} / {MAX_LENGTH}
+                {body.length} / {MAX_POST_BODY_LENGTH}
               </p>
             </div>
 

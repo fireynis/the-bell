@@ -1,0 +1,141 @@
+package service
+
+import (
+	"context"
+
+	"github.com/fireynis/the-bell/internal/domain"
+)
+
+// fakeUserStore is the one in-memory user store shared by the service tests.
+// Four near-identical copies of this map used to live in user_test.go,
+// approval_test.go, moderation_action_test.go and vouch_test.go; a change to
+// user lookup semantics had to be made in four places and could silently
+// disagree between them.
+//
+// It satisfies UserRepository, ActionUserLookup, ApprovalUserRepository and
+// UserGetter, so any service taking one of those can be handed this.
+type fakeUserStore struct {
+	users    map[string]*domain.User // keyed by ID
+	byKratos map[string]*domain.User // keyed by KratosIdentityID
+
+	// Error injection. Each field short-circuits the matching method so tests
+	// can drive the failure branches without a real repository.
+	createErr      error
+	getByKratosErr error
+	updateRoleErr  error
+	countErr       error
+}
+
+func newFakeUserStore() *fakeUserStore {
+	return &fakeUserStore{
+		users:    make(map[string]*domain.User),
+		byKratos: make(map[string]*domain.User),
+	}
+}
+
+// add registers a user under both keys, mirroring what CreateUser would do.
+func (f *fakeUserStore) add(u *domain.User) {
+	f.users[u.ID] = u
+	if u.KratosIdentityID != "" {
+		f.byKratos[u.KratosIdentityID] = u
+	}
+}
+
+// --- UserRepository ---
+
+func (f *fakeUserStore) CreateUser(_ context.Context, user *domain.User) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.users[user.ID] = user
+	f.byKratos[user.KratosIdentityID] = user
+	return nil
+}
+
+func (f *fakeUserStore) GetUserByID(_ context.Context, id string) (*domain.User, error) {
+	u, ok := f.users[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return u, nil
+}
+
+func (f *fakeUserStore) GetUserByKratosID(_ context.Context, kratosID string) (*domain.User, error) {
+	if f.getByKratosErr != nil {
+		return nil, f.getByKratosErr
+	}
+	u, ok := f.byKratos[kratosID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return u, nil
+}
+
+func (f *fakeUserStore) UpdateUserProfile(_ context.Context, id, displayName, bio, avatarURL string) (*domain.User, error) {
+	u, ok := f.users[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	u.DisplayName = displayName
+	u.Bio = bio
+	u.AvatarURL = avatarURL
+	return u, nil
+}
+
+// --- ApprovalUserRepository / UserGetter ---
+
+func (f *fakeUserStore) ListPendingUsers(_ context.Context) ([]*domain.User, error) {
+	var pending []*domain.User
+	for _, u := range f.users {
+		if u.Role == domain.RolePending && u.IsActive {
+			pending = append(pending, u)
+		}
+	}
+	return pending, nil
+}
+
+func (f *fakeUserStore) CountActiveMembers(_ context.Context) (int64, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	var count int64
+	for _, u := range f.users {
+		if u.IsActive && (u.Role == domain.RoleMember || u.Role == domain.RoleModerator || u.Role == domain.RoleCouncil) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeUserStore) UpdateUserRole(_ context.Context, id string, role domain.Role) error {
+	if f.updateRoleErr != nil {
+		return f.updateRoleErr
+	}
+	u, ok := f.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	u.Role = role
+	return nil
+}
+
+// Compile-time proof that one fake covers every user-shaped dependency.
+var (
+	_ UserRepository         = (*fakeUserStore)(nil)
+	_ ActionUserLookup       = (*fakeUserStore)(nil)
+	_ ApprovalUserRepository = (*fakeUserStore)(nil)
+	_ UserGetter             = (*fakeUserStore)(nil)
+)
+
+// Transitional aliases. bootstrap_test.go and moderation_action_history_test.go
+// still name the old types; these keep them compiling against the single
+// implementation above and should be deleted once those files are updated.
+type (
+	mockUserRepo         = fakeUserStore
+	mockActionUserLookup = fakeUserStore
+	mockApprovalUserRepo = fakeUserStore
+)
+
+func newMockUserRepo() *fakeUserStore         { return newFakeUserStore() }
+func newMockActionUserLookup() *fakeUserStore { return newFakeUserStore() }
+func newMockApprovalUserRepo() *fakeUserStore { return newFakeUserStore() }

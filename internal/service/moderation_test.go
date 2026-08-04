@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -440,3 +442,113 @@ func TestNewModerationService_NilClock(t *testing.T) {
 	}
 }
 
+// --- Trust recalculation enqueueing ---
+
+// fakeTrustQueue records the users asked for recalculation. It is an
+// in-process collaborator standing in for the Redis-backed queue.
+type fakeTrustQueue struct {
+	enqueued []string
+	err      error
+}
+
+func (f *fakeTrustQueue) EnqueueRecalc(_ context.Context, userID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.enqueued = append(f.enqueued, userID)
+	return nil
+}
+
+func (f *fakeTrustQueue) contains(userID string) bool {
+	for _, id := range f.enqueued {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// discardLogger silences the warnings the enqueue-failure paths emit.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// Every user whose penalty landed has a stale moderation component, so all of
+// them — the offender and each voucher — must be queued for recalculation.
+// Without this the scores never move: the worker has no other source of work.
+func TestModerationService_PropagatePenalties_EnqueuesEveryPenalizedUser(t *testing.T) {
+	repo := newMockPenaltyRepo()
+	graph := newMockPenaltyGraph()
+	graph.vouchers = map[string]int{"voucher-1": 1, "voucher-2": 2}
+	queue := &fakeTrustQueue{}
+
+	svc := NewModerationService(repo, graph, fixedClock)
+	svc.SetTrustQueue(queue)
+
+	penalties, err := svc.PropagatePenalties(context.Background(), "action-1", "offender", 5)
+	if err != nil {
+		t.Fatalf("PropagatePenalties() unexpected error: %v", err)
+	}
+
+	if len(queue.enqueued) != len(penalties) {
+		t.Errorf("enqueued %d users for %d penalties: %v", len(queue.enqueued), len(penalties), queue.enqueued)
+	}
+	for _, want := range []string{"offender", "voucher-1", "voucher-2"} {
+		if !queue.contains(want) {
+			t.Errorf("%q was penalized but not enqueued (got %v)", want, queue.enqueued)
+		}
+	}
+}
+
+// A deployment without Redis leaves the queue unset; penalties must still apply.
+func TestModerationService_PropagatePenalties_NoQueueConfigured(t *testing.T) {
+	repo := newMockPenaltyRepo()
+	svc := NewModerationService(repo, newMockPenaltyGraph(), fixedClock)
+
+	if _, err := svc.PropagatePenalties(context.Background(), "action-1", "offender", 3); err != nil {
+		t.Fatalf("PropagatePenalties() unexpected error: %v", err)
+	}
+	if len(repo.penalties) == 0 {
+		t.Error("no penalty was written")
+	}
+}
+
+// The penalty is already committed by the time the enqueue runs, so a broken
+// queue must not fail the moderation action — the score just goes stale.
+func TestModerationService_PropagatePenalties_EnqueueFailureIsNotFatal(t *testing.T) {
+	repo := newMockPenaltyRepo()
+	queue := &fakeTrustQueue{err: errors.New("redis unavailable")}
+
+	svc := NewModerationService(repo, newMockPenaltyGraph(), fixedClock)
+	svc.SetTrustQueue(queue)
+	svc.logger = discardLogger()
+
+	penalties, err := svc.PropagatePenalties(context.Background(), "action-1", "offender", 3)
+	if err != nil {
+		t.Fatalf("PropagatePenalties() error = %v, want the action to survive a queue failure", err)
+	}
+	if len(penalties) != 1 {
+		t.Errorf("penalties = %d, want 1", len(penalties))
+	}
+	if len(repo.penalties) != 1 {
+		t.Errorf("stored penalties = %d, want 1", len(repo.penalties))
+	}
+}
+
+// A penalty that failed to persist has not changed anyone's score, so nothing
+// should be queued for it.
+func TestModerationService_PropagatePenalties_FailedWriteIsNotEnqueued(t *testing.T) {
+	repo := newMockPenaltyRepo()
+	repo.createErr = errors.New("db write failed")
+	queue := &fakeTrustQueue{}
+
+	svc := NewModerationService(repo, newMockPenaltyGraph(), fixedClock)
+	svc.SetTrustQueue(queue)
+
+	if _, err := svc.PropagatePenalties(context.Background(), "action-1", "offender", 3); err == nil {
+		t.Fatal("PropagatePenalties() expected an error, got nil")
+	}
+	if len(queue.enqueued) != 0 {
+		t.Errorf("enqueued %v, want nothing after the write failed", queue.enqueued)
+	}
+}

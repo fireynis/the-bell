@@ -14,6 +14,7 @@ import (
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/testsupport"
 
 	"github.com/go-chi/chi/v5"
 	kratos "github.com/ory/kratos-client-go"
@@ -22,11 +23,11 @@ import (
 // TestKratosAuthValidSession tests that valid Kratos sessions result in the
 // correct user being populated in the request context.
 func TestKratosAuthValidSession(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 
 	// Create a user in the database first.
-	kratosID := uniqueKratosID("authvalid")
+	kratosID := testsupport.UniqueKratosID("authvalid")
 	q := postgres.New(pool)
 	userRepo := postgres.NewUserRepo(q)
 	userSvc := service.NewUserService(userRepo, nil)
@@ -43,20 +44,20 @@ func TestKratosAuthValidSession(t *testing.T) {
 				"id":     "session-123",
 				"active": true,
 				"identity": map[string]any{
-					"id":          kratosID,
-					"schema_id":   "default",
-					"schema_url":  "http://example.com/schema",
-					"traits":      map[string]any{},
-					"created_at":  "2024-01-01T00:00:00Z",
-					"updated_at":  "2024-01-01T00:00:00Z",
-					"state":       "active",
+					"id":               kratosID,
+					"schema_id":        "default",
+					"schema_url":       "http://example.com/schema",
+					"traits":           map[string]any{},
+					"created_at":       "2024-01-01T00:00:00Z",
+					"updated_at":       "2024-01-01T00:00:00Z",
+					"state":            "active",
 					"state_changed_at": "2024-01-01T00:00:00Z",
 				},
-				"created_at":        "2024-01-01T00:00:00Z",
-				"updated_at":        "2024-01-01T00:00:00Z",
-				"authenticated_at":  "2024-01-01T00:00:00Z",
-				"issued_at":         "2024-01-01T00:00:00Z",
-				"expires_at":        "2099-01-01T00:00:00Z",
+				"created_at":       "2024-01-01T00:00:00Z",
+				"updated_at":       "2024-01-01T00:00:00Z",
+				"authenticated_at": "2024-01-01T00:00:00Z",
+				"issued_at":        "2024-01-01T00:00:00Z",
+				"expires_at":       "2099-01-01T00:00:00Z",
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(session)
@@ -72,7 +73,7 @@ func TestKratosAuthValidSession(t *testing.T) {
 	kratosClient := kratos.NewAPIClient(kratosCfg)
 
 	// Build a simple test handler behind the real KratosAuth middleware.
-	authMW := middleware.KratosAuth(kratosClient, userSvc, slogDiscard())
+	authMW := middleware.KratosAuth(kratosClient, userSvc, testsupport.DiscardLogger())
 
 	r := chi.NewRouter()
 	r.Use(authMW)
@@ -111,7 +112,7 @@ func TestKratosAuthValidSession(t *testing.T) {
 
 // TestKratosAuthInvalidSession tests that an invalid Kratos session returns 401.
 func TestKratosAuthInvalidSession(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	q := postgres.New(pool)
 	userRepo := postgres.NewUserRepo(q)
@@ -128,7 +129,7 @@ func TestKratosAuthInvalidSession(t *testing.T) {
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: kratosServer.URL}}
 	kratosClient := kratos.NewAPIClient(kratosCfg)
 
-	authMW := middleware.KratosAuth(kratosClient, userSvc, slogDiscard())
+	authMW := middleware.KratosAuth(kratosClient, userSvc, testsupport.DiscardLogger())
 
 	r := chi.NewRouter()
 	r.Use(authMW)
@@ -149,7 +150,7 @@ func TestKratosAuthInvalidSession(t *testing.T) {
 
 // TestKratosAuthNoCookie tests that requests without a cookie header return 401.
 func TestKratosAuthNoCookie(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	q := postgres.New(pool)
 	userRepo := postgres.NewUserRepo(q)
@@ -166,7 +167,7 @@ func TestKratosAuthNoCookie(t *testing.T) {
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: kratosServer.URL}}
 	kratosClient := kratos.NewAPIClient(kratosCfg)
 
-	authMW := middleware.KratosAuth(kratosClient, userSvc, slogDiscard())
+	authMW := middleware.KratosAuth(kratosClient, userSvc, testsupport.DiscardLogger())
 
 	r := chi.NewRouter()
 	r.Use(authMW)
@@ -188,14 +189,14 @@ func TestKratosAuthNoCookie(t *testing.T) {
 // TestKratosAuthAutoCreateUser tests that when a valid Kratos session references
 // an identity not yet in the local database, FindOrCreate auto-provisions the user.
 func TestKratosAuthAutoCreateUser(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	q := postgres.New(pool)
 	userRepo := postgres.NewUserRepo(q)
 	userSvc := service.NewUserService(userRepo, nil)
 
 	// This Kratos ID does not exist in the database yet.
-	kratosID := uniqueKratosID("autocreate")
+	kratosID := testsupport.UniqueKratosID("autocreate")
 
 	kratosServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/sessions/whoami" {
@@ -203,20 +204,20 @@ func TestKratosAuthAutoCreateUser(t *testing.T) {
 				"id":     "session-autocreate",
 				"active": true,
 				"identity": map[string]any{
-					"id":          kratosID,
-					"schema_id":   "default",
-					"schema_url":  "http://example.com/schema",
-					"traits":      map[string]any{},
-					"created_at":  "2024-01-01T00:00:00Z",
-					"updated_at":  "2024-01-01T00:00:00Z",
-					"state":       "active",
+					"id":               kratosID,
+					"schema_id":        "default",
+					"schema_url":       "http://example.com/schema",
+					"traits":           map[string]any{},
+					"created_at":       "2024-01-01T00:00:00Z",
+					"updated_at":       "2024-01-01T00:00:00Z",
+					"state":            "active",
 					"state_changed_at": "2024-01-01T00:00:00Z",
 				},
-				"created_at":        "2024-01-01T00:00:00Z",
-				"updated_at":        "2024-01-01T00:00:00Z",
-				"authenticated_at":  "2024-01-01T00:00:00Z",
-				"issued_at":         "2024-01-01T00:00:00Z",
-				"expires_at":        "2099-01-01T00:00:00Z",
+				"created_at":       "2024-01-01T00:00:00Z",
+				"updated_at":       "2024-01-01T00:00:00Z",
+				"authenticated_at": "2024-01-01T00:00:00Z",
+				"issued_at":        "2024-01-01T00:00:00Z",
+				"expires_at":       "2099-01-01T00:00:00Z",
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(session)
@@ -230,7 +231,7 @@ func TestKratosAuthAutoCreateUser(t *testing.T) {
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: kratosServer.URL}}
 	kratosClient := kratos.NewAPIClient(kratosCfg)
 
-	authMW := middleware.KratosAuth(kratosClient, userSvc, slogDiscard())
+	authMW := middleware.KratosAuth(kratosClient, userSvc, testsupport.DiscardLogger())
 
 	r := chi.NewRouter()
 	r.Use(authMW)
@@ -242,10 +243,10 @@ func TestKratosAuthAutoCreateUser(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"user_id":    u.ID,
-			"kratos_id":  u.KratosIdentityID,
-			"role":       string(u.Role),
-			"trust":      fmt.Sprintf("%.1f", u.TrustScore),
+			"user_id":   u.ID,
+			"kratos_id": u.KratosIdentityID,
+			"role":      string(u.Role),
+			"trust":     fmt.Sprintf("%.1f", u.TrustScore),
 		})
 	})
 
@@ -288,10 +289,10 @@ func TestKratosAuthAutoCreateUser(t *testing.T) {
 
 // TestRequireActiveMiddleware tests that suspended users are rejected.
 func TestRequireActiveMiddleware(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	// Create a suspended user (is_active = false via the mock auth).
-	user := testUser(t, pool, uniqueKratosID("suspended"), domain.RoleMember, 80.0)
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("suspended"), domain.RoleMember, 80.0)
 	user.IsActive = false
 
 	srv := testServer(t, pool, user)
@@ -311,10 +312,10 @@ func TestRequireActiveMiddleware(t *testing.T) {
 
 // TestRequireRoleMiddleware tests role-based access control.
 func TestRequireRoleMiddleware(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 
 	// A regular member trying to access moderator endpoints.
-	member := testUser(t, pool, uniqueKratosID("roletest-member"), domain.RoleMember, 80.0)
+	member := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("roletest-member"), domain.RoleMember, 80.0)
 	srv := testServer(t, pool, member)
 	handler := srv.Handler()
 

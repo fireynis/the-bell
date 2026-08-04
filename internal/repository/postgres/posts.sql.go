@@ -89,30 +89,23 @@ WHERE p.id = $1
 `
 
 type GetPostByIDRow struct {
-	ID                string             `json:"id"`
-	AuthorID          string             `json:"author_id"`
-	Body              string             `json:"body"`
-	ImagePath         string             `json:"image_path"`
-	Status            string             `json:"status"`
-	RemovalReason     string             `json:"removal_reason"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	EditedAt          pgtype.Timestamptz `json:"edited_at"`
-	AuthorDisplayName string             `json:"author_display_name"`
-	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+	Post              Post   `json:"post"`
+	AuthorDisplayName string `json:"author_display_name"`
+	AuthorAvatarUrl   string `json:"author_avatar_url"`
 }
 
 func (q *Queries) GetPostByID(ctx context.Context, id string) (GetPostByIDRow, error) {
 	row := q.db.QueryRow(ctx, getPostByID, id)
 	var i GetPostByIDRow
 	err := row.Scan(
-		&i.ID,
-		&i.AuthorID,
-		&i.Body,
-		&i.ImagePath,
-		&i.Status,
-		&i.RemovalReason,
-		&i.CreatedAt,
-		&i.EditedAt,
+		&i.Post.ID,
+		&i.Post.AuthorID,
+		&i.Post.Body,
+		&i.Post.ImagePath,
+		&i.Post.Status,
+		&i.Post.RemovalReason,
+		&i.Post.CreatedAt,
+		&i.Post.EditedAt,
 		&i.AuthorDisplayName,
 		&i.AuthorAvatarUrl,
 	)
@@ -124,7 +117,7 @@ SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.cr
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
-WHERE p.author_id = $1
+WHERE p.author_id = $1 AND p.status = 'visible'
 ORDER BY p.created_at DESC
 LIMIT $2
 `
@@ -135,18 +128,14 @@ type ListPostsByAuthorParams struct {
 }
 
 type ListPostsByAuthorRow struct {
-	ID                string             `json:"id"`
-	AuthorID          string             `json:"author_id"`
-	Body              string             `json:"body"`
-	ImagePath         string             `json:"image_path"`
-	Status            string             `json:"status"`
-	RemovalReason     string             `json:"removal_reason"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	EditedAt          pgtype.Timestamptz `json:"edited_at"`
-	AuthorDisplayName string             `json:"author_display_name"`
-	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+	Post              Post   `json:"post"`
+	AuthorDisplayName string `json:"author_display_name"`
+	AuthorAvatarUrl   string `json:"author_avatar_url"`
 }
 
+// Removed posts are excluded here for the same reason they are excluded from
+// the feed: a profile is a public listing, and a moderator-removed post carries
+// removal_reason, which is a moderator's private note.
 func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorParams) ([]ListPostsByAuthorRow, error) {
 	rows, err := q.db.Query(ctx, listPostsByAuthor, arg.AuthorID, arg.Limit)
 	if err != nil {
@@ -157,14 +146,14 @@ func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorPa
 	for rows.Next() {
 		var i ListPostsByAuthorRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.AuthorID,
-			&i.Body,
-			&i.ImagePath,
-			&i.Status,
-			&i.RemovalReason,
-			&i.CreatedAt,
-			&i.EditedAt,
+			&i.Post.ID,
+			&i.Post.AuthorID,
+			&i.Post.Body,
+			&i.Post.ImagePath,
+			&i.Post.Status,
+			&i.Post.RemovalReason,
+			&i.Post.CreatedAt,
+			&i.Post.EditedAt,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -194,16 +183,9 @@ type ListPostsFeedParams struct {
 }
 
 type ListPostsFeedRow struct {
-	ID                string             `json:"id"`
-	AuthorID          string             `json:"author_id"`
-	Body              string             `json:"body"`
-	ImagePath         string             `json:"image_path"`
-	Status            string             `json:"status"`
-	RemovalReason     string             `json:"removal_reason"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	EditedAt          pgtype.Timestamptz `json:"edited_at"`
-	AuthorDisplayName string             `json:"author_display_name"`
-	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+	Post              Post   `json:"post"`
+	AuthorDisplayName string `json:"author_display_name"`
+	AuthorAvatarUrl   string `json:"author_avatar_url"`
 }
 
 func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([]ListPostsFeedRow, error) {
@@ -216,14 +198,14 @@ func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([
 	for rows.Next() {
 		var i ListPostsFeedRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.AuthorID,
-			&i.Body,
-			&i.ImagePath,
-			&i.Status,
-			&i.RemovalReason,
-			&i.CreatedAt,
-			&i.EditedAt,
+			&i.Post.ID,
+			&i.Post.AuthorID,
+			&i.Post.Body,
+			&i.Post.ImagePath,
+			&i.Post.Status,
+			&i.Post.RemovalReason,
+			&i.Post.CreatedAt,
+			&i.Post.EditedAt,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -248,16 +230,9 @@ LIMIT $1
 `
 
 type ListPostsFeedFirstRow struct {
-	ID                string             `json:"id"`
-	AuthorID          string             `json:"author_id"`
-	Body              string             `json:"body"`
-	ImagePath         string             `json:"image_path"`
-	Status            string             `json:"status"`
-	RemovalReason     string             `json:"removal_reason"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	EditedAt          pgtype.Timestamptz `json:"edited_at"`
-	AuthorDisplayName string             `json:"author_display_name"`
-	AuthorAvatarUrl   string             `json:"author_avatar_url"`
+	Post              Post   `json:"post"`
+	AuthorDisplayName string `json:"author_display_name"`
+	AuthorAvatarUrl   string `json:"author_avatar_url"`
 }
 
 func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]ListPostsFeedFirstRow, error) {
@@ -270,14 +245,14 @@ func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]ListPo
 	for rows.Next() {
 		var i ListPostsFeedFirstRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.AuthorID,
-			&i.Body,
-			&i.ImagePath,
-			&i.Status,
-			&i.RemovalReason,
-			&i.CreatedAt,
-			&i.EditedAt,
+			&i.Post.ID,
+			&i.Post.AuthorID,
+			&i.Post.Body,
+			&i.Post.ImagePath,
+			&i.Post.Status,
+			&i.Post.RemovalReason,
+			&i.Post.CreatedAt,
+			&i.Post.EditedAt,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -307,8 +282,11 @@ func (q *Queries) SoftDeletePost(ctx context.Context, arg SoftDeletePostParams) 
 }
 
 const updatePostBody = `-- name: UpdatePostBody :one
-UPDATE posts SET body = $2, edited_at = NOW() WHERE id = $1
-RETURNING id, author_id, body, image_path, status, removal_reason, created_at, edited_at
+UPDATE posts p SET body = $2, edited_at = NOW()
+FROM users u
+WHERE p.id = $1 AND u.id = p.author_id
+RETURNING p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+          u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 `
 
 type UpdatePostBodyParams struct {
@@ -316,18 +294,29 @@ type UpdatePostBodyParams struct {
 	Body string `json:"body"`
 }
 
-func (q *Queries) UpdatePostBody(ctx context.Context, arg UpdatePostBodyParams) (Post, error) {
+type UpdatePostBodyRow struct {
+	Post              Post   `json:"post"`
+	AuthorDisplayName string `json:"author_display_name"`
+	AuthorAvatarUrl   string `json:"author_avatar_url"`
+}
+
+// The updated row is joined back to users so that the post returned by an edit
+// carries the same author fields as every read path. Without it the edit
+// response alone would come back with a blank author name.
+func (q *Queries) UpdatePostBody(ctx context.Context, arg UpdatePostBodyParams) (UpdatePostBodyRow, error) {
 	row := q.db.QueryRow(ctx, updatePostBody, arg.ID, arg.Body)
-	var i Post
+	var i UpdatePostBodyRow
 	err := row.Scan(
-		&i.ID,
-		&i.AuthorID,
-		&i.Body,
-		&i.ImagePath,
-		&i.Status,
-		&i.RemovalReason,
-		&i.CreatedAt,
-		&i.EditedAt,
+		&i.Post.ID,
+		&i.Post.AuthorID,
+		&i.Post.Body,
+		&i.Post.ImagePath,
+		&i.Post.Status,
+		&i.Post.RemovalReason,
+		&i.Post.CreatedAt,
+		&i.Post.EditedAt,
+		&i.AuthorDisplayName,
+		&i.AuthorAvatarUrl,
 	)
 	return i, err
 }

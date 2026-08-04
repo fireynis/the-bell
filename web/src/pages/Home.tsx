@@ -8,7 +8,8 @@ import Spinner from "../components/Spinner.tsx";
 import { useFeed } from "../hooks/useFeed.ts";
 import { useLiveFeed } from "../hooks/useLiveFeed.ts";
 import type { ReactionNotification } from "../hooks/useLiveFeed.ts";
-import { describeReactions } from "../lib/liveFeed.ts";
+import { describeReactions, mergePendingPosts } from "../lib/liveFeed.ts";
+import { mergeLivePosts } from "../lib/feed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 import { useSound } from "../hooks/useSound.ts";
 import type { Post } from "../api/types.ts";
@@ -18,7 +19,8 @@ export default function Home() {
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [newPosts, setNewPosts] = useState<Post[]>([]);
   const [muted, setMuted] = useState(() => localStorage.getItem("bell-sound-muted") === "true");
-  const [ringing, setRinging] = useState(false);
+  const [seenCount, setSeenCount] = useState(0);
+  const [arrivals, setArrivals] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const { playBell, playChime } = useSound();
 
@@ -39,29 +41,42 @@ export default function Home() {
     }
   }, [muted, playChime]);
 
-  const allPosts = useMemo(() => [...newPosts, ...posts], [newPosts, posts]);
+  const allPosts = useMemo(() => mergeLivePosts(newPosts, posts), [newPosts, posts]);
   const postIds = useMemo(() => new Set(allPosts.map((p) => p.id)), [allPosts]);
+  // Only the paginated posts count as "already known" here: the live arrivals
+  // being merged in below are themselves held in newPosts.
+  const loadedIds = useMemo(() => new Set(posts.map((p) => p.id)), [posts]);
 
   const { pendingCount, pendingPosts, flush } = useLiveFeed(postIds, handleReactions);
 
   useIntersectionObserver(sentinelRef, loadMore, hasMore && !loading);
 
   const handleBannerClick = () => {
-    setNewPosts((prev) => [...pendingPosts, ...prev]);
+    setNewPosts((prev) => mergePendingPosts(pendingPosts, prev, loadedIds));
     flush();
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally minimal deps: only trigger on count change
+  // The bell announces an arrival, so it counts the moments the pending total
+  // went up rather than reacting to the total itself. Anything else re-rings
+  // for posts the reader has already been told about — most visibly when they
+  // unmute, which is the last moment they want to be shouted at.
+  if (pendingCount !== seenCount) {
+    setSeenCount(pendingCount);
+    if (pendingCount > seenCount) setArrivals((n) => n + 1);
+  }
+
+  // Read at ring time rather than depended on, so toggling the mute button is
+  // not itself an arrival.
+  const mutedRef = useRef(muted);
   useEffect(() => {
-    if (pendingCount > 0 && !muted) {
+    mutedRef.current = muted;
+  });
+
+  useEffect(() => {
+    if (arrivals > 0 && !mutedRef.current) {
       playBell();
     }
-    if (pendingCount > 0) {
-      setRinging(true);
-      const timer = setTimeout(() => setRinging(false), 500);
-      return () => clearTimeout(timer);
-    }
-  }, [pendingCount]);
+  }, [arrivals, playBell]);
 
   return (
     <div className="py-5">
@@ -84,7 +99,12 @@ export default function Home() {
           className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
           title={muted ? "Unmute notifications" : "Mute notifications"}
         >
-          <span className={`text-xl ${ringing ? "animate-ring inline-block" : ""}`}>
+          {/* Keyed on the arrival count so each arrival remounts the span and
+              replays the one-shot CSS animation \u2014 no timer to reset. */}
+          <span
+            key={arrivals}
+            className={`text-xl ${arrivals > 0 ? "animate-ring inline-block" : ""}`}
+          >
             {muted ? "\uD83D\uDD15" : "\uD83D\uDD14"}
           </span>
         </button>

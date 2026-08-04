@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { useParams } from "react-router";
 import { api } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import type {
   ApiError,
   Post,
   User,
   UserPostsResponse,
   VouchesResponse,
-  Vouch,
 } from "../api/types";
 import Avatar from "../components/Avatar";
 import ErrorBanner from "../components/ErrorBanner";
@@ -15,230 +15,20 @@ import PostCard from "../components/PostCard";
 import RoleBadge from "../components/RoleBadge";
 import Spinner from "../components/Spinner";
 import TrustBar from "../components/TrustBar";
+import EditProfileForm from "./profile/EditProfileForm";
+import VouchList from "./profile/VouchList";
+import { vouchingBlockReason } from "../lib/gating";
 
 type Tab = "posts" | "vouches";
 
-function EditProfileForm({
-  user,
-  onSave,
-}: {
-  user: User;
-  onSave: (updated: User) => void;
-}) {
-  const [displayName, setDisplayName] = useState(user.display_name);
-  const [bio, setBio] = useState(user.bio);
-  const [avatarUrl, setAvatarUrl] = useState(user.avatar_url);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
-
-  if (!editing) {
-    return (
-      <button
-        onClick={() => setEditing(true)}
-        className="text-sm"
-        style={{ color: "var(--color-primary)" }}
-      >
-        Edit profile
-      </button>
-    );
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSaving(true);
-    setError(null);
-
-    try {
-      const updated = await api.put<User>("/users/me", {
-        display_name: displayName.trim(),
-        bio: bio.trim(),
-        avatar_url: avatarUrl.trim(),
-      });
-      onSave(updated);
-      setEditing(false);
-    } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to update profile.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const inputClass =
-    "w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1";
-  const inputStyle = {
-    border: "1px solid var(--color-border)",
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="mt-4 space-y-3">
-      {error && <ErrorBanner message={error} />}
-      <div>
-        <label
-          className="mb-1 block text-sm font-medium"
-          style={{ color: "var(--color-text-secondary)" }}
-        >
-          Display name
-        </label>
-        <input
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-          maxLength={100}
-          required
-          className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
-        />
-      </div>
-      <div>
-        <label
-          className="mb-1 block text-sm font-medium"
-          style={{ color: "var(--color-text-secondary)" }}
-        >
-          Bio
-        </label>
-        <textarea
-          value={bio}
-          onChange={(e) => setBio(e.target.value)}
-          maxLength={500}
-          rows={3}
-          className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
-        />
-        <p
-          className="mt-1 text-right text-xs"
-          style={{ color: "var(--color-text-tertiary)" }}
-        >
-          {bio.length} / 500
-        </p>
-      </div>
-      <div>
-        <label
-          className="mb-1 block text-sm font-medium"
-          style={{ color: "var(--color-text-secondary)" }}
-        >
-          Avatar URL
-        </label>
-        <input
-          value={avatarUrl}
-          onChange={(e) => setAvatarUrl(e.target.value)}
-          type="url"
-          className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
-        />
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={saving || !displayName.trim()}
-          className="rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          style={{
-            backgroundColor: "var(--color-primary)",
-            color: "var(--color-text-inverse)",
-          }}
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
-        <button
-          type="button"
-          onClick={() => setEditing(false)}
-          className="rounded-md px-4 py-2 text-sm"
-          style={{
-            backgroundColor: "var(--color-surface-tertiary)",
-            color: "var(--color-text-secondary)",
-          }}
-        >
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function VouchList({
-  title,
-  vouches,
-}: {
-  title: string;
-  vouches: Vouch[];
-}) {
-  if (vouches.length === 0) {
-    return (
-      <div>
-        <h3
-          className="mb-2 text-sm font-medium"
-          style={{ color: "var(--color-text-secondary)" }}
-        >
-          {title}
-        </h3>
-        <p className="text-sm" style={{ color: "var(--color-text-tertiary)" }}>
-          None yet.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <h3
-        className="mb-2 text-sm font-medium"
-        style={{ color: "var(--color-text-secondary)" }}
-      >
-        {title}
-      </h3>
-      <ul className="space-y-2">
-        {vouches.map((v) => (
-          <li
-            key={v.id}
-            className="rounded-md p-3"
-            style={{
-              backgroundColor: "var(--color-surface)",
-              boxShadow: "var(--shadow-sm)",
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <Link
-                to={`/profile/${title === "Received" ? v.voucher_id : v.vouchee_id}`}
-                className="text-sm font-medium"
-                style={{ color: "var(--color-primary)" }}
-              >
-                {(title === "Received" ? v.voucher_id : v.vouchee_id).slice(0, 8)}...
-              </Link>
-              <span
-                className="text-xs"
-                style={{ color: "var(--color-text-tertiary)" }}
-              >
-                {new Date(v.created_at).toLocaleDateString()}
-              </span>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 export default function Profile() {
   const { userId } = useParams<{ userId: string }>();
+  const { user: viewer } = useAuth();
   const isOwnProfile = !userId;
+
+  // Derived from the signed-in viewer, not the profile being read: it answers
+  // "can I vouch", which is only shown on the viewer's own profile.
+  const vouchBlock = vouchingBlockReason(viewer);
 
   const [user, setUser] = useState<User | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -367,6 +157,17 @@ export default function Profile() {
                 user={user}
                 onSave={(updated) => setUser(updated)}
               />
+              {/*
+                Vouching is the platform's core mechanic, so where the viewer
+                stands against its threshold is worth saying plainly on their
+                own profile rather than leaving them to infer it from a score.
+              */}
+              <p
+                className="mt-3 text-xs"
+                style={{ color: "var(--color-text-tertiary)" }}
+              >
+                {vouchBlock ?? "You have enough trust to vouch for other members."}
+              </p>
             </div>
           )}
         </div>
@@ -419,8 +220,8 @@ export default function Profile() {
 
           {activeTab === "vouches" && vouches && (
             <div className="space-y-6">
-              <VouchList title="Received" vouches={vouches.received} />
-              <VouchList title="Given" vouches={vouches.given} />
+              <VouchList direction="received" vouches={vouches.received} />
+              <VouchList direction="given" vouches={vouches.given} />
             </div>
           )}
         </div>

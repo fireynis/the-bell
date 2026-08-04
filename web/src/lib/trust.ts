@@ -62,3 +62,35 @@ export function isCouncil(user: Pick<User, "role" | "is_active"> | null): boolea
   if (!user) return false;
   return user.is_active && user.role === "council";
 }
+
+/**
+ * The role hierarchy, ordering the roles declared in internal/domain/user.go.
+ * Ranks are ordinal only — the numbers carry no meaning beyond the ordering.
+ */
+const ROLE_RANK: Record<Role, number> = {
+  banned: 0,
+  pending: 1,
+  member: 2,
+  moderator: 3,
+  council: 4,
+};
+
+/**
+ * hasMinRole reports whether a user sits at or above a role in the hierarchy,
+ * so nav items and routes share one encoding of it rather than each listing the
+ * roles it happens to allow — a list that has to be revisited every time a role
+ * is added.
+ *
+ * An unknown role ranks lowest rather than throwing: the server can introduce a
+ * role this build has never heard of, and the safe reading of one is that it
+ * grants nothing. Deactivated users are refused whatever their role, matching
+ * canModerate and isCouncil.
+ */
+export function hasMinRole(
+  user: Pick<User, "role" | "is_active"> | null,
+  minRole: Role,
+): boolean {
+  if (!user || !user.is_active) return false;
+  const userRank = ROLE_RANK[user.role as Role] ?? -1;
+  return userRank >= ROLE_RANK[minRole];
+}

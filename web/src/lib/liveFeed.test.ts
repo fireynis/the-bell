@@ -4,7 +4,6 @@ import {
   describeReactions,
   mergePendingPosts,
   parseEventData,
-  reactionEmoji,
   summarizeReactions,
   type ReactionEvent,
 } from "./liveFeed";
@@ -129,20 +128,6 @@ describe("describeReactions", () => {
       { post_id: "p2", reaction_type: "bell", count: 1 },
     ]);
     expect(message).toBe("3 reactions across 2 of your posts");
-  });
-});
-
-describe("reactionEmoji", () => {
-  it.each([
-    ["bell", "🔔"],
-    ["heart", "❤️"],
-    ["celebrate", "🎉"],
-  ])("maps %s", (type, emoji) => {
-    expect(reactionEmoji(type)).toBe(emoji);
-  });
-
-  it("falls back for an unknown type rather than rendering undefined", () => {
-    expect(reactionEmoji("brand-new-reaction")).toBe("👍");
   });
 });
 

@@ -5,8 +5,7 @@ import Avatar from "./Avatar";
 import { ImageLightbox } from "./ImageLightbox";
 import ReactionButton from "./ReactionButton";
 import { formatAbsoluteTime, formatRelativeTime } from "../lib/time";
-
-const REACTION_TYPES = ["bell", "heart", "celebrate"];
+import { REACTION_TYPES } from "../lib/reactions";
 
 interface PostCardProps {
   post: Post;

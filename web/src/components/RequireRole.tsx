@@ -1,17 +1,10 @@
 import { Navigate, Outlet } from "react-router";
 import { useAuth } from "../context/AuthContext.tsx";
 import Spinner from "./Spinner";
-
-const ROLE_RANK: Record<string, number> = {
-  banned: 0,
-  pending: 1,
-  member: 2,
-  moderator: 3,
-  council: 4,
-};
+import { hasMinRole, type Role } from "../lib/trust.ts";
 
 interface RequireRoleProps {
-  minRole: string;
+  minRole: Role;
 }
 
 export default function RequireRole({ minRole }: RequireRoleProps) {
@@ -25,10 +18,7 @@ export default function RequireRole({ minRole }: RequireRoleProps) {
     );
   }
 
-  const userRank = ROLE_RANK[user?.role ?? ""] ?? 0;
-  const requiredRank = ROLE_RANK[minRole] ?? 0;
-
-  if (!user || userRank < requiredRank) {
+  if (!hasMinRole(user, minRole)) {
     return <Navigate to="/" replace />;
   }
 

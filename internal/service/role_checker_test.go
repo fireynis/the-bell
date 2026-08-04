@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
@@ -19,12 +20,12 @@ type mockRoleCheckerRepo struct {
 	clearedUsers      map[string]bool
 	roleHistoryEvents []domain.RoleHistory
 
-	updateRoleErr           error
-	updateTrustBelowErr     error
-	clearTrustBelowErr      error
-	countModVouchesErr      error
-	createRoleHistoryErr    error
-	listUsersErr            error
+	updateRoleErr        error
+	updateTrustBelowErr  error
+	clearTrustBelowErr   error
+	countModVouchesErr   error
+	createRoleHistoryErr error
+	listUsersErr         error
 }
 
 func newMockRoleCheckerRepo() *mockRoleCheckerRepo {
@@ -95,273 +96,19 @@ func TestRoleChecker_Run(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	twentyNineDaysAgo := roleCheckNow.AddDate(0, 0, -29)
 	ninetyOneDaysAgo := roleCheckNow.AddDate(0, 0, -91)
-	exactlyThirtyDaysAgo := roleCheckNow.AddDate(0, 0, -30)
-	exactlyNinetyDaysAgo := roleCheckNow.AddDate(0, 0, -90)
 
 	tests := []struct {
-		name            string
-		users           []RoleCheckerUser
-		modVouchCounts  map[string]int64
-		wantPromotions  int
-		wantDemotions   int
-		wantCleared     int
-		wantMarked      int
-		wantRoles       map[string]domain.Role
+		name           string
+		users          []RoleCheckerUser
+		modVouchCounts map[string]int64
+		wantPromotions int
+		wantDemotions  int
+		wantCleared    int
+		wantMarked     int
+		wantRoles      map[string]domain.Role
 	}{
 		{
-			name: "member promoted to moderator",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  90.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 3},
-			wantPromotions: 1,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"user-1": domain.RoleModerator},
-		},
-		{
-			name: "member trust exactly at promotion threshold",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  85.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 2},
-			wantPromotions: 1,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"user-1": domain.RoleModerator},
-		},
-		{
-			name: "member trust just below promotion threshold",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  84.9,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 3},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "member not enough days",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  90.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -50),
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 3},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "member joined exactly 90 days ago",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  90.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    exactlyNinetyDaysAgo,
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 2},
-			wantPromotions: 1,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"user-1": domain.RoleModerator},
-		},
-		{
-			name: "member not enough moderator vouches",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Alice",
-					TrustScore:  90.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
-				},
-			},
-			modVouchCounts: map[string]int64{"user-1": 1},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "member trust below 70 first time - mark TrustBelowSince",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Bob",
-					TrustScore:      65.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: nil,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     1,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "member trust below 70 for 30+ days - demote to pending",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Bob",
-					TrustScore:      65.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: &thirtyOneDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  1,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"user-1": domain.RolePending},
-		},
-		{
-			name: "moderator trust below 70 for 30+ days - demote to member",
-			users: []RoleCheckerUser{
-				{
-					ID:              "mod-1",
-					DisplayName:     "Charlie",
-					TrustScore:      60.0,
-					Role:            domain.RoleModerator,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -200),
-					TrustBelowSince: &thirtyOneDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  1,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"mod-1": domain.RoleMember},
-		},
-		{
-			name: "member trust below 70 for exactly 30 days - demote",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Bob",
-					TrustScore:      65.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: &exactlyThirtyDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  1,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{"user-1": domain.RolePending},
-		},
-		{
-			name: "member trust below 70 for just under 30 days - no demotion",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Bob",
-					TrustScore:      65.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: &twentyNineDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "user trust recovered above 70 - clear TrustBelowSince",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Dave",
-					TrustScore:      75.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: &thirtyOneDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    1,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "user trust exactly at demotion threshold - no demotion, clear marker",
-			users: []RoleCheckerUser{
-				{
-					ID:              "user-1",
-					DisplayName:     "Eve",
-					TrustScore:      70.0,
-					Role:            domain.RoleMember,
-					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
-					TrustBelowSince: &thirtyOneDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    1,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "council member is never auto-promoted or demoted",
-			users: []RoleCheckerUser{
-				{
-					ID:              "council-1",
-					DisplayName:     "Frank",
-					TrustScore:      50.0,
-					Role:            domain.RoleCouncil,
-					JoinedAt:        roleCheckNow.AddDate(-2, 0, 0),
-					TrustBelowSince: &thirtyOneDaysAgo,
-				},
-			},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "multiple users - mixed promotions and demotions",
+			name: "one pass applies every outcome across a mixed population",
 			users: []RoleCheckerUser{
 				{
 					ID:          "promotable",
@@ -369,6 +116,24 @@ func TestRoleChecker_Run(t *testing.T) {
 					TrustScore:  90.0,
 					Role:        domain.RoleMember,
 					JoinedAt:    ninetyOneDaysAgo,
+				},
+				{
+					// First dip below the threshold: starts the demotion clock.
+					ID:          "freshly-dipped",
+					DisplayName: "Erin",
+					TrustScore:  65.0,
+					Role:        domain.RoleMember,
+					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
+				},
+				{
+					// Recovered before the window elapsed: the clock is cleared.
+					// No moderator vouches, so this must not also promote.
+					ID:              "recovered",
+					DisplayName:     "Grace",
+					TrustScore:      90.0,
+					Role:            domain.RoleMember,
+					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
+					TrustBelowSince: &twentyNineDaysAgo,
 				},
 				{
 					ID:              "demotable-member",
@@ -397,10 +162,10 @@ func TestRoleChecker_Run(t *testing.T) {
 			modVouchCounts: map[string]int64{"promotable": 2},
 			wantPromotions: 1,
 			wantDemotions:  2,
-			wantCleared:    0,
-			wantMarked:     0,
+			wantCleared:    1,
+			wantMarked:     1,
 			wantRoles: map[string]domain.Role{
-				"promotable":      domain.RoleModerator,
+				"promotable":       domain.RoleModerator,
 				"demotable-member": domain.RolePending,
 				"demotable-mod":    domain.RoleMember,
 			},
@@ -408,23 +173,6 @@ func TestRoleChecker_Run(t *testing.T) {
 		{
 			name:           "no users to check",
 			users:          []RoleCheckerUser{},
-			wantPromotions: 0,
-			wantDemotions:  0,
-			wantCleared:    0,
-			wantMarked:     0,
-			wantRoles:      map[string]domain.Role{},
-		},
-		{
-			name: "trust exactly at 70 with no TrustBelowSince - no action needed",
-			users: []RoleCheckerUser{
-				{
-					ID:          "user-1",
-					DisplayName: "Grace",
-					TrustScore:  70.0,
-					Role:        domain.RoleMember,
-					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
-				},
-			},
 			wantPromotions: 0,
 			wantDemotions:  0,
 			wantCleared:    0,
@@ -567,6 +315,243 @@ func TestRoleChecker_PromotionRecordsHistory(t *testing.T) {
 	}
 	if entry.Reason == "" {
 		t.Error("role_history reason should not be empty")
+	}
+}
+
+// Demotion is the only outcome that takes something away, so it must be
+// reached explicitly. An outcome the switch does not recognize — which is what
+// a newly added demotionOutcome looks like before its case is written — has to
+// fail loudly rather than fall through into a role change.
+func TestRoleChecker_ApplyDemotion_UnrecognizedOutcomeDoesNotDemote(t *testing.T) {
+	repo := newMockRoleCheckerRepo()
+	rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
+	u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
+	result := &RoleCheckResult{}
+
+	decision := demotionDecision{Outcome: demotionOutcome(99), NewRole: domain.RolePending, Reason: "should not apply"}
+	err := rc.applyDemotion(context.Background(), u, decision, roleCheckNow, result)
+	if err == nil {
+		t.Fatal("applyDemotion() with an unrecognized outcome: expected an error, got nil")
+	}
+	if len(repo.updatedRoles) != 0 {
+		t.Errorf("roles updated = %v, want none", repo.updatedRoles)
+	}
+	if len(repo.roleHistoryEvents) != 0 {
+		t.Errorf("role_history entries = %d, want 0", len(repo.roleHistoryEvents))
+	}
+	if len(result.Demotions) != 0 {
+		t.Errorf("Demotions = %d, want 0", len(result.Demotions))
+	}
+}
+
+// demotionNone is the zero value, so a decision that was never populated must
+// be a no-op rather than the most destructive outcome.
+func TestRoleChecker_ApplyDemotion_ZeroDecisionIsANoOp(t *testing.T) {
+	repo := newMockRoleCheckerRepo()
+	rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
+	u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
+	result := &RoleCheckResult{}
+
+	if err := rc.applyDemotion(context.Background(), u, demotionDecision{}, roleCheckNow, result); err != nil {
+		t.Fatalf("applyDemotion() unexpected error: %v", err)
+	}
+	if len(repo.updatedRoles) != 0 {
+		t.Errorf("roles updated = %v, want none", repo.updatedRoles)
+	}
+	if len(result.Demotions) != 0 || len(result.Promotions) != 0 || result.Cleared != 0 || result.Marked != 0 {
+		t.Errorf("result = %+v, want it untouched", *result)
+	}
+}
+
+// Each non-demotion outcome writes exactly its own field; a mix-up here would
+// silently mis-report a run to the operator.
+func TestRoleChecker_ApplyDemotion_OutcomeBookkeeping(t *testing.T) {
+	tests := []struct {
+		name        string
+		outcome     demotionOutcome
+		wantCleared int
+		wantMarked  int
+	}{
+		{"demotionNone records nothing", demotionNone, 0, 0},
+		{"demotionWait records nothing", demotionWait, 0, 0},
+		{"demotionClear counts a clear", demotionClear, 1, 0},
+		{"demotionMark counts a mark", demotionMark, 0, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockRoleCheckerRepo()
+			rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
+			u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
+			result := &RoleCheckResult{}
+
+			if err := rc.applyDemotion(context.Background(), u, demotionDecision{Outcome: tt.outcome}, roleCheckNow, result); err != nil {
+				t.Fatalf("applyDemotion() unexpected error: %v", err)
+			}
+			if result.Cleared != tt.wantCleared {
+				t.Errorf("Cleared = %d, want %d", result.Cleared, tt.wantCleared)
+			}
+			if result.Marked != tt.wantMarked {
+				t.Errorf("Marked = %d, want %d", result.Marked, tt.wantMarked)
+			}
+			if len(result.Demotions) != 0 {
+				t.Errorf("Demotions = %d, want 0", len(result.Demotions))
+			}
+		})
+	}
+}
+
+// The checker is a nightly sweep of the whole town, so one user's write
+// failure must not abandon everyone after them.
+func TestRoleChecker_Run_ContinuesAfterAPerUserFailure(t *testing.T) {
+	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
+	repo := newMockRoleCheckerRepo()
+	repo.clearTrustBelowErr = errors.New("db write failed")
+	repo.users = []RoleCheckerUser{
+		{
+			ID: "recovered", DisplayName: "Dave", TrustScore: 90,
+			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
+			TrustBelowSince: &thirtyOneDaysAgo,
+		},
+		{
+			ID: "promotable", DisplayName: "Alice", TrustScore: 90,
+			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
+		},
+	}
+	repo.modVouchCounts = map[string]int64{"promotable": 3}
+
+	rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
+	result, err := rc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if result.Cleared != 0 {
+		t.Errorf("Cleared = %d, want 0 after the write failed", result.Cleared)
+	}
+	if len(result.Promotions) != 1 {
+		t.Fatalf("Promotions = %d, want the later user still promoted", len(result.Promotions))
+	}
+}
+
+// A user whose demotion bookkeeping fails must not be reported as demoted,
+// otherwise the run summary would claim a role change that never landed.
+func TestRoleChecker_Run_FailedDemotionWriteIsNotReported(t *testing.T) {
+	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
+	demotable := []RoleCheckerUser{
+		{
+			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
+			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
+			TrustBelowSince: &thirtyOneDaysAgo,
+		},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*mockRoleCheckerRepo)
+	}{
+		{"role write fails", func(m *mockRoleCheckerRepo) { m.updateRoleErr = errors.New("db write failed") }},
+		{"role history write fails", func(m *mockRoleCheckerRepo) { m.createRoleHistoryErr = errors.New("db write failed") }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockRoleCheckerRepo()
+			repo.users = demotable
+			tt.setup(repo)
+
+			result, err := NewRoleChecker(repo, testLogger(), roleCheckClock).Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run() unexpected error: %v", err)
+			}
+			if len(result.Demotions) != 0 {
+				t.Errorf("Demotions = %d, want 0 when the write failed", len(result.Demotions))
+			}
+		})
+	}
+}
+
+// Clearing the timer is cleanup after the demotion has already committed, so
+// its failure is logged rather than un-reporting the demotion.
+func TestRoleChecker_Run_DemotionSurvivesAFailedTimerClear(t *testing.T) {
+	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
+	repo := newMockRoleCheckerRepo()
+	repo.clearTrustBelowErr = errors.New("db write failed")
+	repo.users = []RoleCheckerUser{
+		{
+			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
+			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
+			TrustBelowSince: &thirtyOneDaysAgo,
+		},
+	}
+
+	result, err := NewRoleChecker(repo, testLogger(), roleCheckClock).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Demotions) != 1 {
+		t.Fatalf("Demotions = %d, want 1", len(result.Demotions))
+	}
+	if repo.updatedRoles["user-1"] != domain.RolePending {
+		t.Errorf("role = %q, want %q", repo.updatedRoles["user-1"], domain.RolePending)
+	}
+}
+
+// Failing to count moderator vouches must not promote anyone by default, and
+// must not fail the whole run.
+func TestRoleChecker_Run_VouchCountFailureBlocksPromotion(t *testing.T) {
+	repo := newMockRoleCheckerRepo()
+	repo.countModVouchesErr = errors.New("graph unavailable")
+	repo.users = []RoleCheckerUser{
+		{
+			ID: "user-1", DisplayName: "Alice", TrustScore: 90,
+			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
+		},
+	}
+
+	result, err := NewRoleChecker(repo, testLogger(), roleCheckClock).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if len(result.Promotions) != 0 {
+		t.Errorf("Promotions = %d, want 0 when the vouch count is unknown", len(result.Promotions))
+	}
+	if len(repo.updatedRoles) != 0 {
+		t.Errorf("roles updated = %v, want none", repo.updatedRoles)
+	}
+}
+
+// The timer writes are the only side effect of the non-demotion outcomes, so
+// their failures have to surface rather than be counted as done.
+func TestRoleChecker_ApplyDemotion_TimerWriteErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome demotionOutcome
+		setup   func(*mockRoleCheckerRepo)
+	}{
+		{"clearing the timer fails", demotionClear, func(m *mockRoleCheckerRepo) {
+			m.clearTrustBelowErr = errors.New("db write failed")
+		}},
+		{"setting the timer fails", demotionMark, func(m *mockRoleCheckerRepo) {
+			m.updateTrustBelowErr = errors.New("db write failed")
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockRoleCheckerRepo()
+			tt.setup(repo)
+			rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
+			u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
+			result := &RoleCheckResult{}
+
+			err := rc.applyDemotion(context.Background(), u, demotionDecision{Outcome: tt.outcome}, roleCheckNow, result)
+			if err == nil {
+				t.Fatal("applyDemotion() expected an error, got nil")
+			}
+			if result.Cleared != 0 || result.Marked != 0 {
+				t.Errorf("result = %+v, want nothing counted after a failed write", *result)
+			}
+		})
 	}
 }
 

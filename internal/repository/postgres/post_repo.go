@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/service"
@@ -40,7 +41,7 @@ func (r *PostRepo) GetPostByID(ctx context.Context, id string) (*domain.Post, er
 	if err != nil {
 		return nil, err
 	}
-	return postFromGetRow(row), nil
+	return postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl), nil
 }
 
 func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
@@ -51,7 +52,7 @@ func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*
 		}
 		posts := make([]*domain.Post, len(rows))
 		for i, row := range rows {
-			posts[i] = postFromFeedFirstRow(row)
+			posts[i] = postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl)
 		}
 		return posts, nil
 	}
@@ -65,7 +66,7 @@ func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*
 	}
 	posts := make([]*domain.Post, len(rows))
 	for i, row := range rows {
-		posts[i] = postFromFeedRow(row)
+		posts[i] = postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl)
 	}
 	return posts, nil
 }
@@ -81,9 +82,16 @@ func (r *PostRepo) ListPostsByAuthor(ctx context.Context, authorID string, limit
 
 	posts := make([]*domain.Post, len(rows))
 	for i, row := range rows {
-		posts[i] = postFromAuthorRow(row)
+		posts[i] = postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl)
 	}
 	return posts, nil
+}
+
+func (r *PostRepo) CountPostsByAuthorSince(ctx context.Context, authorID string, since time.Time) (int64, error) {
+	return r.q.CountPostsByAuthorSince(ctx, CountPostsByAuthorSinceParams{
+		AuthorID:  authorID,
+		CreatedAt: pgtype.Timestamptz{Time: since, Valid: true},
+	})
 }
 
 func (r *PostRepo) UpdatePostBody(ctx context.Context, id string, body string) (*domain.Post, error) {
@@ -97,7 +105,7 @@ func (r *PostRepo) UpdatePostBody(ctx context.Context, id string, body string) (
 	if err != nil {
 		return nil, err
 	}
-	return postFromRow(row), nil
+	return postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl), nil
 }
 
 func (r *PostRepo) UpdatePostStatus(ctx context.Context, id string, status domain.PostStatus, reason string) error {
@@ -108,24 +116,12 @@ func (r *PostRepo) UpdatePostStatus(ctx context.Context, id string, status domai
 	})
 }
 
-func postFromRow(row Post) *domain.Post {
-	p := &domain.Post{
-		ID:            row.ID,
-		AuthorID:      row.AuthorID,
-		Body:          row.Body,
-		ImagePath:     row.ImagePath,
-		Status:        domain.PostStatus(row.Status),
-		RemovalReason: row.RemovalReason,
-		CreatedAt:     row.CreatedAt.Time,
-	}
-	if row.EditedAt.Valid {
-		t := row.EditedAt.Time
-		p.EditedAt = &t
-	}
-	return p
-}
-
-func postFromGetRow(row GetPostByIDRow) *domain.Post {
+// postFromRow maps a posts row and its joined author columns onto the domain
+// type. Every query that returns a post selects the same shape via
+// sqlc.embed(p), so one converter serves the feed, the profile listing, the
+// single-post read and the edit response — and a new field on domain.Post is a
+// one-line change rather than five.
+func postFromRow(row Post, authorDisplayName, authorAvatarURL string) *domain.Post {
 	p := &domain.Post{
 		ID:                row.ID,
 		AuthorID:          row.AuthorID,
@@ -134,65 +130,8 @@ func postFromGetRow(row GetPostByIDRow) *domain.Post {
 		Status:            domain.PostStatus(row.Status),
 		RemovalReason:     row.RemovalReason,
 		CreatedAt:         row.CreatedAt.Time,
-		AuthorDisplayName: row.AuthorDisplayName,
-		AuthorAvatarURL:   row.AuthorAvatarUrl,
-	}
-	if row.EditedAt.Valid {
-		t := row.EditedAt.Time
-		p.EditedAt = &t
-	}
-	return p
-}
-
-func postFromFeedRow(row ListPostsFeedRow) *domain.Post {
-	p := &domain.Post{
-		ID:                row.ID,
-		AuthorID:          row.AuthorID,
-		Body:              row.Body,
-		ImagePath:         row.ImagePath,
-		Status:            domain.PostStatus(row.Status),
-		RemovalReason:     row.RemovalReason,
-		CreatedAt:         row.CreatedAt.Time,
-		AuthorDisplayName: row.AuthorDisplayName,
-		AuthorAvatarURL:   row.AuthorAvatarUrl,
-	}
-	if row.EditedAt.Valid {
-		t := row.EditedAt.Time
-		p.EditedAt = &t
-	}
-	return p
-}
-
-func postFromFeedFirstRow(row ListPostsFeedFirstRow) *domain.Post {
-	p := &domain.Post{
-		ID:                row.ID,
-		AuthorID:          row.AuthorID,
-		Body:              row.Body,
-		ImagePath:         row.ImagePath,
-		Status:            domain.PostStatus(row.Status),
-		RemovalReason:     row.RemovalReason,
-		CreatedAt:         row.CreatedAt.Time,
-		AuthorDisplayName: row.AuthorDisplayName,
-		AuthorAvatarURL:   row.AuthorAvatarUrl,
-	}
-	if row.EditedAt.Valid {
-		t := row.EditedAt.Time
-		p.EditedAt = &t
-	}
-	return p
-}
-
-func postFromAuthorRow(row ListPostsByAuthorRow) *domain.Post {
-	p := &domain.Post{
-		ID:                row.ID,
-		AuthorID:          row.AuthorID,
-		Body:              row.Body,
-		ImagePath:         row.ImagePath,
-		Status:            domain.PostStatus(row.Status),
-		RemovalReason:     row.RemovalReason,
-		CreatedAt:         row.CreatedAt.Time,
-		AuthorDisplayName: row.AuthorDisplayName,
-		AuthorAvatarURL:   row.AuthorAvatarUrl,
+		AuthorDisplayName: authorDisplayName,
+		AuthorAvatarURL:   authorAvatarURL,
 	}
 	if row.EditedAt.Valid {
 		t := row.EditedAt.Time

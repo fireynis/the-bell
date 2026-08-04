@@ -62,12 +62,19 @@ func (s *ApprovalService) Approve(ctx context.Context, userID string) (*domain.U
 	}
 	user.Role = domain.RoleMember
 
+	// Leaving bootstrap mode is a one-way transition that stops council
+	// approval being the way people join, so a failure here must reach the
+	// caller rather than leaving the town in bootstrap mode indefinitely. The
+	// role change above has already committed; the error says the exit check
+	// did not run, not that the approval was rolled back.
 	count, err := s.users.CountActiveMembers(ctx)
 	if err != nil {
-		return user, nil // approval succeeded; count check is best-effort
+		return nil, fmt.Errorf("counting active members: %w", err)
 	}
 	if count >= bootstrapExitThreshold {
-		_ = s.config.SetTownConfig(ctx, "bootstrap_mode", "false")
+		if err := s.config.SetTownConfig(ctx, "bootstrap_mode", "false"); err != nil {
+			return nil, fmt.Errorf("disabling bootstrap mode: %w", err)
+		}
 	}
 
 	return user, nil

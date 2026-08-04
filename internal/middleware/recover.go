@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+
+	"github.com/fireynis/the-bell/internal/httpjson"
 )
 
 // Recoverer converts a panic in a downstream handler into a 500 response.
@@ -39,13 +41,14 @@ func Recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 					"stack", string(debug.Stack()),
 				)
 
+				// Nothing can be salvaged once a status is on the wire: the
+				// headers are already flushed, so writing again would append a
+				// second body to a committed response rather than replace it.
 				if tracked && sw.wrote {
 					return
 				}
 
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error":"internal error"}`))
+				httpjson.WriteError(w, http.StatusInternalServerError, "internal error")
 			}()
 
 			next.ServeHTTP(w, r)

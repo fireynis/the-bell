@@ -28,6 +28,25 @@ type Transactor interface {
 	InTx(ctx context.Context, fn func(users UserRepository, config ConfigRepository) error) error
 }
 
+// newCouncilUser builds the local user record for one council member created by
+// setup. Council members are the root of the trust graph — nobody exists yet to
+// vouch for them — so they start at the maximum trust score, in the council
+// role, and active immediately. The email doubles as the initial display name
+// because setup has nothing else to go on.
+func newCouncilUser(id, kratosID, email string, now time.Time) *domain.User {
+	return &domain.User{
+		ID:               id,
+		KratosIdentityID: kratosID,
+		DisplayName:      email,
+		TrustScore:       100.0,
+		Role:             domain.RoleCouncil,
+		IsActive:         true,
+		JoinedAt:         now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+}
+
 // BootstrapService handles initial town setup.
 type BootstrapService struct {
 	kratos KratosAdmin
@@ -99,18 +118,7 @@ func (s *BootstrapService) Setup(ctx context.Context, emails []string, townName 
 				return fmt.Errorf("generating user id: %w", err)
 			}
 
-			now := s.now()
-			user := &domain.User{
-				ID:               id.String(),
-				KratosIdentityID: ident.kratosID,
-				DisplayName:      ident.email,
-				TrustScore:       100.0,
-				Role:             domain.RoleCouncil,
-				IsActive:         true,
-				JoinedAt:         now,
-				CreatedAt:        now,
-				UpdatedAt:        now,
-			}
+			user := newCouncilUser(id.String(), ident.kratosID, ident.email, s.now())
 
 			if err := users.CreateUser(ctx, user); err != nil {
 				return fmt.Errorf("creating local user for %s: %w", ident.email, err)

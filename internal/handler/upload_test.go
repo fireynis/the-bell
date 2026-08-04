@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -225,6 +226,90 @@ func TestPostHandler_Create_MultipartUnsupportedType(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// A storage backend that is full, unwritable, or unreachable must not produce a
+// post whose image_path points at a file that was never written.
+func TestPostHandler_Create_StorageFailure(t *testing.T) {
+	repo := newMockPostRepo()
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc, handler.WithStorage(&failingStorage{}))
+
+	req := buildMultipartRequest(t, "Hello with image", makeJPEG(t), "photo.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(repo.posts) != 0 {
+		t.Errorf("%d posts were created despite the upload failing", len(repo.posts))
+	}
+}
+
+type failingStorage struct{}
+
+func (*failingStorage) Save(context.Context, string, io.Reader) (string, error) {
+	return "", errors.New("no space left on device")
+}
+
+func (*failingStorage) URL(path string) string { return "/uploads/" + path }
+
+// An image upload against a handler with no storage configured is a
+// misconfiguration, and it must fail rather than quietly dropping the image and
+// creating a text-only post.
+func TestPostHandler_Create_MultipartImageWithoutStorage(t *testing.T) {
+	repo := newMockPostRepo()
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc) // no WithStorage
+
+	req := buildMultipartRequest(t, "Hello with image", makeJPEG(t), "photo.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(repo.posts) != 0 {
+		t.Errorf("%d posts were created, want the request rejected outright", len(repo.posts))
+	}
+}
+
+// The saved filename is generated, never taken from the client, so two uploads
+// claiming the same name cannot overwrite each other — and a name that would
+// escape the storage directory never reaches it.
+func TestPostHandler_Create_StoredNameIsGenerated(t *testing.T) {
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	for _, claimed := range []string{"../../etc/passwd", "../../etc/passwd"} {
+		req := buildMultipartRequest(t, "Hello", makeJPEG(t), claimed)
+		req = withUser(req, testUser())
+		rec := httptest.NewRecorder()
+
+		h.Create(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+	}
+
+	if len(store.saved) != 2 {
+		t.Errorf("saved %d files, want 2 distinct generated names", len(store.saved))
+	}
+	for name := range store.saved {
+		if strings.Contains(name, "/") || strings.Contains(name, "..") {
+			t.Errorf("stored name %q came from the client-supplied filename", name)
+		}
+		if !strings.HasSuffix(name, ".jpg") {
+			t.Errorf("stored name %q does not carry the detected extension", name)
+		}
 	}
 }
 

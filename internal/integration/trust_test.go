@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/fireynis/the-bell/internal/testsupport"
 )
 
 // TestTrustPenaltyPropagation validates end-to-end trust penalty propagation
@@ -17,10 +18,10 @@ import (
 //   - Graph traversal for penalty propagation (FindVouchersWithDepth)
 //   - Penalty record creation with correct hop depths and decay amounts
 func TestTrustPenaltyPropagation(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 
-	svcs := newTestServices(pool)
+	svcs := newTestServices(t, pool)
 
 	// Build a vouch chain: council -> mod -> memberA -> memberB
 	//
@@ -30,10 +31,10 @@ func TestTrustPenaltyPropagation(t *testing.T) {
 	//
 	// When we take a moderation action (warn, severity 2) against memberB,
 	// penalties should propagate upstream through the vouch graph.
-	council := testUser(t, pool, uniqueKratosID("council"), domain.RoleCouncil, 100.0)
-	mod := testUser(t, pool, uniqueKratosID("mod"), domain.RoleModerator, 90.0)
-	memberA := testUser(t, pool, uniqueKratosID("memberA"), domain.RoleMember, 80.0)
-	memberB := testUser(t, pool, uniqueKratosID("memberB"), domain.RoleMember, 75.0)
+	council := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("council"), domain.RoleCouncil, 100.0)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("mod"), domain.RoleModerator, 90.0)
+	memberA := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("memberA"), domain.RoleMember, 80.0)
+	memberB := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("memberB"), domain.RoleMember, 75.0)
 
 	// Create vouch chain edges in the AGE graph.
 	// council -> mod
@@ -56,12 +57,12 @@ func TestTrustPenaltyPropagation(t *testing.T) {
 		// mod should NOT be affected (2 hops, but max depth is 1)
 		result, err := svcs.ModerationActionService.TakeAction(
 			ctx,
-			mod.ID,       // moderator
-			memberB.ID,   // target
+			mod.ID,     // moderator
+			memberB.ID, // target
 			domain.ActionWarn,
-			2,            // severity
+			2, // severity
 			"test warn",
-			nil,          // no duration for warnings
+			nil, // no duration for warnings
 		)
 		if err != nil {
 			t.Fatalf("taking moderation action: %v", err)
@@ -117,11 +118,11 @@ func TestTrustPenaltyPropagation(t *testing.T) {
 
 	t.Run("severity 5 ban propagates 3 hops", func(t *testing.T) {
 		// Create a fresh chain for the ban test to avoid interference.
-		banTarget := testUser(t, pool, uniqueKratosID("banTarget"), domain.RoleMember, 75.0)
-		voucher1 := testUser(t, pool, uniqueKratosID("voucher1"), domain.RoleMember, 80.0)
-		voucher2 := testUser(t, pool, uniqueKratosID("voucher2"), domain.RoleMember, 80.0)
-		voucher3 := testUser(t, pool, uniqueKratosID("voucher3"), domain.RoleMember, 80.0)
-		voucher4 := testUser(t, pool, uniqueKratosID("voucher4"), domain.RoleMember, 80.0)
+		banTarget := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("banTarget"), domain.RoleMember, 75.0)
+		voucher1 := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("voucher1"), domain.RoleMember, 80.0)
+		voucher2 := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("voucher2"), domain.RoleMember, 80.0)
+		voucher3 := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("voucher3"), domain.RoleMember, 80.0)
+		voucher4 := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("voucher4"), domain.RoleMember, 80.0)
 
 		// Chain: voucher4 -> voucher3 -> voucher2 -> voucher1 -> banTarget
 		if _, err := svcs.VouchService.Vouch(ctx, voucher1.ID, banTarget.ID); err != nil {
@@ -145,12 +146,12 @@ func TestTrustPenaltyPropagation(t *testing.T) {
 		// voucher4 should NOT be affected (4 hops, beyond max depth 3)
 		result, err := svcs.ModerationActionService.TakeAction(
 			ctx,
-			council.ID,     // moderator (use council from outer scope)
-			banTarget.ID,   // target
+			council.ID,   // moderator (use council from outer scope)
+			banTarget.ID, // target
 			domain.ActionBan,
-			5,              // severity
+			5, // severity
 			"test ban for propagation",
-			nil,            // bans have no duration
+			nil, // bans have no duration
 		)
 		if err != nil {
 			t.Fatalf("taking ban action: %v", err)
@@ -228,13 +229,13 @@ func TestTrustPenaltyPropagation(t *testing.T) {
 // TestGraphCycleDetection verifies that the AGE graph detects cycles and
 // prevents circular vouching.
 func TestGraphCycleDetection(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 
-	svcs := newTestServices(pool)
+	svcs := newTestServices(t, pool)
 
-	userA := testUser(t, pool, uniqueKratosID("cycleA"), domain.RoleMember, 80.0)
-	userB := testUser(t, pool, uniqueKratosID("cycleB"), domain.RoleMember, 80.0)
+	userA := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("cycleA"), domain.RoleMember, 80.0)
+	userB := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("cycleB"), domain.RoleMember, 80.0)
 
 	// A vouches for B.
 	if _, err := svcs.VouchService.Vouch(ctx, userA.ID, userB.ID); err != nil {
@@ -251,13 +252,13 @@ func TestGraphCycleDetection(t *testing.T) {
 // TestVouchEdgeCreationAndRemoval verifies that vouch edges are correctly
 // created and removed from the AGE graph.
 func TestVouchEdgeCreationAndRemoval(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 
-	svcs := newTestServices(pool)
+	svcs := newTestServices(t, pool)
 
-	voucher := testUser(t, pool, uniqueKratosID("edgeVoucher"), domain.RoleMember, 80.0)
-	vouchee := testUser(t, pool, uniqueKratosID("edgeVouchee"), domain.RolePending, 50.0)
+	voucher := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("edgeVoucher"), domain.RoleMember, 80.0)
+	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("edgeVouchee"), domain.RolePending, 50.0)
 
 	// Create a vouch.
 	vouch, err := svcs.VouchService.Vouch(ctx, voucher.ID, vouchee.ID)
@@ -294,16 +295,16 @@ func TestVouchEdgeCreationAndRemoval(t *testing.T) {
 // TestTransitiveVouchTraversal verifies that AGE correctly traverses multi-hop
 // vouch chains.
 func TestTransitiveVouchTraversal(t *testing.T) {
-	pool := testDB(t)
+	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 
-	svcs := newTestServices(pool)
+	svcs := newTestServices(t, pool)
 
 	// Chain: A -> B -> C -> D
-	userA := testUser(t, pool, uniqueKratosID("transA"), domain.RoleMember, 80.0)
-	userB := testUser(t, pool, uniqueKratosID("transB"), domain.RoleMember, 80.0)
-	userC := testUser(t, pool, uniqueKratosID("transC"), domain.RoleMember, 80.0)
-	userD := testUser(t, pool, uniqueKratosID("transD"), domain.RolePending, 50.0)
+	userA := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("transA"), domain.RoleMember, 80.0)
+	userB := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("transB"), domain.RoleMember, 80.0)
+	userC := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("transC"), domain.RoleMember, 80.0)
+	userD := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("transD"), domain.RolePending, 50.0)
 
 	if _, err := svcs.VouchService.Vouch(ctx, userC.ID, userD.ID); err != nil {
 		t.Fatalf("C vouching for D: %v", err)

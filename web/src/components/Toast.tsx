@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 
+/** Matches the duration-300 fade in the class list below. */
+const FADE_MS = 300;
+
 interface ToastProps {
   message: string;
   onDismiss: () => void;
@@ -10,11 +13,20 @@ export function Toast({ message, onDismiss, duration = 3000 }: ToastProps) {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
+    // Both timers are tracked: the fade-out is scheduled from inside the first
+    // one, so clearing only the outer timer still let onDismiss fire after the
+    // toast had unmounted.
+    let fadeTimer: ReturnType<typeof setTimeout>;
+
     const timer = setTimeout(() => {
       setVisible(false);
-      setTimeout(onDismiss, 300);
+      fadeTimer = setTimeout(onDismiss, FADE_MS);
     }, duration);
-    return () => clearTimeout(timer);
+
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(fadeTimer);
+    };
   }, [duration, onDismiss]);
 
   return (

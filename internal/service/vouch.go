@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -11,6 +12,14 @@ import (
 )
 
 const dailyVouchLimit = 3
+
+// startOfDay returns local midnight for now — the window the daily vouch limit
+// counts over. The limit is "3 per day" as a resident of the town experiences a
+// day, so the window follows the clock's own location rather than UTC; on a DST
+// transition the window is correspondingly 23 or 25 hours long.
+func startOfDay(now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+}
 
 // VouchRepository abstracts vouch persistence using domain types.
 type VouchRepository interface {
@@ -38,10 +47,12 @@ type UserGetter interface {
 
 // VouchService orchestrates vouch business logic.
 type VouchService struct {
-	vouches VouchRepository
-	graph   GraphQuerier
-	users   UserGetter
-	now     func() time.Time
+	vouches    VouchRepository
+	graph      GraphQuerier
+	users      UserGetter
+	now        func() time.Time
+	trustQueue TrustRecalcQueue
+	logger     *slog.Logger
 }
 
 func NewVouchService(vouches VouchRepository, graph GraphQuerier, users UserGetter, clock func() time.Time) *VouchService {
@@ -53,6 +64,36 @@ func NewVouchService(vouches VouchRepository, graph GraphQuerier, users UserGett
 		graph:   graph,
 		users:   users,
 		now:     clock,
+		logger:  slog.Default(),
+	}
+}
+
+// SetTrustQueue attaches an optional trust recalculation queue, mirroring
+// PostService.SetFeedCache. Deployments without Redis leave it nil and simply
+// do not recalculate.
+func (s *VouchService) SetTrustQueue(q TrustRecalcQueue) {
+	s.trustQueue = q
+}
+
+// enqueueVouchRecalc asks for both sides of a vouch edge to be recomputed.
+//
+// The vouchee is the one who actually needs it: CalcVoucherScore counts the
+// vouches a user has RECEIVED, so gaining or losing an endorsement moves their
+// score and nobody else's. The voucher is enqueued too because the design doc
+// names them and a second RPush is cheap — under the current model it is a
+// no-op, but it becomes load-bearing the moment the voucher component is
+// redefined in terms of vouches given.
+//
+// A vouch that is already committed must not be undone because the queue is
+// unreachable, so this only ever logs.
+func (s *VouchService) enqueueVouchRecalc(ctx context.Context, voucherID, voucheeID string) {
+	if s.trustQueue == nil {
+		return
+	}
+	for _, userID := range []string{voucheeID, voucherID} {
+		if err := s.trustQueue.EnqueueRecalc(ctx, userID); err != nil {
+			s.logger.Warn("enqueueing trust recalculation failed", "user_id", userID, "error", err)
+		}
 	}
 }
 
@@ -86,8 +127,7 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	}
 
 	now := s.now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	count, err := s.vouches.CountVouchesByVoucherSince(ctx, voucherID, dayStart)
+	count, err := s.vouches.CountVouchesByVoucherSince(ctx, voucherID, startOfDay(now))
 	if err != nil {
 		return nil, fmt.Errorf("counting daily vouches: %w", err)
 	}
@@ -123,6 +163,8 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	if err := s.graph.AddVouchEdge(ctx, voucherID, voucheeID); err != nil {
 		return nil, fmt.Errorf("adding graph edge: %w", err)
 	}
+
+	s.enqueueVouchRecalc(ctx, voucherID, voucheeID)
 
 	// Promote pending users to member on first vouch received.
 	vouchee, err := s.users.GetUserByID(ctx, voucheeID)
@@ -174,6 +216,8 @@ func (s *VouchService) Revoke(ctx context.Context, vouchID, actorID string) erro
 	if err := s.graph.RemoveVouchEdge(ctx, vouch.VoucherID, vouch.VoucheeID); err != nil {
 		return fmt.Errorf("removing graph edge: %w", err)
 	}
+
+	s.enqueueVouchRecalc(ctx, vouch.VoucherID, vouch.VoucheeID)
 
 	return nil
 }

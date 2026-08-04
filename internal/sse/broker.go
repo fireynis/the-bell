@@ -3,6 +3,8 @@ package sse
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/redis/go-redis/v9"
@@ -33,6 +35,10 @@ type ReactionEvent struct {
 const (
 	channelPosts     = "bell:posts:new"
 	channelReactions = "bell:reactions:new"
+
+	// subscriberBuffer is how many events one subscriber may fall behind by
+	// before the pub/sub goroutine blocks handing the next one over.
+	subscriberBuffer = 16
 )
 
 // eventFromMessage maps a Redis pub/sub channel and payload onto an Event.
@@ -85,19 +91,26 @@ func (b *Broker) PublishReactionEvent(ctx context.Context, postID, postAuthorID,
 	})
 }
 
+// ErrSubscribeUnsupported is returned when the broker was built with a Redis
+// client that cannot open a pub/sub connection.
+//
+// Publishing works through any redis.Cmdable, but subscribing needs a real
+// *redis.Client. Returning an error rather than an empty channel matters: a
+// silent stand-in would leave every client's live feed permanently empty with
+// nothing logged and nothing failing.
+var ErrSubscribeUnsupported = errors.New("sse: redis client does not support pub/sub subscriptions")
+
 // Subscribe returns a channel that receives events from Redis pub/sub.
 // Cancel the context to unsubscribe.
 func (b *Broker) Subscribe(ctx context.Context) (<-chan Event, error) {
 	client, ok := b.rdb.(*redis.Client)
 	if !ok {
-		// Fallback for testing with mocks — return a channel that blocks until context done.
-		ch := make(chan Event)
-		go func() { <-ctx.Done(); close(ch) }()
-		return ch, nil
+		b.logger.Error("sse: subscribe needs a *redis.Client", "client_type", fmt.Sprintf("%T", b.rdb))
+		return nil, ErrSubscribeUnsupported
 	}
 
 	pubsub := client.Subscribe(ctx, channelPosts, channelReactions)
-	events := make(chan Event, 16)
+	events := make(chan Event, subscriberBuffer)
 
 	go func() {
 		defer close(events)

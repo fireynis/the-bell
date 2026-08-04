@@ -21,9 +21,6 @@ UPDATE users SET trust_score = $2, updated_at = NOW() WHERE id = $1;
 -- name: UpdateUserRole :exec
 UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1;
 
--- name: ListUsersByRole :many
-SELECT * FROM users WHERE role = $1 ORDER BY created_at DESC LIMIT $2;
-
 -- name: ListPendingUsers :many
 SELECT * FROM users
 WHERE role = 'pending' AND is_active = TRUE

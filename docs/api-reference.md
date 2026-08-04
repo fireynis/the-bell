@@ -47,8 +47,9 @@ Rate limiting requires Redis (`REDIS_URL` must be set). Limits are per-user, per
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | `POST /api/v1/posts` | 10 requests | 1 hour |
+| `POST /api/v1/posts/{postId}/reactions` | 60 requests | 1 minute |
 | `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour |
-| Approval endpoints | 3 requests | 24 hours |
+| Approval endpoints (`/api/v1/vouches/*`) | 3 requests | 24 hours |
 
 Reports also have a server-side hourly limit of 5 per reporter (enforced regardless of Redis).
 
@@ -377,6 +378,95 @@ Deletes a post (marks it as `removed_by_author`). Only the author can delete the
 curl -X DELETE https://bell.example.com/api/v1/posts/0193a7b2-... \
   -H "Cookie: ory_kratos_session=..."
 ```
+
+---
+
+### Reactions
+
+Valid reaction types are `bell`, `heart`, and `celebrate`. Anything else is
+rejected with `400`, and the response message echoes the type you sent.
+
+#### `POST /api/v1/posts/{postId}/reactions`
+
+Adds a reaction to a post.
+
+**Auth**: Required
+**Role**: `member` or higher
+**Rate Limit**: 60/minute
+
+**Request**:
+
+```json
+{"type": "bell"}
+```
+
+**Response** `200 OK`: The reaction object.
+
+Adding a reaction you already have is **idempotent**, not an error: the request
+succeeds and the original reaction — including its original timestamp — is left
+in place. The underlying insert is an upsert, so a double-tap or a retried
+request needs no special handling from clients.
+
+```bash
+curl -X POST https://bell.example.com/api/v1/posts/0193a7b2-.../reactions \
+  -H "Cookie: ory_kratos_session=..." \
+  -H "Content-Type: application/json" \
+  -d '{"type":"heart"}'
+```
+
+---
+
+#### `DELETE /api/v1/posts/{postId}/reactions/{type}`
+
+Removes one of your reactions from a post.
+
+**Auth**: Required
+**Role**: `member` or higher
+
+**Response** `204 No Content`
+
+Removing a reaction that is not there also returns `204` — the delete matches no
+rows and reports no error.
+
+---
+
+### Town Configuration
+
+#### `GET /api/v1/config`
+
+Returns the town's public configuration as a flat string map (for example
+`town_name`, `primary_color`, `accent_color`).
+
+**Auth**: Not required
+
+`bootstrap_mode` is deliberately withheld from this response, so an
+unauthenticated visitor cannot tell whether the town has been claimed yet.
+
+**Response** `200 OK`
+
+---
+
+#### `PUT /api/v1/admin/config`
+
+Updates town configuration.
+
+**Auth**: Required
+**Role**: `council`
+
+**Request**: a flat string map. Only `town_name`, `primary_color`, and
+`accent_color` may be written; every other key — `bootstrap_mode` in particular
+— is owned by the server.
+
+```json
+{"town_name": "Springfield", "accent_color": "#c62828"}
+```
+
+**Response** `204 No Content`
+
+**Response** `400 Bad Request`: `key not allowed: <key>`. The **whole request is
+rejected and nothing is written** if any key is disallowed. Validation completes
+before the first write on purpose: map iteration order is random, so validating
+as it wrote would apply a random subset of a rejected request.
 
 ---
 

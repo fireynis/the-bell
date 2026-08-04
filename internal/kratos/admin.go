@@ -5,8 +5,27 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"time"
 
 	client "github.com/ory/kratos-client-go"
+)
+
+const (
+	// identitySchemaID is the Kratos identity schema new accounts are created under.
+	identitySchemaID = "default"
+	// identityStateActive marks a created identity as usable immediately.
+	identityStateActive = "active"
+	// passwordEntropyBytes is the size of a generated password before hex encoding.
+	passwordEntropyBytes = 32
+
+	// requestTimeout bounds a single Admin API call. The SDK's default client
+	// has no timeout at all, so a Kratos that accepts the connection and then
+	// stalls would hang `bell setup` forever with no way out but Ctrl-C.
+	// Identity creation is one small write against a service that is normally
+	// a container away, so 30s is far longer than a healthy call needs while
+	// still guaranteeing the command returns.
+	requestTimeout = 30 * time.Second
 )
 
 // AdminClient wraps the Kratos Admin API for identity management.
@@ -14,12 +33,54 @@ type AdminClient struct {
 	api client.IdentityAPI
 }
 
-// NewAdminClient creates an AdminClient pointing at the given Kratos Admin URL.
-func NewAdminClient(adminURL string) *AdminClient {
+// newConfiguration builds the SDK configuration for the Admin API. The timeout
+// is a parameter so the wiring can be exercised without waiting out the
+// production budget.
+func newConfiguration(adminURL string, timeout time.Duration) *client.Configuration {
 	cfg := client.NewConfiguration()
 	cfg.Servers = client.ServerConfigurations{{URL: adminURL}}
-	apiClient := client.NewAPIClient(cfg)
+	cfg.HTTPClient = &http.Client{Timeout: timeout}
+	return cfg
+}
+
+// NewAdminClient creates an AdminClient pointing at the given Kratos Admin URL.
+func NewAdminClient(adminURL string) *AdminClient {
+	apiClient := client.NewAPIClient(newConfiguration(adminURL, requestTimeout))
 	return &AdminClient{api: apiClient.IdentityAPI}
+}
+
+// generatePassword returns a random hex password.
+//
+// It reads from crypto/rand, never math/rand: until the user completes a
+// recovery flow this string is the account's only credential, so it must not be
+// derivable from the process start time or any other observable seed.
+func generatePassword() (string, error) {
+	b := make([]byte, passwordEntropyBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating random password: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// newIdentityBody builds the create-identity request for a new account: the
+// traits the identity schema expects, a password credential, and the active
+// state that lets the account sign in without a further activation step.
+func newIdentityBody(email, displayName, password string) *client.CreateIdentityBody {
+	body := client.NewCreateIdentityBody(identitySchemaID, map[string]interface{}{
+		"email": email,
+		"name":  displayName,
+	})
+
+	pwConfig := client.NewIdentityWithCredentialsPasswordConfig()
+	pwConfig.SetPassword(password)
+	pw := client.NewIdentityWithCredentialsPassword()
+	pw.SetConfig(*pwConfig)
+	creds := client.NewIdentityWithCredentials()
+	creds.SetPassword(*pw)
+
+	body.SetCredentials(*creds)
+	body.SetState(identityStateActive)
+	return body
 }
 
 // CreateIdentity creates a Kratos identity with password credentials.
@@ -28,25 +89,14 @@ func NewAdminClient(adminURL string) *AdminClient {
 // Returns the Kratos identity ID and the password that was used.
 func (c *AdminClient) CreateIdentity(ctx context.Context, email, displayName, password string) (kratosID string, usedPassword string, err error) {
 	if password == "" {
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			return "", "", fmt.Errorf("generating random password: %w", err)
+		generated, err := generatePassword()
+		if err != nil {
+			return "", "", err
 		}
-		password = hex.EncodeToString(b)
+		password = generated
 	}
 
-	body := client.NewCreateIdentityBody("default", map[string]interface{}{
-		"email": email,
-		"name":  displayName,
-	})
-	pwConfig := client.NewIdentityWithCredentialsPasswordConfig()
-	pwConfig.SetPassword(password)
-	pw := client.NewIdentityWithCredentialsPassword()
-	pw.SetConfig(*pwConfig)
-	creds := client.NewIdentityWithCredentials()
-	creds.SetPassword(*pw)
-	body.SetCredentials(*creds)
-	body.SetState("active")
+	body := newIdentityBody(email, displayName, password)
 
 	identity, _, err := c.api.CreateIdentity(ctx).CreateIdentityBody(*body).Execute()
 	if err != nil {

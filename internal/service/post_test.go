@@ -214,41 +214,84 @@ func TestPostService_GetByID(t *testing.T) {
 	}
 }
 
-func TestPostService_ListFeed(t *testing.T) {
+// stubFeedCache records the feed request it was asked to serve.
+type stubFeedCache struct {
+	posts  []*domain.Post
+	err    error
+	calls  int
+	cursor string
+	limit  int
+}
+
+func (s *stubFeedCache) GetFeed(_ context.Context, cursor string, limit int) ([]*domain.Post, error) {
+	s.calls++
+	s.cursor, s.limit = cursor, limit
+	return s.posts, s.err
+}
+
+func (s *stubFeedCache) InvalidateOnCreate(context.Context, *domain.Post) {}
+func (s *stubFeedCache) InvalidateOnUpdate(context.Context, *domain.Post) {}
+func (s *stubFeedCache) InvalidateOnDelete(context.Context, string)       {}
+
+// ListFeed only decides where the feed comes from. Which posts are visible is
+// decided by the SQL in the repository, so it is verified in the repository's
+// own tests against real Postgres rather than through an in-memory stand-in
+// that would only be re-testing itself.
+func TestPostService_ListFeed_PrefersTheCacheWhenSet(t *testing.T) {
 	repo := newMockPostRepo()
+	repo.posts["from-repo"] = &domain.Post{ID: "from-repo", Status: domain.PostVisible}
+
+	cached := []*domain.Post{{ID: "from-cache", Status: domain.PostVisible}}
+	cache := &stubFeedCache{posts: cached}
+
 	svc := NewPostService(repo, nil)
+	svc.SetFeedCache(cache)
 
-	// Add visible and non-visible posts
-	repo.posts["a"] = &domain.Post{ID: "a", Status: domain.PostVisible}
-	repo.posts["b"] = &domain.Post{ID: "b", Status: domain.PostRemovedByAuthor}
-	repo.posts["c"] = &domain.Post{ID: "c", Status: domain.PostVisible}
-
-	posts, err := svc.ListFeed(context.Background(), "", 10)
+	posts, err := svc.ListFeed(context.Background(), "cursor-1", 25)
 	if err != nil {
-		t.Fatalf("ListFeed() unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Only visible posts should be returned
-	for _, p := range posts {
-		if p.Status != domain.PostVisible {
-			t.Errorf("ListFeed() returned non-visible post %q with status %q", p.ID, p.Status)
-		}
+	if cache.calls != 1 {
+		t.Errorf("cache consulted %d times, want exactly 1", cache.calls)
 	}
-	if len(posts) != 2 {
-		t.Errorf("ListFeed() returned %d posts, want 2", len(posts))
+	if len(posts) != 1 || posts[0].ID != "from-cache" {
+		t.Errorf("posts = %+v, want the cached feed; the repository was queried instead", posts)
+	}
+	// The cursor and limit must reach the cache untouched, or paging silently
+	// returns the wrong page.
+	if cache.cursor != "cursor-1" || cache.limit != 25 {
+		t.Errorf("cache got (cursor %q, limit %d), want (%q, %d)", cache.cursor, cache.limit, "cursor-1", 25)
 	}
 }
 
-func TestPostService_ListFeed_Empty(t *testing.T) {
+func TestPostService_ListFeed_FallsBackToTheRepositoryWithoutACache(t *testing.T) {
 	repo := newMockPostRepo()
+	repo.posts["from-repo"] = &domain.Post{ID: "from-repo", Status: domain.PostVisible}
+
 	svc := NewPostService(repo, nil)
 
 	posts, err := svc.ListFeed(context.Background(), "", 10)
 	if err != nil {
-		t.Fatalf("ListFeed() unexpected error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if posts == nil {
-		t.Error("ListFeed() returned nil, want empty slice")
+	if len(posts) != 1 || posts[0].ID != "from-repo" {
+		t.Errorf("posts = %+v, want the repository feed", posts)
+	}
+}
+
+// A cache failure must surface rather than silently falling back to the
+// repository, which would mask an unhealthy cache behind a slower feed.
+func TestPostService_ListFeed_PropagatesCacheErrors(t *testing.T) {
+	wantErr := errors.New("redis down")
+	repo := newMockPostRepo()
+	repo.posts["from-repo"] = &domain.Post{ID: "from-repo", Status: domain.PostVisible}
+
+	svc := NewPostService(repo, nil)
+	svc.SetFeedCache(&stubFeedCache{err: wantErr})
+
+	if _, err := svc.ListFeed(context.Background(), "", 10); !errors.Is(err, wantErr) {
+		t.Errorf("error = %v, want %v", err, wantErr)
 	}
 }
 
@@ -466,9 +509,10 @@ func TestPostService_Delete(t *testing.T) {
 	}
 }
 
-// recordingFeedCache captures what Create hands to the cache.
+// recordingFeedCache captures what the service hands to the cache.
 type recordingFeedCache struct {
 	created *domain.Post
+	updated *domain.Post
 }
 
 func (c *recordingFeedCache) GetFeed(context.Context, string, int) ([]*domain.Post, error) {
@@ -478,6 +522,10 @@ func (c *recordingFeedCache) InvalidateOnCreate(_ context.Context, p *domain.Pos
 	// Copy, because the caller may keep mutating the post afterwards.
 	cp := *p
 	c.created = &cp
+}
+func (c *recordingFeedCache) InvalidateOnUpdate(_ context.Context, p *domain.Post) {
+	cp := *p
+	c.updated = &cp
 }
 func (c *recordingFeedCache) InvalidateOnDelete(context.Context, string) {}
 
@@ -509,5 +557,61 @@ func TestPostService_Create_CachesPostWithAuthorFields(t *testing.T) {
 	}
 	if cache.created.AuthorAvatarURL != author.AvatarURL {
 		t.Errorf("cached avatar = %q, want %q", cache.created.AuthorAvatarURL, author.AvatarURL)
+	}
+}
+
+// The cache holds whole posts, not IDs, so an edit that skips invalidation
+// keeps serving the pre-edit body until the entry is evicted by length.
+func TestPostService_UpdateBody_InvalidatesFeedCache(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "original",
+		Status:    domain.PostVisible,
+		CreatedAt: now.Add(-5 * time.Minute),
+	}
+
+	cache := &recordingFeedCache{}
+	svc := NewPostService(repo, func() time.Time { return now })
+	svc.SetFeedCache(cache)
+
+	if _, err := svc.UpdateBody(context.Background(), "post-1", "user-1", "edited"); err != nil {
+		t.Fatalf("UpdateBody() unexpected error: %v", err)
+	}
+
+	if cache.updated == nil {
+		t.Fatal("edited post was never handed to the feed cache")
+	}
+	if cache.updated.Body != "edited" {
+		t.Errorf("invalidated with body = %q, want %q", cache.updated.Body, "edited")
+	}
+}
+
+// A rejected edit must not invalidate: the feed still holds the current body.
+func TestPostService_UpdateBody_DoesNotInvalidateWhenEditRejected(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "original",
+		Status:    domain.PostVisible,
+		CreatedAt: now.Add(-20 * time.Minute), // outside the edit window
+	}
+
+	cache := &recordingFeedCache{}
+	svc := NewPostService(repo, func() time.Time { return now })
+	svc.SetFeedCache(cache)
+
+	if _, err := svc.UpdateBody(context.Background(), "post-1", "user-1", "too late"); !errors.Is(err, ErrEditWindow) {
+		t.Fatalf("UpdateBody() error = %v, want %v", err, ErrEditWindow)
+	}
+
+	if cache.updated != nil {
+		t.Error("feed cache was invalidated for an edit that never happened")
 	}
 }

@@ -2,11 +2,187 @@ package kratos
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+	"time"
+
+	client "github.com/ory/kratos-client-go"
 )
+
+// --- newIdentityBody ---
+
+func TestNewIdentityBody(t *testing.T) {
+	body := newIdentityBody("alice@example.com", "Alice", "hunter2")
+
+	if got := body.GetSchemaId(); got != "default" {
+		t.Errorf("schema_id = %q, want %q", got, "default")
+	}
+	if got := body.GetState(); got != "active" {
+		t.Errorf("state = %q, want %q — a pending identity cannot sign in", got, "active")
+	}
+
+	traits := body.GetTraits()
+	if traits["email"] != "alice@example.com" {
+		t.Errorf("traits.email = %v, want %q", traits["email"], "alice@example.com")
+	}
+	// The identity schema's name field is what the frontend renders as the
+	// display name; sending it under any other key silently loses it.
+	if traits["name"] != "Alice" {
+		t.Errorf("traits.name = %v, want %q", traits["name"], "Alice")
+	}
+	if len(traits) != 2 {
+		t.Errorf("traits = %v, want exactly email and name", traits)
+	}
+
+	creds, ok := body.GetCredentialsOk()
+	if !ok {
+		t.Fatal("no credentials set: the identity would be created with no way to sign in")
+	}
+	cfg := creds.Password.GetConfig()
+	if got := cfg.GetPassword(); got != "hunter2" {
+		t.Errorf("password = %q, want %q", got, "hunter2")
+	}
+}
+
+// Empty display names and unusual addresses are the caller's business; the body
+// builder must pass them through rather than silently substituting anything.
+func TestNewIdentityBody_PassesTraitsThroughUnchanged(t *testing.T) {
+	tests := []struct {
+		name        string
+		email       string
+		displayName string
+	}{
+		{"empty display name", "alice@example.com", ""},
+		{"plus addressing", "alice+bell@example.com", "Alice"},
+		{"unicode display name", "renée@example.com", "Renée O'Brien"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			traits := newIdentityBody(tt.email, tt.displayName, "pw").GetTraits()
+			if traits["email"] != tt.email {
+				t.Errorf("traits.email = %v, want %q", traits["email"], tt.email)
+			}
+			if traits["name"] != tt.displayName {
+				t.Errorf("traits.name = %v, want %q", traits["name"], tt.displayName)
+			}
+		})
+	}
+}
+
+// --- generatePassword ---
+
+func TestGeneratePassword_Contract(t *testing.T) {
+	pw, err := generatePassword()
+	if err != nil {
+		t.Fatalf("generatePassword: %v", err)
+	}
+
+	// 32 random bytes, hex encoded.
+	if len(pw) != passwordEntropyBytes*2 {
+		t.Errorf("len = %d, want %d", len(pw), passwordEntropyBytes*2)
+	}
+	if _, err := hex.DecodeString(pw); err != nil {
+		t.Errorf("password %q is not hex: %v", pw, err)
+	}
+	if strings.ToLower(pw) != pw {
+		t.Errorf("password %q is not lowercase hex", pw)
+	}
+}
+
+// Every generated password is a live credential, so two accounts created in the
+// same run must never share one.
+func TestGeneratePassword_IsNotRepeated(t *testing.T) {
+	const runs = 1000
+
+	seen := make(map[string]struct{}, runs)
+	for i := 0; i < runs; i++ {
+		pw, err := generatePassword()
+		if err != nil {
+			t.Fatalf("generatePassword: %v", err)
+		}
+		if _, dup := seen[pw]; dup {
+			t.Fatalf("generatePassword repeated %q within %d calls", pw, runs)
+		}
+		seen[pw] = struct{}{}
+	}
+}
+
+// The randomness source is a security property, not an implementation detail:
+// math/rand is seeded observably and its output would be reproducible by anyone
+// who could guess the process start time. Assert on the source itself, because
+// no black-box test of the output can tell the two apart.
+func TestGeneratePassword_UsesCryptoRand(t *testing.T) {
+	src, err := os.ReadFile("admin.go")
+	if err != nil {
+		t.Fatalf("reading admin.go: %v", err)
+	}
+
+	if !strings.Contains(string(src), `"crypto/rand"`) {
+		t.Error("admin.go does not import crypto/rand")
+	}
+	if strings.Contains(string(src), `"math/rand"`) || strings.Contains(string(src), `"math/rand/v2"`) {
+		t.Error("admin.go imports math/rand: generated passwords would be predictable")
+	}
+}
+
+// --- client configuration ---
+
+// The SDK's default client has no timeout at all, so a Kratos that accepts the
+// connection and then never answers would hang `bell setup` with no way out but
+// Ctrl-C. NewAdminClient builds its configuration through this function, so
+// asserting here covers the wiring it actually uses.
+func TestNewConfiguration_BoundsEveryRequest(t *testing.T) {
+	cfg := newConfiguration("http://kratos:4434", requestTimeout)
+
+	if cfg.HTTPClient == nil {
+		t.Fatal("HTTPClient is nil: the SDK would fall back to its untimed default")
+	}
+	if cfg.HTTPClient.Timeout != requestTimeout {
+		t.Errorf("timeout = %v, want %v", cfg.HTTPClient.Timeout, requestTimeout)
+	}
+	if requestTimeout <= 0 {
+		t.Errorf("requestTimeout = %v, want a positive bound", requestTimeout)
+	}
+	if len(cfg.Servers) != 1 || cfg.Servers[0].URL != "http://kratos:4434" {
+		t.Errorf("servers = %v, want the single configured admin URL", cfg.Servers)
+	}
+}
+
+// And the timeout has to actually fire — a configured field that the SDK
+// ignored would look identical to the assertion above.
+func TestAdminClient_GivesUpOnAStalledKratos(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	// Same wiring as NewAdminClient, with a short budget so the test does not
+	// wait out the production one.
+	c := &AdminClient{api: client.NewAPIClient(newConfiguration(srv.URL, 100*time.Millisecond)).IdentityAPI}
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.CreateIdentity(context.Background(), "alice@example.com", "Alice", "")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("CreateIdentity succeeded against a server that never responds")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CreateIdentity never returned: the timeout is not being applied")
+	}
+}
 
 func TestAdminClient_CreateIdentity_Success(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

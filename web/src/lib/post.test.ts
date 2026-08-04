@@ -6,6 +6,8 @@ import {
   MAX_POST_BODY_LENGTH,
   appendFeedPage,
   canEditPost,
+  counterColor,
+  counterOpacity,
   remainingChars,
   validateImageFile,
   validatePostBody,
@@ -165,5 +167,86 @@ describe("appendFeedPage", () => {
   it("skips malformed entries", () => {
     const got = appendFeedPage([], [post({ id: "ok" }), null as unknown as Post]);
     expect(got.map((p) => p.id)).toEqual(["ok"]);
+  });
+});
+
+// The counter is expressed in characters remaining, but what a reader thinks
+// in is characters typed, so the thresholds are stated both ways: bodyOf(n)
+// builds a post of n characters and remainingChars converts it back.
+function remainingFor(length: number): number {
+  return remainingChars("a".repeat(length));
+}
+
+describe("counterColor", () => {
+  it("is green for a short post", () => {
+    expect(counterColor(remainingFor(0))).toBe("#16a34a");
+  });
+
+  it("is still green just before the amber threshold at 950 characters", () => {
+    expect(counterColor(remainingFor(949))).toBe("#16a34a");
+  });
+
+  it("turns amber at 950 characters", () => {
+    expect(counterColor(remainingFor(950))).toBe("#ca8a04");
+  });
+
+  it("is still amber just before the red threshold at 980 characters", () => {
+    expect(counterColor(remainingFor(979))).toBe("#ca8a04");
+  });
+
+  it("turns red at 980 characters", () => {
+    expect(counterColor(remainingFor(980))).toBe("var(--color-danger)");
+  });
+
+  it("stays red at the limit", () => {
+    expect(counterColor(remainingFor(MAX_POST_BODY_LENGTH))).toBe("var(--color-danger)");
+  });
+
+  // Over-long bodies are possible: the textarea is not capped, validation is.
+  it("stays red past the limit, where remaining is negative", () => {
+    expect(counterColor(remainingFor(MAX_POST_BODY_LENGTH + 50))).toBe("var(--color-danger)");
+  });
+});
+
+describe("counterOpacity", () => {
+  it("is fully hidden for a short post", () => {
+    expect(counterOpacity(remainingFor(0))).toBe(0);
+  });
+
+  it("is still hidden one character before the fade begins at 900", () => {
+    expect(counterOpacity(remainingFor(899))).toBe(0);
+  });
+
+  it("begins the fade at 900 characters", () => {
+    expect(counterOpacity(remainingFor(900))).toBe(0);
+  });
+
+  // The ramp is (length - 900) / 20 across the 900-920 window.
+  it("is half faded in at 910 characters", () => {
+    expect(counterOpacity(remainingFor(910))).toBeCloseTo(0.5);
+  });
+
+  it("is three quarters faded in at 915 characters", () => {
+    expect(counterOpacity(remainingFor(915))).toBeCloseTo(0.75);
+  });
+
+  it("is fully opaque at 920 characters", () => {
+    expect(counterOpacity(remainingFor(920))).toBe(1);
+  });
+
+  it("stays fully opaque beyond 920", () => {
+    expect(counterOpacity(remainingFor(999))).toBe(1);
+  });
+
+  it("stays fully opaque past the limit", () => {
+    expect(counterOpacity(remainingFor(MAX_POST_BODY_LENGTH + 50))).toBe(1);
+  });
+
+  it("never leaves the 0 to 1 range across the whole ramp", () => {
+    for (let length = 890; length <= 930; length++) {
+      const opacity = counterOpacity(remainingFor(length));
+      expect(opacity).toBeGreaterThanOrEqual(0);
+      expect(opacity).toBeLessThanOrEqual(1);
+    }
   });
 });

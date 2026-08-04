@@ -21,6 +21,9 @@ func newMockActionHistoryRepo() *mockActionHistoryRepo {
 	return &mockActionHistoryRepo{}
 }
 
+// Needed only to satisfy the full ModerationActionRepository when constructing
+// a ModerationActionService for the delegation test; the history service itself
+// takes the narrower ModerationActionLister.
 func (m *mockActionHistoryRepo) CreateModerationAction(_ context.Context, _ *domain.ModerationAction) error {
 	return nil
 }
@@ -63,12 +66,45 @@ func (m *mockPenaltyListerS) ListPenaltiesByActionID(_ context.Context, actionID
 
 // --- helper ---
 
+// Reading the audit trail needs the action log and the penalties, and nothing
+// else: no user lookup, no clock, and no penalty engine standing on a vouch
+// graph it never queries.
 func newTestHistoryService(
-	actions ModerationActionRepository,
+	actions ModerationActionLister,
 	penaltyLister PenaltyLister,
-) *ModerationActionService {
-	modSvc := NewModerationService(penaltyLister, newMockPenaltyGraph(), fixedClock)
-	return NewModerationActionService(actions, newMockActionUserLookup(), modSvc, nil, penaltyLister, fixedClock)
+) *ModerationHistoryService {
+	return NewModerationHistoryService(actions, penaltyLister)
+}
+
+// The shim on ModerationActionService is what the moderation handler and
+// cmd/bell still call, so it has to keep returning the history service's
+// answer until those are migrated across.
+func TestModerationActionService_GetActionHistory_DelegatesToHistoryService(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	actionRepo := newMockActionHistoryRepo()
+	actionRepo.actionsByTarget = []*domain.ModerationAction{
+		{ID: "act-1", TargetUserID: "user-1", ModeratorID: "mod-1", Action: domain.ActionWarn, Severity: 1, Reason: "first", CreatedAt: now},
+	}
+	penaltyLister := newMockPenaltyListerS()
+	penaltyLister.penalties["act-1"] = []domain.TrustPenalty{
+		{ID: "pen-1", UserID: "user-1", ModerationActionID: "act-1", PenaltyAmount: 5.0, CreatedAt: now},
+	}
+
+	svc := NewModerationActionService(actionRepo, newMockActionUserLookup(), nil, nil, penaltyLister, fixedClock)
+
+	entries, err := svc.GetActionHistory(context.Background(), "user-1", false, 20, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	if entries[0].Action.ID != "act-1" {
+		t.Errorf("action ID = %q, want %q", entries[0].Action.ID, "act-1")
+	}
+	if len(entries[0].Penalties) != 1 {
+		t.Errorf("got %d penalties, want 1", len(entries[0].Penalties))
+	}
 }
 
 // --- GetActionHistory: by target ---

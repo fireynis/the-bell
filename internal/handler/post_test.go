@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,8 @@ import (
 // --- mock PostRepository ---
 
 type mockPostRepo struct {
-	posts map[string]*domain.Post
+	posts   map[string]*domain.Post
+	listErr error
 }
 
 func newMockPostRepo() *mockPostRepo {
@@ -43,6 +45,10 @@ func (m *mockPostRepo) GetPostByID(_ context.Context, id string) (*domain.Post, 
 }
 
 func (m *mockPostRepo) ListPosts(_ context.Context, cursor string, limit int) ([]*domain.Post, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+
 	var result []*domain.Post
 	for _, p := range m.posts {
 		if p.Status != domain.PostVisible {
@@ -413,6 +419,25 @@ func TestPostHandler_ListFeed_NoNextCursor(t *testing.T) {
 	}
 }
 
+// A feed query that fails must not leak the database error text.
+func TestPostHandler_ListFeed_ServiceError(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.listErr = errors.New(`pq: relation "posts" does not exist`)
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListFeed(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(rec.Body.String(), "posts") {
+		t.Errorf("body = %s, want no database detail", rec.Body.String())
+	}
+}
+
 func TestPostHandler_ListFeed_LimitClamping(t *testing.T) {
 	repo := newMockPostRepo()
 	svc := newTestPostService(repo)
@@ -659,5 +684,237 @@ func TestPostHandler_Delete_NoUser(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// --- reaction enrichment tests ---
+
+type stubReactionEnricher struct {
+	counts    map[string]map[domain.ReactionType]int
+	countsErr error
+
+	userReactions    map[string][]domain.ReactionType
+	userReactionsErr error
+
+	countsCalls    int
+	userCalls      int
+	gotUserID      string
+	gotCountIDs    []string
+	gotUserPostIDs []string
+}
+
+func (s *stubReactionEnricher) BatchCountByPosts(_ context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error) {
+	s.countsCalls++
+	s.gotCountIDs = postIDs
+	if s.countsErr != nil {
+		return nil, s.countsErr
+	}
+	return s.counts, nil
+}
+
+func (s *stubReactionEnricher) BatchGetUserReactions(_ context.Context, userID string, postIDs []string) (map[string][]domain.ReactionType, error) {
+	s.userCalls++
+	s.gotUserID, s.gotUserPostIDs = userID, postIDs
+	if s.userReactionsErr != nil {
+		return nil, s.userReactionsErr
+	}
+	return s.userReactions, nil
+}
+
+func feedRepoWithTwoPosts() *mockPostRepo {
+	repo := newMockPostRepo()
+	repo.posts["b"] = &domain.Post{ID: "b", Status: domain.PostVisible, CreatedAt: fixedNow}
+	repo.posts["a"] = &domain.Post{ID: "a", Status: domain.PostVisible, CreatedAt: fixedNow}
+	return repo
+}
+
+func listFeed(t *testing.T, h *handler.PostHandler, user *domain.User) []domain.Post {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts?limit=10", nil)
+	if user != nil {
+		req = withUser(req, user)
+	}
+	rec := httptest.NewRecorder()
+
+	h.ListFeed(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Posts []domain.Post `json:"posts"`
+	}
+	decodeBody(t, rec, &resp)
+	return resp.Posts
+}
+
+func postByID(t *testing.T, posts []domain.Post, id string) domain.Post {
+	t.Helper()
+	for _, p := range posts {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("post %q not in response", id)
+	return domain.Post{}
+}
+
+func TestPostHandler_ListFeed_EnrichesReactionCounts(t *testing.T) {
+	enricher := &stubReactionEnricher{
+		counts: map[string]map[domain.ReactionType]int{
+			"a": {domain.ReactionBell: 3, domain.ReactionHeart: 1},
+		},
+	}
+	h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+	posts := listFeed(t, h, nil)
+
+	if got := postByID(t, posts, "a").ReactionCounts[domain.ReactionBell]; got != 3 {
+		t.Errorf("post a bell count = %d, want 3", got)
+	}
+	// A post the enricher has no row for keeps its zero value rather than
+	// picking up another post's counts.
+	if got := postByID(t, posts, "b").ReactionCounts; got != nil {
+		t.Errorf("post b counts = %v, want none", got)
+	}
+	if len(enricher.gotCountIDs) != 2 {
+		t.Errorf("enricher got %d post ids, want 2", len(enricher.gotCountIDs))
+	}
+}
+
+// User reactions are what the frontend uses to render a reaction as already
+// pressed, so they are only fetched — and only meaningful — for a signed-in
+// caller.
+func TestPostHandler_ListFeed_EnrichesUserReactions(t *testing.T) {
+	enricher := &stubReactionEnricher{
+		counts:        map[string]map[domain.ReactionType]int{"a": {domain.ReactionBell: 1}},
+		userReactions: map[string][]domain.ReactionType{"a": {domain.ReactionBell}},
+	}
+	h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+	posts := listFeed(t, h, testUser())
+
+	got := postByID(t, posts, "a").UserReactions
+	if len(got) != 1 || got[0] != domain.ReactionBell {
+		t.Errorf("post a user reactions = %v, want [bell]", got)
+	}
+	if enricher.gotUserID != "user-1" {
+		t.Errorf("user reactions fetched for %q, want the session user %q", enricher.gotUserID, "user-1")
+	}
+	if postByID(t, posts, "b").UserReactions != nil {
+		t.Error("post b picked up user reactions it has none of")
+	}
+}
+
+func TestPostHandler_ListFeed_AnonymousSkipsUserReactions(t *testing.T) {
+	enricher := &stubReactionEnricher{counts: map[string]map[domain.ReactionType]int{"a": {domain.ReactionBell: 1}}}
+	h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+	listFeed(t, h, nil)
+
+	if enricher.userCalls != 0 {
+		t.Errorf("user reactions were fetched %d times for an anonymous request", enricher.userCalls)
+	}
+}
+
+// Enrichment is decoration: a reactions backend that is down must degrade the
+// feed, not take it out. Both failures are logged and swallowed, and each is
+// independent of the other.
+func TestPostHandler_ListFeed_EnrichmentFailuresDoNotFailTheFeed(t *testing.T) {
+	t.Run("counts fail, user reactions still applied", func(t *testing.T) {
+		enricher := &stubReactionEnricher{
+			countsErr:     errors.New("redis: connection refused"),
+			userReactions: map[string][]domain.ReactionType{"a": {domain.ReactionHeart}},
+		}
+		h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+		posts := listFeed(t, h, testUser())
+
+		if len(posts) != 2 {
+			t.Fatalf("got %d posts, want the feed intact with 2", len(posts))
+		}
+		if got := postByID(t, posts, "a").ReactionCounts; got != nil {
+			t.Errorf("post a counts = %v, want none after the count lookup failed", got)
+		}
+		if got := postByID(t, posts, "a").UserReactions; len(got) != 1 {
+			t.Errorf("post a user reactions = %v, want [heart] despite the count failure", got)
+		}
+	})
+
+	t.Run("user reactions fail, counts still applied", func(t *testing.T) {
+		enricher := &stubReactionEnricher{
+			counts:           map[string]map[domain.ReactionType]int{"a": {domain.ReactionBell: 2}},
+			userReactionsErr: errors.New("redis: connection refused"),
+		}
+		h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+		posts := listFeed(t, h, testUser())
+
+		if len(posts) != 2 {
+			t.Fatalf("got %d posts, want the feed intact with 2", len(posts))
+		}
+		if got := postByID(t, posts, "a").ReactionCounts[domain.ReactionBell]; got != 2 {
+			t.Errorf("post a bell count = %d, want 2 despite the user-reaction failure", got)
+		}
+		if got := postByID(t, posts, "a").UserReactions; got != nil {
+			t.Errorf("post a user reactions = %v, want none", got)
+		}
+	})
+
+	t.Run("both fail", func(t *testing.T) {
+		enricher := &stubReactionEnricher{
+			countsErr:        errors.New("redis: connection refused"),
+			userReactionsErr: errors.New("redis: connection refused"),
+		}
+		h := handler.NewPostHandler(newTestPostService(feedRepoWithTwoPosts()), handler.WithReactionEnricher(enricher))
+
+		if posts := listFeed(t, h, testUser()); len(posts) != 2 {
+			t.Fatalf("got %d posts, want the feed intact with 2", len(posts))
+		}
+	})
+}
+
+// An empty feed must not reach the enricher at all — a batch query for no post
+// ids is a wasted round trip.
+func TestPostHandler_ListFeed_EmptyFeedSkipsEnrichment(t *testing.T) {
+	enricher := &stubReactionEnricher{}
+	h := handler.NewPostHandler(newTestPostService(newMockPostRepo()), handler.WithReactionEnricher(enricher))
+
+	listFeed(t, h, testUser())
+
+	if enricher.countsCalls != 0 || enricher.userCalls != 0 {
+		t.Errorf("enricher called (%d counts, %d user) for an empty feed", enricher.countsCalls, enricher.userCalls)
+	}
+}
+
+func TestPostHandler_GetByID_EnrichesSinglePost(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", Status: domain.PostVisible, CreatedAt: fixedNow}
+	enricher := &stubReactionEnricher{
+		counts:        map[string]map[domain.ReactionType]int{"post-1": {domain.ReactionCelebrate: 5}},
+		userReactions: map[string][]domain.ReactionType{"post-1": {domain.ReactionCelebrate}},
+	}
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithReactionEnricher(enricher))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+	req = withChiURLParam(req, "id", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var post domain.Post
+	decodeBody(t, rec, &post)
+	if post.ReactionCounts[domain.ReactionCelebrate] != 5 {
+		t.Errorf("celebrate count = %d, want 5", post.ReactionCounts[domain.ReactionCelebrate])
+	}
+	if len(post.UserReactions) != 1 {
+		t.Errorf("user reactions = %v, want [celebrate]", post.UserReactions)
 	}
 }

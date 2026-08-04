@@ -1,7 +1,10 @@
 package handler_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,10 +76,35 @@ func (m *mockReactionRepo) ListByPost(_ context.Context, postID string) ([]*doma
 	return result, nil
 }
 
+// --- stub ReactionEventPublisher ---
+
+type stubReactionPublisher struct {
+	postIDs []string // one entry per call, in call order
+	err     error
+}
+
+func (s *stubReactionPublisher) PublishReactionEvent(_ context.Context, postID, _, _, _ string) error {
+	s.postIDs = append(s.postIDs, postID)
+	return s.err
+}
+
 // --- test helpers ---
 
 func newTestReactionService(repo service.ReactionRepository) *service.ReactionService {
 	return service.NewReactionService(repo, func() time.Time { return fixedNow })
+}
+
+// captureLogs redirects the default slog logger into a buffer for the duration
+// of one test. The handler package logs best-effort failures through the
+// package-level slog functions, so that is the only place to observe them.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
 }
 
 // withChiURLParams sets multiple chi URL params on a request without overwriting.
@@ -172,6 +200,95 @@ func TestReactionHandler_Add_InvalidJSON(t *testing.T) {
 	}
 }
 
+// --- SSE notification tests ---
+
+func TestReactionHandler_Add_PublishesEvent(t *testing.T) {
+	postRepo := newMockPostRepo()
+	postRepo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "author-9", Status: domain.PostVisible, CreatedAt: fixedNow}
+	pub := &stubReactionPublisher{}
+	h := handler.NewReactionHandler(
+		newTestReactionService(newMockReactionRepo()),
+		newTestPostService(postRepo),
+		handler.WithReactionPublisher(pub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts/post-1/reactions", strings.NewReader(`{"type":"bell"}`))
+	req = withChiURLParam(req, "postId", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Add(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(pub.postIDs) != 1 || pub.postIDs[0] != "post-1" {
+		t.Errorf("publisher calls = %v, want exactly one for post-1", pub.postIDs)
+	}
+}
+
+// A notification that cannot be delivered must not fail the reaction, but it
+// must leave a trace — this used to be discarded with `_ =`, so a silently
+// broken SSE pipeline looked identical to a healthy one.
+func TestReactionHandler_Add_PublishFailureIsLoggedNotReturned(t *testing.T) {
+	logs := captureLogs(t)
+	postRepo := newMockPostRepo()
+	postRepo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "author-9", Status: domain.PostVisible, CreatedAt: fixedNow}
+	pub := &stubReactionPublisher{err: errors.New("sse broker unavailable")}
+	h := handler.NewReactionHandler(
+		newTestReactionService(newMockReactionRepo()),
+		newTestPostService(postRepo),
+		handler.WithReactionPublisher(pub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts/post-1/reactions", strings.NewReader(`{"type":"bell"}`))
+	req = withChiURLParam(req, "postId", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Add(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := logs.String(); !strings.Contains(got, "publishing reaction event") {
+		t.Errorf("nothing logged about the failed publish; logs: %s", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "sse broker unavailable") {
+		t.Errorf("log did not carry the underlying error; logs: %s", got)
+	}
+}
+
+// Same contract when the post lookup fails: the reaction stands, the missed
+// notification is recorded, and no event is published for a post we could not
+// read the author of.
+func TestReactionHandler_Add_PostLookupFailureIsLoggedNotReturned(t *testing.T) {
+	logs := captureLogs(t)
+	pub := &stubReactionPublisher{}
+	h := handler.NewReactionHandler(
+		newTestReactionService(newMockReactionRepo()),
+		newTestPostService(newMockPostRepo()), // post-1 is absent -> ErrNotFound
+		handler.WithReactionPublisher(pub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts/post-1/reactions", strings.NewReader(`{"type":"bell"}`))
+	req = withChiURLParam(req, "postId", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Add(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(pub.postIDs) != 0 {
+		t.Errorf("published %v despite the post lookup failing", pub.postIDs)
+	}
+	if got := logs.String(); !strings.Contains(got, "loading post to notify its author") {
+		t.Errorf("nothing logged about the failed lookup; logs: %s", got)
+	}
+}
+
 // --- Remove reaction tests ---
 
 func TestReactionHandler_Remove(t *testing.T) {
@@ -213,6 +330,25 @@ func TestReactionHandler_Remove_InvalidType(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// Removing a reaction the user never left is a client mistake, not a server
+// failure — the handler used to report it as a 500.
+func TestReactionHandler_Remove_NotFound(t *testing.T) {
+	repo := newMockReactionRepo()
+	svc := newTestReactionService(repo)
+	h := handler.NewReactionHandler(svc, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/posts/post-1/reactions/bell", nil)
+	req = withChiURLParams(req, map[string]string{"postId": "post-1", "type": "bell"})
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Remove(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
 

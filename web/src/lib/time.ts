@@ -47,3 +47,23 @@ export function formatAbsoluteTime(dateStr: string): string {
   const date = new Date(dateStr);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
+
+/**
+ * formatDateTime renders a date and time to the minute, for the moderation
+ * audit trail where "3d" is not specific enough to defend a decision.
+ *
+ * Shares the empty-string contract of formatAbsoluteTime: a timestamp the API
+ * sends malformed shows nothing rather than the literal "Invalid Date".
+ */
+export function formatDateTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}

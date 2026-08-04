@@ -3,9 +3,6 @@ INSERT INTO reports (id, reporter_id, post_id, reason, status, created_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
--- name: GetReportByID :one
-SELECT * FROM reports WHERE id = $1;
-
 -- name: GetReportByReporterAndPost :one
 SELECT * FROM reports WHERE reporter_id = $1 AND post_id = $2;
 

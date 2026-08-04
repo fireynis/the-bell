@@ -10,40 +10,51 @@
 
 ## Quick Start
 
-1. Create the required PostgreSQL databases:
-
-```sql
-CREATE DATABASE bell;
-CREATE DATABASE bell_kratos;
-```
-
-2. Create a `.env` file in the project root:
+1. Create a `.env` file in the project root:
 
 ```env
 POSTGRES_PASSWORD=your_db_password
 TOWN_NAME=Springfield
 ```
 
-3. Start all services:
+2. Start all services:
 
 ```bash
 docker compose up -d
 ```
 
-This brings up four containers:
+This brings up five containers:
 
 | Container | Purpose |
 |-----------|---------|
 | `bell` | The Bell API + SPA (port 8080) |
+| `bell-postgres` | PostgreSQL with Apache AGE (pinned image, see below) |
 | `kratos` | Ory Kratos identity server (ports 4433/4434) |
 | `kratos-migrate` | Runs Kratos DB migrations then exits |
 | `redis-bell` | Ephemeral Redis (no persistence, cache only) |
 
-4. Bootstrap the town with initial council members:
+You do not need to create the databases by hand. On first start the Postgres
+container creates `bell` from `POSTGRES_DB` and runs `deploy/init-db.sh`, which
+creates `bell_kratos`. If you are pointing The Bell at a pre-existing Postgres
+that never ran those init hooks, use `bell setup --create-db` instead — it
+derives both names from `DATABASE_URL` (a DSN ending in `/thebell` yields
+`thebell` and `thebell_kratos`), so it does not assume the names are `bell` and
+`bell_kratos`.
+
+The Postgres image is pinned to `apache/age:release_PG18_1.7.0`. Do not switch
+it to `apache/age:latest`: that tag floats across Postgres *major* versions, and
+Postgres refuses to start against a data directory written by a different major.
+The same pin appears in `deploy/docker-compose.yml` and
+`internal/testsupport/testsupport.go`, and all three must stay identical.
+
+3. Bootstrap the town with initial council members:
 
 ```bash
-docker exec bell ./bell setup --council=alice@example.com,bob@example.com
+docker exec -it bell ./bell setup --council=alice@example.com,bob@example.com
 ```
+
+`setup` prompts for anything you do not pass as a flag, so run it with `-it` if
+you omit `--council` or `--town-name`.
 
 This creates Kratos identities and local users with the `council` role and a trust score of 100. It also enables bootstrap mode, which allows council members to directly approve pending users until 20 active members are reached.
 
@@ -53,13 +64,14 @@ All configuration is via environment variables. The Bell binary reads them at st
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | -- | PostgreSQL connection string. Example: `postgres://appuser:pass@postgres:5432/bell?sslmode=disable` |
+| `DATABASE_URL` | Yes | -- | PostgreSQL connection string. Example: `postgres://belluser:pass@bell-postgres:5432/bell?sslmode=disable` |
 | `KRATOS_PUBLIC_URL` | Yes | -- | Kratos public API URL. Example: `http://kratos:4433` |
 | `KRATOS_ADMIN_URL` | Yes | -- | Kratos admin API URL. Example: `http://kratos:4434` |
 | `PORT` | No | `8080` | HTTP listen port |
 | `REDIS_URL` | No | (empty) | Redis connection string. When set, enables feed caching, trust score background worker, and per-user rate limiting. Example: `redis://redis-bell:6379` |
 | `IMAGE_STORAGE_PATH` | No | `/storage/the-bell/images` | Filesystem path for uploaded images |
 | `TOWN_NAME` | No | `My Town` | Display name for the municipality |
+| `BELL_ENV` | No | `production` | Only `dev` or `development` (case-insensitive) select development mode. **Anything else — including unset, empty, or a typo — means production.** In development mode The Bell strips the `Secure` attribute from Kratos session cookies as they pass back through the `/.ory/*` proxy, so login works over plain-HTTP localhost. Never set this on a deployment reachable over the network: it would hand the session cookie to any downgrade attacker |
 
 ## CLI Commands
 
@@ -163,8 +175,8 @@ Redis does not need backup -- it is configured as an ephemeral cache with no per
 Example pg_dump:
 
 ```bash
-pg_dump -h postgres -U appuser bell > bell_backup.sql
-pg_dump -h postgres -U appuser bell_kratos > bell_kratos_backup.sql
+pg_dump -h bell-postgres -U belluser bell > bell_backup.sql
+pg_dump -h bell-postgres -U belluser bell_kratos > bell_kratos_backup.sql
 ```
 
 ## Monitoring

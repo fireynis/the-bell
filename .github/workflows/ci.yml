@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    # Testcontainers pulls images and starts databases; a wedged container
+    # should fail the job rather than run until the six-hour default.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Single source of truth: the toolchain comes from go.mod.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # gofmt -l exits 0 whether or not it lists anything, so the output has to
+      # be tested. Listing package directories from go list keeps vendor/ out.
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l $(go list -f '{{.Dir}}' ./...))
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo "Run: gofmt -w \$(go list -f '{{.Dir}}' ./...)"
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: go test ./...
+
+      # The race detector needs cgo, which no developer on this project can run
+      # locally — CGO_ENABLED is 0 and there is no C toolchain, so `go test
+      # -race` fails outright rather than passing. The runner has gcc, so this
+      # is the only place the concurrency-sensitive code (SSE broker fan-out,
+      # trust worker queue, rate limiter, feed cache warm) is checked at all.
+      - name: Unit tests (race)
+        env:
+          CGO_ENABLED: 1
+        run: go test -race ./...
+
+      # Docker is available on GitHub-hosted runners, so Testcontainers can
+      # stand up the real Postgres+AGE and Redis these suites need.
+      #
+      # ./... rather than a path: integration-tagged tests live in
+      # internal/app, internal/integration, internal/middleware and
+      # internal/repository/postgres, and a path-scoped invocation would
+      # silently skip most of them.
+      - name: Integration tests
+        run: go test -tags integration ./...
+
+      - name: Integration tests (race)
+        env:
+          CGO_ENABLED: 1
+        run: go test -race -tags integration ./...
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # `tsc --noEmit` is a no-op here: tsconfig.json is a solution file with
+      # "files": [] and project references, so plain tsc has no inputs and
+      # exits 0 even with type errors present. -b walks the references.
+      - name: Type-check
+        run: npx tsc -b
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests
+        run: npx vitest run
