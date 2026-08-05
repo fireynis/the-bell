@@ -3,8 +3,13 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -103,5 +108,82 @@ func TestVouchDailyLimitIsEnforcedByTheServiceItself(t *testing.T) {
 	}
 	if !errors.Is(err, service.ErrValidation) {
 		t.Fatalf("error = %v, want it to wrap %v", err, service.ErrValidation)
+	}
+}
+
+// The handler was written and tested before anything routed to it, so nothing
+// proved a vouch could actually be made over HTTP. This drives the real router
+// end to end: real guards, real service, real AGE graph.
+func TestVouchOverHTTP(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	voucher := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("voucher"), domain.RoleMember, 80.0)
+	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("vouchee"), domain.RoleMember, 20.0)
+	handler := testServer(t, pool, voucher).Handler()
+
+	var vouchID string
+
+	t.Run("a member can vouch for another member", func(t *testing.T) {
+		body := fmt.Sprintf(`{"vouchee_id":%q}`, vouchee.ID)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/vouches/", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("POST /api/v1/vouches is not routed: %s", rec.Body.String())
+		}
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+
+		var vouch domain.Vouch
+		if err := json.NewDecoder(rec.Body).Decode(&vouch); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if vouch.VoucherID != voucher.ID || vouch.VoucheeID != vouchee.ID {
+			t.Errorf("vouch = %+v, want %s -> %s", vouch, voucher.ID, vouchee.ID)
+		}
+		vouchID = vouch.ID
+	})
+
+	t.Run("the voucher can revoke it again", func(t *testing.T) {
+		if vouchID == "" {
+			t.Skip("no vouch was created")
+		}
+
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/vouches/"+vouchID, nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("DELETE /api/v1/vouches/{id} is not routed: %s", rec.Body.String())
+		}
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+		}
+	})
+}
+
+// Council approval sits behind the same prefix but a different guard, so a
+// member reaching it must be refused rather than routed.
+func TestVouchApprovalStillRequiresCouncilOverHTTP(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	member := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("plain-member"), domain.RoleMember, 80.0)
+	handler := testServer(t, pool, member).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/vouches/approve/"+member.ID, bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("POST /api/v1/vouches/approve/{id} is not routed: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d for a member: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }

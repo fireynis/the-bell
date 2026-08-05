@@ -533,3 +533,91 @@ func TestFeedStillServesAnonymousReaders(t *testing.T) {
 		t.Errorf("anonymous feed carried user_reactions: %s", rec.Body.String())
 	}
 }
+
+// newRoleServer wires a server whose auth middleware injects viewer, so a route
+// group's role floor can be exercised directly. A nil viewer is an
+// unauthenticated request.
+func newRoleServer(t *testing.T, viewer *domain.User) *Server {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	return New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithUserService(service.NewUserService(stubUserRepo{}, nil)),
+		WithVouchService(service.NewVouchService(stubVouchRepo{}, nil, nil, nil)),
+		WithApprovalService(service.NewApprovalService(nil, nil)),
+		WithAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if viewer != nil {
+					r = r.WithContext(middleware.WithUser(r.Context(), viewer))
+				}
+				next.ServeHTTP(w, r)
+			})
+		}),
+	)
+}
+
+// Registering member vouching and council approval under one prefix has to be
+// two Groups inside one Route. A second r.Route on the same pattern makes chi
+// panic while the router is being built — a boot-time crash, which is the kind
+// of failure that should be caught here rather than on deploy.
+func TestVouchRoutesBuildWithoutPanicking(t *testing.T) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("building the router panicked with both vouch services present: %v", rec)
+		}
+	}()
+
+	srv := newRoleServer(t, nil)
+	if srv.Handler() == nil {
+		t.Fatal("router built to nil")
+	}
+}
+
+// The point of the shared prefix is that it carries two different guards, so
+// each is checked from both sides: the role that must pass, and the role that
+// must not.
+func TestVouchRoutesCarryTwoDifferentGuards(t *testing.T) {
+	member := &domain.User{ID: "m1", Role: domain.RoleMember, IsActive: true}
+	council := &domain.User{ID: "c1", Role: domain.RoleCouncil, IsActive: true}
+	pending := &domain.User{ID: "p1", Role: domain.RolePending, IsActive: true}
+
+	tests := []struct {
+		name       string
+		viewer     *domain.User
+		method     string
+		path       string
+		wantAllowd bool // false means the role guard must reject with 403
+	}{
+		// Member vouching: a member is enough.
+		{"a member may vouch", member, http.MethodPost, "/api/v1/vouches/", true},
+		{"a member may revoke a vouch", member, http.MethodDelete, "/api/v1/vouches/v1", true},
+		{"a pending user may not vouch", pending, http.MethodPost, "/api/v1/vouches/", false},
+		// Council outranks member, so the floor admits them too.
+		{"council may vouch", council, http.MethodPost, "/api/v1/vouches/", true},
+
+		// Council approval: a member is NOT enough, which is the whole reason
+		// the two groups cannot share one guard.
+		{"a member may not approve", member, http.MethodPost, "/api/v1/vouches/approve/u1", false},
+		{"a member may not list pending approvals", member, http.MethodGet, "/api/v1/vouches/pending", false},
+		{"council may approve", council, http.MethodPost, "/api/v1/vouches/approve/u1", true},
+		{"council may list pending approvals", council, http.MethodGet, "/api/v1/vouches/pending", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newRoleServer(t, tt.viewer)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{}`)))
+
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("%s %s returned 404 — the route is not registered", tt.method, tt.path)
+			}
+			if tt.wantAllowd && rec.Code == http.StatusForbidden {
+				t.Errorf("%s %s was rejected as forbidden for role %q", tt.method, tt.path, tt.viewer.Role)
+			}
+			if !tt.wantAllowd && rec.Code != http.StatusForbidden {
+				t.Errorf("%s %s status = %d for role %q, want %d", tt.method, tt.path, rec.Code, tt.viewer.Role, http.StatusForbidden)
+			}
+		})
+	}
+}

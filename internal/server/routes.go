@@ -268,15 +268,44 @@ func (s *Server) apiRoutes(r chi.Router) {
 		})
 	}
 
-	if s.approvalService != nil {
-		ah := handler.NewApprovalHandler(s.approvalService)
+	// Member vouching and council approval share the /v1/vouches prefix but not
+	// their guards, so they are two Groups inside one Route: a second
+	// r.Route on the same pattern panics at startup, when chi refuses to Mount
+	// twice on one path.
+	if s.approvalService != nil || s.vouchService != nil {
 		r.Route("/v1/vouches", func(r chi.Router) {
-			r.Use(s.protected(guard{
-				role:  domain.RoleCouncil,
-				limit: &rateSpec{"vouches", 3, 24 * time.Hour},
-			})...)
-			r.Get("/pending", ah.ListPending)
-			r.Post("/approve/{id}", ah.Approve)
+			if s.approvalService != nil {
+				ah := handler.NewApprovalHandler(s.approvalService)
+				r.Group(func(r chi.Router) {
+					// Deliberately unlimited. This group used to carry the
+					// "vouches" limiter, which capped council approvals at 3
+					// per day — but bootstrapExitThreshold is 20, so standing
+					// up a town could not finish in under a week and the
+					// operator saw an unexplained 429 on the fourth approval.
+					// The limit belongs to the member budget below, and landed
+					// here only because the two share a prefix.
+					r.Use(s.protected(guard{role: domain.RoleCouncil})...)
+					r.Get("/pending", ah.ListPending)
+					r.Post("/approve/{id}", ah.Approve)
+				})
+			}
+
+			if s.vouchService != nil {
+				vh := handler.NewVouchHandler(s.vouchService)
+				r.Group(func(r chi.Router) {
+					// The limiter keys on the endpoint NAME, not the route, so
+					// "vouches" is the per-member vouching budget and nothing
+					// else may reuse it. Naming it here again on the approval
+					// group would put a member's vouches and a council
+					// member's approvals in one shared bucket.
+					r.Use(s.protected(guard{
+						role:  domain.RoleMember,
+						limit: &rateSpec{"vouches", 3, 24 * time.Hour},
+					})...)
+					r.Post("/", vh.Create)
+					r.Delete("/{id}", vh.Revoke)
+				})
+			}
 		})
 	}
 
