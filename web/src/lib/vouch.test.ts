@@ -114,6 +114,22 @@ describe("countVouchesToday", () => {
     expect(countVouchesToday([vouch({ created_at: "not a date" })], NOW)).toBe(0);
   });
 
+  it("skips malformed entries rather than throwing", () => {
+    const given = [null as unknown as Vouch, vouch({ created_at: hoursAgo(1) })];
+    expect(countVouchesToday(given, NOW)).toBe(1);
+  });
+
+  // Mild clock skew can date a vouch a moment into the future, and counting it
+  // is the safe direction — the server counts it too. A timestamp days ahead is
+  // not skew, and must not consume today's allowance.
+  it("tolerates slight clock skew but ignores a far-future timestamp", () => {
+    const skewed = new Date(NOW + 60_000).toISOString();
+    expect(countVouchesToday([vouch({ created_at: skewed })], NOW)).toBe(1);
+
+    const nextWeek = new Date(NOW + 7 * 86_400_000).toISOString();
+    expect(countVouchesToday([vouch({ created_at: nextWeek })], NOW)).toBe(0);
+  });
+
   it.each([
     ["a missing list", undefined],
     ["a null list", null],
