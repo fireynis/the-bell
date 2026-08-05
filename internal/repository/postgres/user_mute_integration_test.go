@@ -4,12 +4,15 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/testsupport"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Migrations 00001 and 00007 switch search_path to ag_catalog for their AGE
@@ -247,5 +250,140 @@ func TestMigrations_PenaltyMayHaveNoModerationAction(t *testing.T) {
 	}
 	if constraints != 1 {
 		t.Errorf("found %d moderation_action_id foreign keys, want 1 — dropping NOT NULL must not drop the reference", constraints)
+	}
+}
+
+// insertPenalty writes a trust_penalties row directly, bypassing the service
+// layer, so the constraint itself is what is under test rather than the code
+// paths that happen to respect it.
+func insertPenalty(ctx context.Context, pool *pgxpool.Pool, userID, actionID string, hopDepth int) error {
+	var action any
+	if actionID != "" {
+		action = actionID
+	}
+	_, err := pool.Exec(ctx,
+		`INSERT INTO trust_penalties
+		   (id, user_id, moderation_action_id, penalty_amount, hop_depth, created_at, decays_at)
+		 VALUES ($1, $2, $3, 3.0, $4, NOW(), NOW() + INTERVAL '30 days')`,
+		uuid.Must(uuid.NewV7()).String(), userID, action, hopDepth,
+	)
+	return err
+}
+
+// seedModerationAction creates a real action row so penalties can reference one.
+func seedModerationAction(t *testing.T, pool *pgxpool.Pool, targetID, moderatorID string) string {
+	t.Helper()
+	id := uuid.Must(uuid.NewV7()).String()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO moderation_actions
+		   (id, target_user_id, moderator_id, action_type, severity, reason, created_at)
+		 VALUES ($1, $2, $3, 'warn', 2, 'test', NOW())`,
+		id, targetID, moderatorID,
+	)
+	if err != nil {
+		t.Fatalf("seeding moderation action: %v", err)
+	}
+	return id
+}
+
+// Migration 00016 restores the half of the traceability guarantee that 00015
+// gave up: a propagated penalty must name the action it propagated from.
+func TestMigrations_PropagatedPenaltyRequiresAnAction(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("chk-user"), domain.RoleMember, 50)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("chk-mod"), domain.RoleModerator, 90)
+	actionID := seedModerationAction(t, pool, user.ID, mod.ID)
+
+	t.Run("constraint exists", func(t *testing.T) {
+		var count int
+		err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM information_schema.table_constraints
+			 WHERE table_schema = 'public' AND table_name = 'trust_penalties'
+			   AND constraint_type = 'CHECK'
+			   AND constraint_name = 'trust_penalties_propagated_needs_action'`,
+		).Scan(&count)
+		if err != nil {
+			t.Fatalf("looking up the constraint: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("found %d such constraints, want 1", count)
+		}
+	})
+
+	// The one thing the constraint is for.
+	t.Run("propagated penalty with no action is rejected", func(t *testing.T) {
+		err := insertPenalty(ctx, pool, user.ID, "", 1)
+		if err == nil {
+			t.Fatal("a propagated penalty with no moderation action was accepted; it has nothing to trace back to")
+		}
+		if !strings.Contains(err.Error(), "trust_penalties_propagated_needs_action") {
+			t.Errorf("rejected by %v, want the propagated-needs-action check", err)
+		}
+	})
+
+	// And the three shapes the system legitimately writes must all still pass.
+	t.Run("revocation penalty is still accepted", func(t *testing.T) {
+		// hop_depth 0, no action: this is the feature 00015 enabled, and the
+		// constraint must not have taken it away again.
+		if err := insertPenalty(ctx, pool, user.ID, "", 0); err != nil {
+			t.Errorf("revocation penalty rejected: %v", err)
+		}
+	})
+
+	t.Run("direct moderation penalty is still accepted", func(t *testing.T) {
+		if err := insertPenalty(ctx, pool, user.ID, actionID, 0); err != nil {
+			t.Errorf("direct moderation penalty rejected: %v", err)
+		}
+	})
+
+	t.Run("propagated moderation penalty is still accepted", func(t *testing.T) {
+		if err := insertPenalty(ctx, pool, user.ID, actionID, 2); err != nil {
+			t.Errorf("propagated moderation penalty rejected: %v", err)
+		}
+	})
+}
+
+// A CHECK that fails against existing rows is worse than no CHECK: the
+// migration would abort on a populated production database while passing on an
+// empty test one. This writes every shape the system produces and then re-adds
+// the constraint over them, which is what goose does on deploy.
+func TestMigrations_PropagatedPenaltyCheckAcceptsExistingRows(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("live-user"), domain.RoleMember, 50)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("live-mod"), domain.RoleModerator, 90)
+	actionID := seedModerationAction(t, pool, user.ID, mod.ID)
+
+	// Every shape in the wild: a revocation penalty, a direct moderation
+	// penalty, and propagated penalties at both hop depths.
+	for _, p := range []struct {
+		action   string
+		hopDepth int
+	}{
+		{"", 0},
+		{actionID, 0},
+		{actionID, 1},
+		{actionID, 2},
+	} {
+		if err := insertPenalty(ctx, pool, user.ID, p.action, p.hopDepth); err != nil {
+			t.Fatalf("seeding penalty (action=%q hop=%d): %v", p.action, p.hopDepth, err)
+		}
+	}
+
+	// Drop and re-add exactly as the migration does. ADD CONSTRAINT validates
+	// every existing row, so this fails loudly if the check is too strict.
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE trust_penalties DROP CONSTRAINT trust_penalties_propagated_needs_action`,
+	); err != nil {
+		t.Fatalf("dropping the constraint: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`ALTER TABLE trust_penalties ADD CONSTRAINT trust_penalties_propagated_needs_action
+		 CHECK (moderation_action_id IS NOT NULL OR hop_depth = 0)`,
+	); err != nil {
+		t.Fatalf("re-adding the constraint over existing rows failed, so the migration would abort on a populated database: %v", err)
 	}
 }
