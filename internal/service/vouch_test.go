@@ -1056,6 +1056,57 @@ func TestVouchService_Revoke_MarginalVoucherFallsBelowTheThreshold(t *testing.T)
 	}
 }
 
+// "Small enough that revoking a bad actor is still clearly worth it" is a
+// comparison, so this makes the comparison rather than asserting "small" in the
+// abstract: what one revocation costs the voucher, against what staying
+// attached to a vouchee who is later moderated costs them.
+//
+// Both sides are computed from the real weights and the real propagation plan,
+// so the test tracks the model instead of restating today's numbers.
+func TestVouchService_Revoke_CostsFarLessThanStandingByABadVouch(t *testing.T) {
+	// The cost of losing moderation points, expressed in composite points.
+	// Holding the other three components fixed isolates the moderation weight.
+	compositeCost := func(moderationPoints float64) float64 {
+		const tenure, activity, voucher = 80.0, 80.0, 80.0
+		return CompositeScore(tenure, activity, voucher, 100) -
+			CompositeScore(tenure, activity, voucher, 100-moderationPoints)
+	}
+
+	revokeCost := compositeCost(revocationPenaltyPoints)
+
+	tests := []struct {
+		name     string
+		severity int
+	}{
+		{"vouchee muted", 3},
+		{"vouchee suspended", 4},
+		{"vouchee banned", 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The voucher sits one hop from the vouchee, so a moderation action
+			// against the vouchee propagates back to them.
+			specs := planPropagatedPenalties("vouchee-1", tt.severity, map[string]int{"voucher-1": 1})
+			if len(specs) != 1 {
+				t.Fatalf("planned %d propagated penalties, want 1", len(specs))
+			}
+			stayCost := compositeCost(specs[0].Amount)
+
+			if stayCost <= revokeCost {
+				t.Fatalf("standing by a bad vouch costs %.2f composite points and revoking costs %.2f; revoking must be the cheaper choice",
+					stayCost, revokeCost)
+			}
+			// "Clearly" worth it, not marginally: the gap should be large enough
+			// that no voucher has to weigh it up.
+			if ratio := stayCost / revokeCost; ratio < 4 {
+				t.Errorf("standing by a bad vouch costs only %.1fx revoking (%.2f vs %.2f); the deterrent is too close to the cost",
+					ratio, stayCost, revokeCost)
+			}
+		})
+	}
+}
+
 // The penalty must fade. A permanent -3 for withdrawing an endorsement would
 // accumulate over a member's lifetime into a real punishment.
 func TestVouchService_Revoke_PenaltyDecaysToNothingAfterThirtyDays(t *testing.T) {
