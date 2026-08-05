@@ -1,5 +1,12 @@
 # The Bell — Implementation Plan
 
+> **PARTIALLY SUPERSEDED (2026-08-04) — historical record.** Two things below no
+> longer match the code. `CanPost()` now takes a `time.Time` and checks
+> `MutedUntil` (see `internal/domain/user.go`), and Task 21's "Mute: update user
+> trust score to below posting threshold" was replaced by a `users.muted_until`
+> column, because the trust worker recomputed the score drop away. The rest of
+> the plan still reflects the build. Kept as-is rather than rewritten.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build a self-hosted micro-blogging platform for municipalities with a trust-based social reputation system.

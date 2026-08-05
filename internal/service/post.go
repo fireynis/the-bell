@@ -50,18 +50,25 @@ func (s *PostService) SetFeedCache(fc FeedCacher) {
 	s.feedCache = fc
 }
 
-// PostAuthor carries the author fields denormalized onto each post.
+// Create publishes a post by author.
 //
-// They are supplied at creation rather than filled in by the caller afterwards
-// because the post is written to the feed cache before Create returns: a post
-// completed after the fact would be cached, and served, with no author name.
-type PostAuthor struct {
-	ID          string
-	DisplayName string
-	AvatarURL   string
-}
-
-func (s *PostService) Create(ctx context.Context, author PostAuthor, body, imagePath string) (*domain.Post, error) {
+// It takes the whole user rather than just the denormalized author fields
+// because it also authorizes the write. The handler checks CanPost too, as the
+// early and friendlier rejection, but this is the check that cannot be
+// bypassed: before it existed, one line in one handler was the only thing
+// between a muted user and a post.
+//
+// The author fields are denormalized onto the post here rather than filled in
+// afterwards because the post is written to the feed cache before Create
+// returns: a post completed after the fact would be cached, and served, with no
+// author name.
+func (s *PostService) Create(ctx context.Context, author *domain.User, body, imagePath string) (*domain.Post, error) {
+	if author == nil {
+		return nil, fmt.Errorf("%w: no author", ErrForbidden)
+	}
+	if !author.CanPost(s.now()) {
+		return nil, fmt.Errorf("%w: posting not allowed", ErrForbidden)
+	}
 	if err := validateBody(body); err != nil {
 		return nil, err
 	}

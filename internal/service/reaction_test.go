@@ -29,12 +29,12 @@ func (m *mockReactionRepo) AddReaction(_ context.Context, reaction *domain.React
 	return nil
 }
 
+// Mirrors the real adapter: queries/reactions.sql RemoveReaction is a plain
+// :exec DELETE, so removing something that is not there matches no rows and
+// returns nil. A fake that invented a "not found" error here is what let an
+// unreachable 404 sit in the handler untested for as long as it did.
 func (m *mockReactionRepo) RemoveReaction(_ context.Context, userID, postID string, reactionType domain.ReactionType) error {
-	key := reactionKey(userID, postID, reactionType)
-	if _, ok := m.reactions[key]; !ok {
-		return ErrReactionNotFound
-	}
-	delete(m.reactions, key)
+	delete(m.reactions, reactionKey(userID, postID, reactionType))
 	return nil
 }
 

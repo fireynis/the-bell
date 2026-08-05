@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/service"
@@ -108,6 +109,18 @@ func (r *UserRepo) UpdateUserTrustScore(ctx context.Context, id string, score fl
 	})
 }
 
+// SetUserMutedUntil records when a mute expires. A nil until lifts the mute.
+func (r *UserRepo) SetUserMutedUntil(ctx context.Context, id string, until *time.Time) error {
+	muted := pgtype.Timestamptz{}
+	if until != nil {
+		muted = pgtype.Timestamptz{Time: *until, Valid: true}
+	}
+	return r.q.SetUserMutedUntil(ctx, SetUserMutedUntilParams{
+		ID:         id,
+		MutedUntil: muted,
+	})
+}
+
 func userFromRow(row User) *domain.User {
 	u := &domain.User{
 		ID:               row.ID,
@@ -125,6 +138,10 @@ func userFromRow(row User) *domain.User {
 	if row.TrustBelowSince.Valid {
 		t := row.TrustBelowSince.Time
 		u.TrustBelowSince = &t
+	}
+	if row.MutedUntil.Valid {
+		t := row.MutedUntil.Time
+		u.MutedUntil = &t
 	}
 	return u
 }

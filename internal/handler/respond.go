@@ -37,8 +37,6 @@ func statusForError(err error) (status int, message string) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):
 		return http.StatusNotFound, "not found"
-	case errors.Is(err, service.ErrReactionNotFound):
-		return http.StatusNotFound, "reaction not found"
 	case errors.Is(err, service.ErrForbidden):
 		return http.StatusForbidden, "forbidden"
 	case errors.Is(err, service.ErrRateLimit):

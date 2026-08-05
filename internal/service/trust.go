@@ -32,12 +32,6 @@ type TrustInputs interface {
 	CountReactionsReceivedByAuthorSince(ctx context.Context, authorID string, since time.Time) (int64, error)
 	CountActiveVouchesWithAvgTrust(ctx context.Context, voucheeID string) (int64, float64, error)
 	ListActivePenaltiesByUser(ctx context.Context, userID string) ([]domain.TrustPenalty, error)
-	// ListActionsByTarget supplies the moderation actions the mute clamp needs.
-	// Penalties alone cannot answer "is this user muted": domain.TrustPenalty
-	// records an amount and a decay window but not the action type, and a
-	// mute's own duration lives on the action's ExpiresAt, not on the
-	// penalty's 270-day decay. See clampForActiveMute.
-	ListActionsByTarget(ctx context.Context, targetUserID string, limit, offset int) ([]*domain.ModerationAction, error)
 }
 
 // TrustRecalcQueue enqueues a user for asynchronous trust recalculation.
@@ -120,86 +114,12 @@ func CalcCompositeTrust(ctx context.Context, inputs TrustInputs, userID string, 
 		active[i] = toActivePenalty(p)
 	}
 
-	score := CompositeScore(
+	return CompositeScore(
 		CalcTenureScore(user.JoinedAt, now),
 		CalcActivityScore(int(recentPosts), int(recentReactions)),
 		CalcVoucherScore(int(vouchCount), avgVoucherTrust),
 		CalcModerationScore(active, now),
-	)
-
-	actions, err := inputs.ListActionsByTarget(ctx, userID, muteLookbackActions, 0)
-	if err != nil {
-		return 0, fmt.Errorf("listing moderation actions: %w", err)
-	}
-
-	return clampForActiveMute(score, actions, now), nil
-}
-
-// mutedTrustScore is the score a muted user is held at: one point under the
-// posting threshold.
-//
-// Two places depend on this exact value — the enforcement step that applies a
-// mute (see planEnforcement/enforce in moderation_action.go) and the clamp that
-// stops a recalculation lifting it back. They must agree: if enforcement wrote
-// a lower number than the clamp allowed, every recalculation would quietly
-// promote muted users a few points, and if it wrote a higher one the mute would
-// never take effect at all. Sharing the constant makes that drift impossible.
-const mutedTrustScore = domain.PostingThreshold - 1
-
-// muteLookbackActions bounds how far back the mute check reads. Actions come
-// back newest first, and a mute that is still running was necessarily applied
-// recently, so it can only be missed if a user collected this many newer
-// actions inside one mute's duration. The durable fix below removes the need
-// for a bound at all.
-const muteLookbackActions = 50
-
-// clampForActiveMute holds a muted user's score below the posting threshold.
-//
-// It exists because trust doubles as the mute mechanism. planEnforcement
-// silences someone by writing their score to PostingThreshold-1, and
-// domain.User.CanPost consults nothing else — there is no muted_until field.
-// So recomputing the composite hands the score straight back and cancels the
-// mute, which is exactly what started happening once the recalculation queue
-// went live: the mute's own penalty enqueues the recalc that undoes it.
-//
-// A bigger penalty cannot substitute for this clamp. Penalties only move the
-// moderation component, which carries 30% of the weight, so an established
-// member keeps up to 70 points from tenure, activity and vouches — above the
-// threshold of 30 even with moderation at zero. See
-// TestCalcCompositeTrust_PenaltiesAloneCannotEnforceAMute.
-//
-// The clamp keys on the action's own ExpiresAt, never on the penalty's decay
-// window. A mute's duration is mandatory and moderator-chosen, while its
-// severity-3 penalty always decays over 270 days; keying on the penalty would
-// silently turn a one-hour mute into a nine-month one.
-//
-// Suspend and ban deliberately get no clamp. A suspension calls DeactivateUser
-// and a ban sets RoleBanned, and CanPost tests IsActive and Role independently
-// of the score, so both already survive a recalculation. Mute is the only
-// action enforced through the score alone.
-func clampForActiveMute(score float64, actions []*domain.ModerationAction, now time.Time) float64 {
-	if !hasActiveMute(actions, now) {
-		return score
-	}
-	return min(score, mutedTrustScore)
-}
-
-// hasActiveMute reports whether the user is currently serving a mute.
-func hasActiveMute(actions []*domain.ModerationAction, now time.Time) bool {
-	for _, a := range actions {
-		if a == nil || a.Action != domain.ActionMute {
-			continue
-		}
-		// Every mute created through TakeAction carries an expiry, because
-		// validateActionRequest makes the duration mandatory. A mute without
-		// one is malformed data, and the safe reading of malformed moderation
-		// data is that the action still stands rather than that it silently
-		// lapsed.
-		if a.ExpiresAt == nil || a.ExpiresAt.After(now) {
-			return true
-		}
-	}
-	return false
+	), nil
 }
 
 // CalcTenureScore returns a score from 0-100 based on how long the user has

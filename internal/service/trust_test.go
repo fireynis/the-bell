@@ -398,7 +398,6 @@ type fakeTrustInputs struct {
 	vouches   int64
 	avgTrust  float64
 	penalties []domain.TrustPenalty
-	actions   []*domain.ModerationAction
 
 	// sinceSeen records the window boundary the calculator asked for.
 	sinceSeen time.Time
@@ -408,7 +407,6 @@ type fakeTrustInputs struct {
 	reactionsErr error
 	vouchesErr   error
 	penaltiesErr error
-	actionsErr   error
 }
 
 func (f *fakeTrustInputs) GetUserByID(_ context.Context, _ string) (*domain.User, error) {
@@ -433,10 +431,6 @@ func (f *fakeTrustInputs) CountActiveVouchesWithAvgTrust(_ context.Context, _ st
 
 func (f *fakeTrustInputs) ListActivePenaltiesByUser(_ context.Context, _ string) ([]domain.TrustPenalty, error) {
 	return f.penalties, f.penaltiesErr
-}
-
-func (f *fakeTrustInputs) ListActionsByTarget(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
-	return f.actions, f.actionsErr
 }
 
 func TestCalcCompositeTrust(t *testing.T) {
@@ -602,234 +596,112 @@ func TestCalcCompositeTrust_AnyLookupFailureAborts(t *testing.T) {
 	}
 }
 
-// --- Mute survival ---
+// --- The trust score is not the mute mechanism ---
 
-// mutedMember is a fully established member: two years' tenure, capped
-// activity, seven vouches from perfect-trust neighbours. Their non-moderation
-// components alone total 70, which is why no penalty can silence them — see
-// TestCalcCompositeTrust_PenaltiesAloneCannotEnforceAMute.
-func mutedMember(now time.Time, actions []*domain.ModerationAction, penalties []domain.TrustPenalty) *fakeTrustInputs {
+// establishedMember is a fully established member: two years' tenure, capped
+// activity, seven vouches from perfect-trust neighbours. Their three
+// non-moderation components total 70 on their own.
+func establishedMember(now time.Time, penalties []domain.TrustPenalty) *fakeTrustInputs {
 	return &fakeTrustInputs{
-		user:      &domain.User{ID: "muted", JoinedAt: now.AddDate(-2, 0, 0)},
+		user:      &domain.User{ID: "member", JoinedAt: now.AddDate(-2, 0, 0)},
 		posts:     90,
 		reactions: 270,
 		vouches:   7,
 		avgTrust:  100,
 		penalties: penalties,
-		actions:   actions,
 	}
 }
 
-// muteAction builds a mute expiring at the given time. Every real mute has an
-// expiry: validateActionRequest makes a duration mandatory for mutes.
-func muteAction(created time.Time, expires *time.Time) *domain.ModerationAction {
-	return &domain.ModerationAction{
-		ID: "action-mute", TargetUserID: "muted", Action: domain.ActionMute,
-		Severity: 3, Reason: "off-topic", CreatedAt: created, ExpiresAt: expires,
-	}
-}
-
-// mutePenalty is the severity-3 penalty PropagatePenalties writes alongside a
-// mute: 25 points decaying over 270 days.
-func mutePenalty(created time.Time) domain.TrustPenalty {
-	decaysAt := created.AddDate(0, 0, 270)
-	return domain.TrustPenalty{
-		ID: "penalty-mute", UserID: "muted", ModerationActionID: "action-mute",
-		PenaltyAmount: 25, CreatedAt: created, DecaysAt: &decaysAt,
-	}
-}
-
-// asUser wraps a computed score in the user record the permission checks read.
-func asUser(score float64) *domain.User {
-	return &domain.User{
-		ID: "muted", Role: domain.RoleMember, IsActive: true, TrustScore: score,
-	}
-}
-
-// This is the regression. A mute is enforced solely by writing the target's
-// trust below the posting threshold — domain.User.CanPost consults nothing
-// else, and planEnforcement emits only enforceDropBelowPostingThreshold. Once
-// the recalculation queue went live, the recalc that a mute's own penalty
-// triggers recomputed the composite and handed the score straight back,
-// cancelling the mute within seconds of a moderator applying it.
-func TestCalcCompositeTrust_ActiveMuteKeepsTheUserSilenced(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	expires := now.Add(time.Hour)
-	inputs := mutedMember(now, []*domain.ModerationAction{muteAction(now, &expires)}, []domain.TrustPenalty{mutePenalty(now)})
-
-	score, err := CalcCompositeTrust(context.Background(), inputs, "muted", now)
-	if err != nil {
-		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
-	}
-
-	if user := asUser(score); user.CanPost() {
-		t.Errorf("recalculated trust = %v, and CanPost() = true — the recalculation cancelled an active mute", score)
-	}
-	if score >= domain.PostingThreshold {
-		t.Errorf("score = %v, want it held below the posting threshold %v while muted", score, domain.PostingThreshold)
-	}
-}
-
-// The mute must end when the moderator said it ends. The penalty behind it
-// decays over 270 days, so keying the clamp on the penalty rather than on the
-// action's expiry would silently turn a one-hour mute into a nine-month one.
-func TestCalcCompositeTrust_ExpiredMuteReleasesTheUser(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	// Muted an hour ago for one minute: long over, but its 270-day penalty is
-	// still very much active.
-	created := now.Add(-time.Hour)
-	expires := created.Add(time.Minute)
-	inputs := mutedMember(now, []*domain.ModerationAction{muteAction(created, &expires)}, []domain.TrustPenalty{mutePenalty(created)})
-
-	score, err := CalcCompositeTrust(context.Background(), inputs, "muted", now)
-	if err != nil {
-		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
-	}
-
-	if user := asUser(score); !user.CanPost() {
-		t.Errorf("score = %v, and CanPost() = false — an expired mute is still silencing the user", score)
-	}
-}
-
-// A warn carries a trust penalty but is not a mute, so it must not silence
-// anyone: it only moves the moderation component.
-func TestCalcCompositeTrust_WarnDoesNotSilence(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	decaysAt := now.AddDate(0, 0, 90)
-	warn := &domain.ModerationAction{
-		ID: "action-warn", TargetUserID: "muted", Action: domain.ActionWarn,
-		Severity: 1, Reason: "reminder", CreatedAt: now,
-	}
-	penalty := domain.TrustPenalty{
-		ID: "penalty-warn", UserID: "muted", ModerationActionID: "action-warn",
-		PenaltyAmount: 5, CreatedAt: now, DecaysAt: &decaysAt,
-	}
-	inputs := mutedMember(now, []*domain.ModerationAction{warn}, []domain.TrustPenalty{penalty})
-
-	score, err := CalcCompositeTrust(context.Background(), inputs, "muted", now)
-	if err != nil {
-		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
-	}
-	if user := asUser(score); !user.CanPost() {
-		t.Errorf("score = %v, and CanPost() = false — a warn must not silence anyone", score)
-	}
-}
-
-// Penalties can never enforce a mute on their own, whatever their size. They
-// only reduce the moderation component, which carries 30% of the weight, so an
+// Penalties alone can never enforce a mute, whatever their size. They reduce
+// only the moderation component, which carries 30% of the weight, so an
 // established member keeps up to 70 points from tenure, activity and vouches —
-// well clear of the posting threshold. This is why the clamp has to exist
-// rather than the penalty simply being made larger.
-func TestCalcCompositeTrust_PenaltiesAloneCannotEnforceAMute(t *testing.T) {
+// well clear of the posting threshold of 30.
+//
+// This is the reasoning that justified domain.User.MutedUntil. Silencing
+// someone by driving their trust score down cannot work for exactly the members
+// most likely to be moderated, so a mute has to be its own piece of state
+// rather than a number the trust model is free to recompute. Keep this test:
+// if it ever starts failing, the weighting has shifted enough that somebody
+// will be tempted to reach for the score again.
+func TestCalcCompositeTrust_PenaltiesAloneCannotSilenceAnEstablishedMember(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	// No mute action, but a penalty far larger than any severity produces.
-	inputs := mutedMember(now, nil, []domain.TrustPenalty{
-		{ID: "huge", UserID: "muted", PenaltyAmount: 1000, CreatedAt: now},
+	// A penalty far larger than any severity can produce.
+	inputs := establishedMember(now, []domain.TrustPenalty{
+		{ID: "huge", UserID: "member", PenaltyAmount: 1000, CreatedAt: now},
 	})
 
-	score, err := CalcCompositeTrust(context.Background(), inputs, "muted", now)
+	score, err := CalcCompositeTrust(context.Background(), inputs, "member", now)
 	if err != nil {
 		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
-	}
-	if score < domain.PostingThreshold {
-		t.Fatalf("score = %v: a penalty alone dropped the user below the threshold, "+
-			"which would undermine the reason the clamp exists", score)
 	}
 	if score != 70 {
 		t.Errorf("score = %v, want 70 — the three non-moderation components at full marks", score)
 	}
+	if score < domain.PostingThreshold {
+		t.Fatalf("score = %v: a penalty alone silenced the user, which would undercut "+
+			"the reason MutedUntil exists", score)
+	}
 }
 
-func TestClampForActiveMute(t *testing.T) {
+// The composite must not special-case mutes. Muting is enforced by
+// domain.User.MutedUntil, which CanPost consults independently of the score, so
+// the calculation stays a pure function of the four components and a muted user
+// scores exactly what an unmuted one with the same history would.
+//
+// An earlier interim fix clamped the score for muted users, which meant two
+// mute mechanisms were live at once. This pins the separation so that clamp
+// cannot creep back in.
+func TestCalcCompositeTrust_DoesNotSpecialCaseMutedUsers(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	future := now.Add(time.Hour)
-	past := now.Add(-time.Hour)
-	const capped = domain.PostingThreshold - 1
-
-	tests := []struct {
-		name    string
-		score   float64
-		actions []*domain.ModerationAction
-		want    float64
-	}{
-		{"no moderation history leaves the score alone", 92.5, nil, 92.5},
-		{
-			"an unexpired mute caps the score below the posting threshold",
-			92.5, []*domain.ModerationAction{muteAction(now, &future)}, capped,
-		},
-		{
-			"an expired mute releases the score",
-			92.5, []*domain.ModerationAction{muteAction(past, &past)}, 92.5,
-		},
-		{
-			// A mute with no expiry cannot come from TakeAction. Treating it as
-			// lapsed would let malformed data silently un-mute someone.
-			"a mute with no expiry is treated as still running",
-			92.5, []*domain.ModerationAction{muteAction(now, nil)}, capped,
-		},
-		{
-			"a warn never caps",
-			92.5,
-			[]*domain.ModerationAction{{Action: domain.ActionWarn, CreatedAt: now}},
-			92.5,
-		},
-		{
-			// Suspend and ban are enforced through IsActive and Role, not the
-			// score, so they must not disturb it here.
-			"a suspension does not cap the score",
-			92.5,
-			[]*domain.ModerationAction{{Action: domain.ActionSuspend, CreatedAt: now, ExpiresAt: &future}},
-			92.5,
-		},
-		{
-			"a ban does not cap the score",
-			92.5,
-			[]*domain.ModerationAction{{Action: domain.ActionBan, CreatedAt: now}},
-			92.5,
-		},
-		{
-			"one live mute among expired history still caps",
-			92.5,
-			[]*domain.ModerationAction{
-				{Action: domain.ActionWarn, CreatedAt: now},
-				muteAction(past, &past),
-				muteAction(now, &future),
-			},
-			capped,
-		},
-		{
-			// The cap is an upper bound, not an assignment: someone already
-			// further down must not be lifted up to it.
-			"a score already below the cap is not raised",
-			10, []*domain.ModerationAction{muteAction(now, &future)}, 10,
-		},
-		{
-			"a nil action in the list is skipped rather than panicking",
-			92.5, []*domain.ModerationAction{nil, muteAction(now, &future)}, capped,
-		},
-		{
-			// The instant a mute expires it stops applying; ExpiresAt is
-			// exclusive.
-			"a mute expiring exactly now has lapsed",
-			92.5, []*domain.ModerationAction{muteAction(past, &now)}, 92.5,
-		},
+	// The severity-3 penalty a mute writes: 25 points over 270 days.
+	decaysAt := now.AddDate(0, 0, 270)
+	penalties := []domain.TrustPenalty{
+		{ID: "penalty-mute", UserID: "member", PenaltyAmount: 25, CreatedAt: now, DecaysAt: &decaysAt},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := clampForActiveMute(tt.score, tt.actions, now); got != tt.want {
-				t.Errorf("clampForActiveMute() = %v, want %v", got, tt.want)
-			}
-		})
+	unmuted := establishedMember(now, penalties)
+	muted := establishedMember(now, penalties)
+	mutedUntil := now.Add(time.Hour)
+	muted.user.MutedUntil = &mutedUntil
+
+	unmutedScore, err := CalcCompositeTrust(context.Background(), unmuted, "member", now)
+	if err != nil {
+		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
+	}
+	mutedScore, err := CalcCompositeTrust(context.Background(), muted, "member", now)
+	if err != nil {
+		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
+	}
+
+	if mutedScore != unmutedScore {
+		t.Errorf("muted score = %v, unmuted score = %v — the composite is special-casing mutes",
+			mutedScore, unmutedScore)
+	}
+	// 70 from the other components, plus (100-25)*0.30 = 22.5.
+	if want := 92.5; mutedScore != want {
+		t.Errorf("score = %v, want %v — the four components and nothing else", mutedScore, want)
+	}
+
+	// The score alone leaves them able to post; MutedUntil is what stops them.
+	muted.user.TrustScore = mutedScore
+	muted.user.Role = domain.RoleMember
+	muted.user.IsActive = true
+	if !muted.user.IsMuted(now) {
+		t.Fatal("test setup: expected the user to be muted")
+	}
+	if muted.user.CanPost(now) {
+		t.Error("CanPost() = true for a muted user")
+	}
+	if muted.user.TrustScore < domain.PostingThreshold {
+		t.Errorf("trust = %v: the score is below the posting threshold, so this test would "+
+			"pass even if MutedUntil were broken", muted.user.TrustScore)
 	}
 }
 
-// Suspend and ban were checked before deciding not to clamp them, rather than
-// assumed. Both are enforced through fields the recalculation never touches, so
-// a restored score cannot revive either one. If that stops being true, this
-// test fails and the clamp needs extending.
+// Suspend and ban are enforced through fields the recalculation never touches,
+// so a restored score cannot revive either one.
 func TestSuspendAndBanSurviveARestoredScore(t *testing.T) {
-	// The most generous score the composite can produce.
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	const restored = 100.0
 
 	tests := []struct {
@@ -848,29 +720,12 @@ func TestSuspendAndBanSurviveARestoredScore(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.user.CanPost() {
+			if tt.user.CanPost(now) {
 				t.Error("CanPost() = true after a full-score recalculation")
 			}
 			if tt.user.CanVouch() {
 				t.Error("CanVouch() = true after a full-score recalculation")
 			}
 		})
-	}
-}
-
-// The mute check is a required input, not a best-effort one: silently scoring a
-// user as unmuted because the lookup failed would release them.
-func TestCalcCompositeTrust_ActionLookupFailureAborts(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	dbDown := errors.New("db connection lost")
-	inputs := mutedMember(now, nil, nil)
-	inputs.actionsErr = dbDown
-
-	score, err := CalcCompositeTrust(context.Background(), inputs, "muted", now)
-	if !errors.Is(err, dbDown) {
-		t.Fatalf("error = %v, want it to wrap %v", err, dbDown)
-	}
-	if score != 0 {
-		t.Errorf("score = %v, want 0 alongside the error", score)
 	}
 }

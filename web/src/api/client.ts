@@ -3,6 +3,7 @@ import type {
   ActionHistoryResponse,
   ApiError,
   CreatePostRequest,
+  CreateVouchRequest,
   ModerationQueueResponse,
   Post,
   Report,
@@ -10,6 +11,9 @@ import type {
   TownConfig,
   UpdateProfileRequest,
   User,
+  UserPostsResponse,
+  Vouch,
+  VouchesResponse,
 } from "./types";
 
 class ApiClient {
@@ -90,7 +94,26 @@ export const api = new ApiClient();
 // gets a request body type-checked against the shape the server parses.
 export const userApi = {
   getMe: () => api.get<User>("/me"),
+  getProfile: () => api.get<User>("/users/me"),
+  getById: (userId: string) => api.get<User>(`/users/${userId}`),
+  listPosts: (userId: string, limit: number) =>
+    api.get<UserPostsResponse>(`/users/${userId}/posts?limit=${limit}`),
   updateProfile: (req: UpdateProfileRequest) => api.put<User>("/users/me", req),
+};
+
+export const vouchApi = {
+  listForUser: (userId: string) => api.get<VouchesResponse>(`/users/${userId}/vouches`),
+
+  // NOTE: as of this writing neither of the two below has a server route.
+  // VouchService.Vouch and VouchService.Revoke exist in
+  // internal/service/vouch.go but nothing in internal/server/routes.go reaches
+  // them — the /v1/vouches group is the council approval flow (GET /pending,
+  // POST /approve/{id}) and is guarded to RoleCouncil. These paths follow the
+  // design doc and the service signatures; confirm them against the handler
+  // once it lands, because the two disagree about revoke: the design doc keys
+  // it by vouchee id, while VouchService.Revoke takes a vouch id.
+  create: (req: CreateVouchRequest) => api.post<Vouch>("/vouches", req),
+  revoke: (vouchId: string) => api.delete(`/vouches/${vouchId}`),
 };
 
 export const postApi = {

@@ -4,14 +4,20 @@ package app
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/fireynis/the-bell/internal/middleware"
+	"github.com/fireynis/the-bell/internal/server"
 	"github.com/fireynis/the-bell/internal/testsupport"
 )
 
@@ -197,5 +203,110 @@ func TestBuild_WithoutRedisModerationStillSucceeds(t *testing.T) {
 	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("vouchee-noredis"), domain.RoleMember, 50.0)
 	if _, err := deps.VouchService.Vouch(ctx, voucher.ID, vouchee.ID); err != nil {
 		t.Fatalf("Vouch() without Redis: %v", err)
+	}
+}
+
+// The P0, end to end: a mute must survive the recalculation its own penalty
+// triggers.
+//
+// This asserts on both halves so that it can only pass for the right reason.
+// The mute is enforced by domain.User.MutedUntil, which CanPost consults
+// independently of the score, so after the recalculation the trust score must
+// be back ABOVE the posting threshold while CanPost is still false. Asserting
+// only "cannot post" would pass just as well if the score were being clamped
+// again, or if enforcement had quietly gone back to writing a low number —
+// which is exactly the interim mechanism this replaced.
+func TestBuild_MuteSurvivesTrustRecalculation(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	deps := buildTestDeps(t, pool, true)
+	ctx := startTrustWorker(t, deps)
+
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("mod-mute"), domain.RoleModerator, 90.0)
+	const seeded = 100.0
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("muted"), domain.RoleMember, seeded)
+
+	// The target has to be an established member. A brand-new account
+	// recomputes to 22.5 — already under the threshold — so the mute would
+	// appear to hold for the wrong reason. Two years of tenure lifts the
+	// recomputed score to 37.5, above the threshold, which is the case that
+	// needs MutedUntil to be doing the work.
+	if _, err := pool.Exec(ctx,
+		"UPDATE users SET joined_at = $2 WHERE id = $1", target.ID, time.Now().AddDate(-2, 0, 0),
+	); err != nil {
+		t.Fatalf("backdating target tenure: %v", err)
+	}
+
+	oneHour := int64(3600)
+	if _, err := deps.ModerationService.TakeAction(
+		ctx, moderator.ID, target.ID, domain.ActionMute, 3, "off-topic", &oneHour,
+	); err != nil {
+		t.Fatalf("TakeAction(mute) unexpected error: %v", err)
+	}
+
+	// Muting no longer touches the score, so any movement is the recalculation.
+	got := awaitTrustChange(t, deps, target.ID, seeded)
+
+	user, err := deps.UserService.GetByID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("reading back muted user: %v", err)
+	}
+	now := time.Now()
+
+	if !user.IsMuted(now) {
+		t.Fatalf("MutedUntil = %v: the mute did not survive the recalculation", user.MutedUntil)
+	}
+	if user.CanPost(now) {
+		t.Errorf("CanPost() = true for a muted user (trust %v)", got)
+	}
+	// The half that proves it is MutedUntil doing the work, not a low score.
+	if got < domain.PostingThreshold {
+		t.Errorf("trust = %v, below the posting threshold %v — this test would pass even "+
+			"if MutedUntil were broken, so the score is being used to enforce the mute again",
+			got, domain.PostingThreshold)
+	}
+}
+
+// PUT /admin/config has to reach a handler that actually holds a transactor.
+// The trap this guards is a variadic or optional wiring that keeps everything
+// compiling while the handler receives nothing at runtime: the endpoint would
+// still answer 204, and the atomicity it promises would silently not exist.
+// Driving the route through the options Build really returns is the only way to
+// tell those apart.
+func TestBuild_ConfigUpdateIsWiredThroughTheRealRouter(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	deps := buildTestDeps(t, pool, false)
+
+	council := &domain.User{
+		ID:       uuid.Must(uuid.NewV7()).String(),
+		Role:     domain.RoleCouncil,
+		IsActive: true,
+	}
+	// Applied after Build's own WithAuth, so it wins: the route is council-only
+	// and this test is about the handler behind the guard, not the guard.
+	opts := append(deps.ServerOptions, server.WithAuth(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(middleware.WithUser(r.Context(), council)))
+		})
+	}))
+	srv := server.New(deps.Config, pool, testsupport.DiscardLogger(), opts...)
+
+	body := strings.NewReader(`{"town_name":"Bellville","accent_color":"#c62828"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/config", body)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+
+	stored, err := deps.ConfigRepo.ListTownConfig(context.Background())
+	if err != nil {
+		t.Fatalf("reading back town config: %v", err)
+	}
+	if stored["town_name"] != "Bellville" {
+		t.Errorf("town_name = %q, want %q", stored["town_name"], "Bellville")
+	}
+	if stored["accent_color"] != "#c62828" {
+		t.Errorf("accent_color = %q, want %q", stored["accent_color"], "#c62828")
 	}
 }

@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -482,5 +483,110 @@ func TestUserHandler_ListVouches_GivenError(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// --- muted_until exposure ---
+
+// A muted user must be able to see why they cannot post.
+func TestUserHandler_GetMe_ShowsOwnMute(t *testing.T) {
+	// Relative to the wall clock: GetMe compares against time.Now(), so a fixed
+	// date would silently start passing or failing as real time moved past it.
+	until := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	user := testUser()
+	user.MutedUntil = &until
+	h := handler.NewUserHandler(nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, user)
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		MutedUntil string `json:"muted_until"`
+	}
+	decodeBody(t, rec, &resp)
+	if want := until.Format(time.RFC3339); resp.MutedUntil != want {
+		t.Errorf("muted_until = %q, want %q", resp.MutedUntil, want)
+	}
+}
+
+// An expired mute is reported as no mute at all, so the client needs no clock
+// of its own to interpret the field.
+func TestUserHandler_GetMe_OmitsExpiredAndAbsentMutes(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+
+	tests := []struct {
+		name  string
+		muted *time.Time
+	}{
+		{"never muted", nil},
+		{"mute already expired", &past},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user := testUser()
+			user.MutedUntil = tt.muted
+			h := handler.NewUserHandler(nil, nil, nil)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+			req = withUser(req, user)
+			rec := httptest.NewRecorder()
+
+			h.GetMe(rec, req)
+
+			if strings.Contains(rec.Body.String(), "muted_until") {
+				t.Errorf("body = %s, want no muted_until field", rec.Body.String())
+			}
+		})
+	}
+}
+
+// A mute is between the user and the moderators. It must not appear on another
+// user's profile, and — the easy one to miss — domain.User is serialized whole
+// by the pending-users list, so the struct must not carry a public json tag
+// either.
+func TestUserHandler_GetByID_NeverExposesAnotherUsersMute(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	target := testUser()
+	target.ID = "user-2"
+	target.MutedUntil = &until
+
+	h := handler.NewUserHandler(&stubProfileService{user: target}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/user-2", nil)
+	req = withChiURLParam(req, "id", "user-2")
+	rec := httptest.NewRecorder()
+
+	h.GetByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "muted") {
+		t.Errorf("another user's profile leaked their mute: %s", rec.Body.String())
+	}
+}
+
+// domain.User is marshalled directly by the pending-users endpoint, so a json
+// tag on the struct would publish every user's mute there. This asserts on the
+// struct rather than on a handler, because the struct is what would leak.
+func TestDomainUser_DoesNotSerializeMutedUntil(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	user := testUser()
+	user.MutedUntil = &until
+
+	data, err := json.Marshal(user)
+	if err != nil {
+		t.Fatalf("marshalling user: %v", err)
+	}
+	if strings.Contains(string(data), "muted") {
+		t.Errorf("domain.User serializes its mute: %s", data)
 	}
 }

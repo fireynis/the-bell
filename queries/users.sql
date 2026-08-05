@@ -33,6 +33,12 @@ WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE;
 -- name: DeactivateUser :exec
 UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1;
 
+-- name: SetUserMutedUntil :exec
+-- Passing NULL lifts the mute. Setting it always overwrites rather than
+-- extending, so a moderator issuing a shorter mute over a longer one gets the
+-- length they chose.
+UPDATE users SET muted_until = $2, updated_at = NOW() WHERE id = $1;
+
 -- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE;

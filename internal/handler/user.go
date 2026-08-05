@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -61,6 +62,15 @@ type userProfileResponse struct {
 	JoinedAt    string  `json:"joined_at"`
 }
 
+// ownProfileResponse is the profile a user sees of themselves. It carries the
+// moderation state the user is entitled to know about but nobody else is.
+type ownProfileResponse struct {
+	userProfileResponse
+	// MutedUntil is omitted entirely when the user is not muted, so the field's
+	// presence is the answer to "am I muted?".
+	MutedUntil string `json:"muted_until,omitempty"`
+}
+
 func toProfileResponse(u *domain.User) userProfileResponse {
 	return userProfileResponse{
 		ID:          u.ID,
@@ -74,6 +84,21 @@ func toProfileResponse(u *domain.User) userProfileResponse {
 	}
 }
 
+// toOwnProfileResponse builds the self view. A mute is between the user and the
+// moderators: the user must be able to see why they cannot post, and no other
+// caller has any business knowing, so muted_until appears here and in no other
+// response shape.
+//
+// An expired mute is reported as no mute at all rather than as a past
+// timestamp, so the client needs no clock of its own to interpret the field.
+func toOwnProfileResponse(u *domain.User, now time.Time) ownProfileResponse {
+	resp := ownProfileResponse{userProfileResponse: toProfileResponse(u)}
+	if u.IsMuted(now) {
+		resp.MutedUntil = u.MutedUntil.Format(timestampFormat)
+	}
+	return resp
+}
+
 // GetMe handles GET /api/v1/users/me.
 func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
@@ -82,7 +107,7 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, toProfileResponse(user))
+	JSON(w, http.StatusOK, toOwnProfileResponse(user, time.Now()))
 }
 
 // UpdateMe handles PUT /api/v1/users/me.
@@ -105,7 +130,8 @@ func (h *UserHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, toProfileResponse(updated))
+	// Also a self view, so it carries the same moderation state GetMe does.
+	JSON(w, http.StatusOK, toOwnProfileResponse(updated, time.Now()))
 }
 
 // GetByID handles GET /api/v1/users/{id}.

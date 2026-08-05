@@ -75,7 +75,7 @@ func TestNewCouncilUser_TimestampsShareOneClockReading(t *testing.T) {
 func TestNewCouncilUser_ClearsEveryPermissionGate(t *testing.T) {
 	user := newCouncilUser("user-1", "kratos-1", "alice@town.example", time.Now())
 
-	if !user.CanPost() {
+	if !user.CanPost(time.Now()) {
 		t.Error("CanPost() = false, want a council member able to post")
 	}
 	if !user.CanVouch() {

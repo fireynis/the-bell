@@ -93,6 +93,7 @@ type User struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	TrustBelowSince  pgtype.Timestamptz `json:"trust_below_since"`
+	MutedUntil       pgtype.Timestamptz `json:"muted_until"`
 }
 
 type Vouch struct {

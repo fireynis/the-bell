@@ -21,7 +21,6 @@ type fakeTrustInputs struct {
 	vouches   int64
 	avgTrust  float64
 	penalties []domain.TrustPenalty
-	actions   []*domain.ModerationAction
 	err       error
 	// errForUser fails the lookup for specific users only. It is set once
 	// before the worker starts: a loop test must not mutate this fake while
@@ -65,10 +64,6 @@ func (f *fakeTrustInputs) CountActiveVouchesWithAvgTrust(_ context.Context, _ st
 
 func (f *fakeTrustInputs) ListActivePenaltiesByUser(_ context.Context, _ string) ([]domain.TrustPenalty, error) {
 	return f.penalties, nil
-}
-
-func (f *fakeTrustInputs) ListActionsByTarget(_ context.Context, _ string, _, _ int) ([]*domain.ModerationAction, error) {
-	return f.actions, nil
 }
 
 // stubTrustScoreUpdater records calls and signals each one, so a test driving

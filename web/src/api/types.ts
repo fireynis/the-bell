@@ -51,6 +51,11 @@ export interface VouchesResponse {
   given: Vouch[];
 }
 
+/** Body of POST /api/v1/vouches; mirrors the vouchee argument of VouchService.Vouch. */
+export interface CreateVouchRequest {
+  vouchee_id: string;
+}
+
 export interface UserPostsResponse {
   posts: Post[];
 }

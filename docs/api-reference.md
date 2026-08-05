@@ -123,9 +123,22 @@ Returns the authenticated user's profile. Does not require the user to be active
   "trust_score": 85.5,
   "role": "member",
   "is_active": true,
-  "joined_at": "2025-06-15T10:30:00Z"
+  "joined_at": "2025-06-15T10:30:00Z",
+  "muted_until": "2025-07-02T16:00:00Z"
 }
 ```
+
+##### `muted_until`
+
+`muted_until` appears **only on the endpoints that return your own profile** —
+this one, `GET /api/v1/users/me`, and the response to `PUT /api/v1/users/me`. It
+is never present on another user's profile: a mute is between that user and the
+moderators.
+
+The field is **omitted entirely** when there is no mute in force, so its
+presence is the whole answer to "am I muted?". A mute whose time has already
+passed is reported the same way as no mute at all, so a client needs no clock of
+its own to interpret the field.
 
 ---
 
@@ -138,7 +151,7 @@ Returns the authenticated user's profile. Requires the user to be active.
 **Auth**: Required
 **Role**: Any active user
 
-**Response** `200 OK`: Same shape as `GET /api/v1/me`.
+**Response** `200 OK`: Same shape as `GET /api/v1/me`, including `muted_until`.
 
 ---
 
@@ -165,7 +178,8 @@ Updates the authenticated user's profile.
 | `bio` | string | No | Max 500 characters |
 | `avatar_url` | string | No | URL string |
 
-**Response** `200 OK`: Updated user profile.
+**Response** `200 OK`: Updated user profile, including `muted_until` — this is
+a self view, so it carries the same fields `GET /api/v1/users/me` does.
 
 ```bash
 curl -X PUT https://bell.example.com/api/v1/users/me \
@@ -183,13 +197,17 @@ Returns a public user profile by ID.
 **Auth**: None
 **Role**: None
 
-**Response** `200 OK`: User profile object.
+**Response** `200 OK`: User profile object. This response **never** includes
+`muted_until`, whether or not the user is muted — see the note under
+`GET /api/v1/me`.
 
 ---
 
 #### `GET /api/v1/users/{id}/posts`
 
-Returns posts by a specific user.
+Returns a user's **visible** posts. Posts the author deleted
+(`removed_by_author`) and posts a moderator removed (`removed_by_mod`) are
+excluded, the same way they are excluded from the feed.
 
 **Auth**: None
 **Role**: None
@@ -299,6 +317,16 @@ Returns a single post by ID.
 **Role**: None
 
 **Response** `200 OK`: Post object.
+**Response** `404 Not Found`: No post with that ID.
+
+Unlike the feed and the profile listing, this endpoint has **no `visible`
+filter**: a removed post is still returned by ID, with its `status` set to
+`removed_by_author` or `removed_by_mod`. That is deliberate — it is how an
+author or a moderator can still retrieve a post that has been taken down.
+
+A moderator's `removal_reason` is **never serialized on any response**. It is a
+private note and is not part of the post object on the wire, on this endpoint or
+any other.
 
 ---
 
@@ -335,6 +363,20 @@ curl -X POST https://bell.example.com/api/v1/posts \
 | `image` | file | No | JPEG, PNG, or WebP. Max 5 MB |
 
 **Response** `201 Created`: The created post object.
+**Response** `403 Forbidden`: `posting not allowed`.
+
+A `403` means the author failed at least one posting gate. All of these produce
+it, and **no post is written** in any case:
+
+- an active **mute** (see `muted_until` under `GET /api/v1/me`)
+- role `pending` or `banned`
+- a deactivated account (suspended)
+- trust score below 30
+
+The check runs twice: once in the handler, so a rejected request is turned away
+before its upload is parsed, and once inside the post service, which is the
+authoritative one. A client cannot tell the two apart — both return the same
+`403`.
 
 ---
 
@@ -426,7 +468,9 @@ Removes one of your reactions from a post.
 **Response** `204 No Content`
 
 Removing a reaction that is not there also returns `204` — the delete matches no
-rows and reports no error.
+rows and reports no error. The endpoint is idempotent: a reaction is a toggle,
+so a retry or a double-tap is ordinary use, and there is **no `404`** for a
+reaction you never left.
 
 ---
 
@@ -619,6 +663,27 @@ Validation rules:
 - Target user must exist
 - Bans cannot have a duration
 - Mutes and suspends require a duration
+
+A mute sent without `duration_seconds` is rejected with
+`mute requires a duration; use suspend for an indefinite restriction` — an
+indefinite mute is a suspension, and suspend is the action for that.
+
+**What each action does to the target**, beyond the trust penalty it propagates:
+
+| Action | Immediate effect |
+|--------|------------------|
+| `warn` | None. The penalty is the whole action |
+| `mute` | Sets `muted_until` to the action's `expires_at`, blocking `POST /api/v1/posts` until then. **Does not change the trust score** |
+| `suspend` | Deactivates the account (`is_active` becomes false) |
+| `ban` | Sets the role to `banned` and the trust score to 0 |
+
+The mute's end time is the one the moderator chose: `users.muted_until` and the
+action's `expires_at` are the same instant, so the two cannot disagree. A mute
+applies even to a user already below the posting threshold — their score may
+recover before the mute expires.
+
+Mutes cannot currently be lifted early through the API; a mute runs for the
+duration it was given.
 
 **Response** `201 Created`:
 

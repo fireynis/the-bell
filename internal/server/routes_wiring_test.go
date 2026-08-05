@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -444,5 +445,91 @@ func TestKratosProxyRegistration_UnusableURLIsRejectedAtLoad(t *testing.T) {
 
 	if _, err := config.Load(); err == nil {
 		t.Fatalf("config.Load() accepted %q; the server-level fallback is not a substitute for failing fast", unusableKratosURL)
+	}
+}
+
+// reactingEnricher reports that the caller has bell-reacted to every post it
+// is asked about, so a populated user_reactions field is unambiguous.
+type reactingEnricher struct{}
+
+func (reactingEnricher) BatchCountByPosts(_ context.Context, ids []string) (map[string]map[domain.ReactionType]int, error) {
+	counts := make(map[string]map[domain.ReactionType]int, len(ids))
+	for _, id := range ids {
+		counts[id] = map[domain.ReactionType]int{domain.ReactionBell: 1}
+	}
+	return counts, nil
+}
+
+func (reactingEnricher) BatchGetUserReactions(_ context.Context, _ string, ids []string) (map[string][]domain.ReactionType, error) {
+	reactions := make(map[string][]domain.ReactionType, len(ids))
+	for _, id := range ids {
+		reactions[id] = []domain.ReactionType{domain.ReactionBell}
+	}
+	return reactions, nil
+}
+
+// feedPostRepo returns one visible post, so the feed has something to enrich.
+type feedPostRepo struct{ stubPostRepo }
+
+func (feedPostRepo) ListPosts(context.Context, string, int) ([]*domain.Post, error) {
+	return []*domain.Post{{ID: "p1", AuthorID: "u1", Body: "hello", Status: domain.PostVisible}}, nil
+}
+
+// newFeedServer wires a server whose optional-auth middleware injects viewer,
+// standing in for a request that arrived with a valid session cookie. A nil
+// viewer models a logged-out reader.
+func newFeedServer(t *testing.T, viewer *domain.User) *Server {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	return New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithPostService(service.NewPostService(feedPostRepo{}, nil)),
+		WithUserService(service.NewUserService(stubUserRepo{}, nil)),
+		WithReactionRepo(reactingEnricher{}),
+		WithOptionalAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if viewer != nil {
+					r = r.WithContext(middleware.WithUser(r.Context(), viewer))
+				}
+				next.ServeHTTP(w, r)
+			})
+		}),
+	)
+}
+
+// The regression test for a live, user-visible bug: enrichPosts reads the
+// caller from the request context, but GET /v1/posts carried no auth
+// middleware at all, so it always saw an anonymous reader and never attached
+// user_reactions. PostCard reads exactly that field, so a member's own
+// reactions rendered as inactive on every refresh. The batch query and the
+// enrichment were both correct and both tested — merely unreachable.
+func TestFeedCarriesTheCallersOwnReactions(t *testing.T) {
+	viewer := &domain.User{ID: "u1", Role: domain.RoleMember, IsActive: true}
+	srv := newFeedServer(t, viewer)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_reactions") {
+		t.Errorf("feed carried no user_reactions for a signed-in caller: %s", rec.Body.String())
+	}
+}
+
+// The same route must still serve a logged-out reader, without the
+// personalized field.
+func TestFeedStillServesAnonymousReaders(t *testing.T) {
+	srv := newFeedServer(t, nil)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "user_reactions") {
+		t.Errorf("anonymous feed carried user_reactions: %s", rec.Body.String())
 	}
 }

@@ -13,7 +13,7 @@ Trust-based micro-blogging platform for municipalities. Go backend (chi router, 
 
 ## Key Paths
 
-- `internal/app/` — the single dependency-wiring graph: `Build(cfg, pool, rdb, logger) (*Deps, error)`. Use it instead of hand-wiring repos and services; `cmd/bell` already does, and the integration harness is moving to it. Four divergent copies of this wiring is why the test server once silently lacked reactions, uploads, rate limiting and SSE
+- `internal/app/` — the single dependency-wiring graph: `Build(cfg, pool, rdb, logger) (*Deps, error)`. Use it instead of hand-wiring repos and services; both `cmd/bell` and the integration harness go through it. Four divergent copies of this wiring is why the test server once silently lacked reactions, uploads, rate limiting and SSE
 - `internal/service/` — business logic (post, user, vouch, moderation, voting, role checker, stats)
 - `internal/handler/` — HTTP handlers (thin layer, delegates to services)
 - `internal/httpjson/` — the one JSON response writer; handler and middleware both delegate to it so the error bytes on the wire cannot drift apart between layers
@@ -38,9 +38,10 @@ cd web && npx tsc -b                     # type-check frontend (NOT --noEmit)
 docker compose up -d --build             # deploy (from project root)
 ```
 
-Integration tests are no longer confined to `internal/integration/` — they also
-live in `internal/repository/postgres/` and `internal/middleware/`, so scope the
-tag to `./...` rather than one directory or you will silently skip most of them.
+Integration tests are no longer confined to `internal/integration/`. They live
+in four packages — `internal/app`, `internal/integration`, `internal/middleware`
+and `internal/repository/postgres` — so scope the tag to `./...` rather than one
+directory or you will silently skip most of them.
 
 **Use `tsc -b`, never `tsc --noEmit`.** `web/tsconfig.json` is a solution file
 (`"files": []` plus project references), so plain `tsc` has no inputs and exits

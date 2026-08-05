@@ -330,3 +330,124 @@ func assertErrorBody(t *testing.T, rec *httptest.ResponseRecorder, wantMsg strin
 		t.Errorf("error = %q, want %q", body["error"], wantMsg)
 	}
 }
+
+// --- OptionalAuth tests ---
+
+// optionalAuthCase runs one request through OptionalAuth and reports the status
+// and whichever user reached the inner handler.
+func optionalAuthCase(t *testing.T, kratosHandler http.HandlerFunc, finder *mockUserFinder, cookie string) (*httptest.ResponseRecorder, *domain.User) {
+	t.Helper()
+
+	kratosServer := httptest.NewServer(kratosHandler)
+	t.Cleanup(kratosServer.Close)
+
+	var gotUser *domain.User
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, ok := middleware.UserFromContext(r.Context()); ok {
+			gotUser = u
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"posts":[]}`))
+	})
+
+	handler := middleware.OptionalAuth(newKratosClient(kratosServer.URL), finder, testLogger())(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	return rec, gotUser
+}
+
+// The whole point of the optional variant: a reader with no session still gets
+// the page. Rejecting here would make the public town feed unreadable to the
+// logged-out visitors it exists for.
+func TestOptionalAuth_NoCookieServesAnonymously(t *testing.T) {
+	rec, gotUser := optionalAuthCase(t, http.NotFoundHandler().ServeHTTP, &mockUserFinder{}, "")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser != nil {
+		t.Errorf("user in context = %v, want none", gotUser)
+	}
+	if rec.Body.String() != `{"posts":[]}` {
+		t.Errorf("body = %q, want the inner handler's response", rec.Body.String())
+	}
+}
+
+// A garbage or expired cookie means "no user", never a rejection — this is the
+// fail-open property, and it is the one a later change is most likely to undo.
+func TestOptionalAuth_GarbageCookieStillServesTheFeed(t *testing.T) {
+	rejectSession := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+
+	rec, gotUser := optionalAuthCase(t, rejectSession, &mockUserFinder{}, "ory_session=not-a-real-session")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser != nil {
+		t.Errorf("user in context = %v, want none", gotUser)
+	}
+	if rec.Body.String() != `{"posts":[]}` {
+		t.Errorf("body = %q, want the inner handler's response", rec.Body.String())
+	}
+}
+
+// A valid session with no matching local user is the same story: anonymous,
+// not rejected.
+func TestOptionalAuth_UnknownIdentityServesAnonymously(t *testing.T) {
+	validSession := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, kratosSessionJSON("kratos-unknown"))
+	})
+
+	rec, gotUser := optionalAuthCase(t, validSession, &mockUserFinder{user: nil}, "ory_session=valid")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser != nil {
+		t.Errorf("user in context = %v, want none", gotUser)
+	}
+}
+
+// A failed lookup degrades to the anonymous view rather than 500ing the whole
+// public page. The caller sees less, not nothing.
+func TestOptionalAuth_LookupFailureServesAnonymously(t *testing.T) {
+	validSession := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, kratosSessionJSON("kratos-456"))
+	})
+
+	rec, gotUser := optionalAuthCase(t, validSession, &mockUserFinder{err: fmt.Errorf("db down")}, "ory_session=valid")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser != nil {
+		t.Errorf("user in context = %v, want none", gotUser)
+	}
+}
+
+// And when the session is good, the user must actually arrive — otherwise the
+// personalization this exists for never happens.
+func TestOptionalAuth_ValidSessionPopulatesTheUser(t *testing.T) {
+	validSession := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, kratosSessionJSON("kratos-456"))
+	})
+	user := &domain.User{
+		ID:               "user-1",
+		KratosIdentityID: "kratos-456",
+		Role:             domain.RoleModerator,
+		IsActive:         true,
+	}
+
+	rec, gotUser := optionalAuthCase(t, validSession, &mockUserFinder{user: user}, "ory_session=valid")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser == nil {
+		t.Fatal("expected the signed-in user in context, got none")
+	}
+	if gotUser.ID != "user-1" || gotUser.Role != domain.RoleModerator {
+		t.Errorf("user = %+v, want user-1 as moderator", gotUser)
+	}
+}

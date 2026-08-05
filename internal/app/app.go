@@ -60,17 +60,22 @@ type Deps struct {
 
 // trustInputs assembles the repositories service.TrustInputs spans.
 //
-// The interface reaches across users, posts, reactions, vouches, penalties and
-// moderation actions, so no single repository satisfies it. Embedding promotes
-// each repository's methods onto one value rather than inventing a repository
-// type that would have to live in the persistence layer.
+// The interface reaches across users, posts, reactions, vouches and penalties —
+// the four scoring components and their decaying penalties — so no single
+// repository satisfies it. Embedding promotes each repository's methods onto
+// one value rather than inventing a repository type that would have to live in
+// the persistence layer.
+//
+// Moderation actions are deliberately absent. They were briefly needed while a
+// mute was enforced by clamping the trust score; now that domain.User.MutedUntil
+// carries that state, the trust calculation has no business reading the
+// moderation log.
 type trustInputs struct {
 	*postgres.UserRepo
 	*postgres.PostRepo
 	*postgres.ReactionRepo
 	*postgres.VouchRepo
 	*postgres.PenaltyRepo
-	*postgres.ModerationActionRepo
 }
 
 // Build wires repositories, services and server options from an already-open
@@ -151,7 +156,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		modSvc.SetTrustQueue(trustCache)
 		vouchSvc.SetTrustQueue(trustCache)
 
-		inputs := trustInputs{userRepo, postRepo, reactionRepo, vouchRepo, penaltyRepo, modActionRepo}
+		inputs := trustInputs{userRepo, postRepo, reactionRepo, vouchRepo, penaltyRepo}
 		deps.TrustWorker = cache.NewTrustWorker(trustCache, inputs, userRepo, logger)
 		logger.Info("trust recalculation enabled")
 
@@ -168,10 +173,15 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 
 	kratosCfg := kratos.NewConfiguration()
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}
-	authMiddleware := middleware.KratosAuth(kratos.NewAPIClient(kratosCfg), userSvc, logger)
+	kratosClient := kratos.NewAPIClient(kratosCfg)
+	authMiddleware := middleware.KratosAuth(kratosClient, userSvc, logger)
+	// Public-but-personalized routes need to know who is asking without
+	// requiring it; see middleware.OptionalAuth.
+	optionalAuth := middleware.OptionalAuth(kratosClient, userSvc, logger)
 
 	deps.ServerOptions = []server.Option{
 		server.WithAuth(authMiddleware),
+		server.WithOptionalAuth(optionalAuth),
 		server.WithUserService(userSvc),
 		server.WithPostService(postSvc),
 		server.WithReportService(reportSvc),
@@ -183,6 +193,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		server.WithReactionRepo(reactionRepo),
 		server.WithStatsService(statsSvc),
 		server.WithConfigRepo(configRepo),
+		server.WithTransactor(postgres.NewTransactor(pool)),
 		server.WithRateLimiter(rateLimiter),
 		server.WithImageStore(imageStore),
 	}

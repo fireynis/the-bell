@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -96,7 +97,10 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !user.CanPost() {
+	// The early rejection, so a muted or low-trust user is turned away before
+	// their upload is parsed. PostService.Create checks again; that one is
+	// authoritative.
+	if !user.CanPost(time.Now()) {
 		Error(w, http.StatusForbidden, "posting not allowed")
 		return
 	}
@@ -120,11 +124,7 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	post, err := h.posts.Create(r.Context(), service.PostAuthor{
-		ID:          user.ID,
-		DisplayName: user.DisplayName,
-		AvatarURL:   user.AvatarURL,
-	}, req.Body, req.ImagePath)
+	post, err := h.posts.Create(r.Context(), user, req.Body, req.ImagePath)
 	if err != nil {
 		serviceError(w, err)
 		return
@@ -185,6 +185,34 @@ func mustUUIDv7() string {
 	return id.String()
 }
 
+// canViewPost reports whether viewer may read post.
+//
+// A removed post stays readable to its author and to moderators — the author
+// needs to know it is gone, and moderators review reports filed against it,
+// including reports on posts the author deleted after being reported. To
+// everyone else it must be indistinguishable from a post that never existed.
+//
+// The caller answers a refusal with 404, never 403. A 403 confirms that the id
+// names a real post, which is exactly the fact being withheld; anyone holding
+// the id held it because the post was public while it was live. Do not
+// "improve" this to 403 for clarity — the identical 404 is the point.
+//
+// A nil viewer is an anonymous reader, not an error: this endpoint is public.
+func canViewPost(post *domain.Post, viewer *domain.User) bool {
+	if post == nil {
+		return false
+	}
+	if post.Status == domain.PostVisible {
+		return true
+	}
+	if viewer == nil {
+		return false
+	}
+	// CanModerate covers moderators and council, and requires an active
+	// account; a suspended moderator gets the ordinary reader's view.
+	return viewer.ID == post.AuthorID || viewer.CanModerate()
+}
+
 // GetByID handles GET /api/v1/posts/{id}.
 func (h *PostHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -192,6 +220,16 @@ func (h *PostHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	post, err := h.posts.GetByID(r.Context(), id)
 	if err != nil {
 		serviceError(w, err)
+		return
+	}
+
+	// UserFromContext is populated by middleware.OptionalAuth on this route;
+	// an anonymous reader simply yields nil.
+	viewer, _ := middleware.UserFromContext(r.Context())
+	if !canViewPost(post, viewer) {
+		// Byte-identical to the not-found response serviceError produces for a
+		// post that does not exist, so the two cases cannot be told apart.
+		Error(w, http.StatusNotFound, "not found")
 		return
 	}
 

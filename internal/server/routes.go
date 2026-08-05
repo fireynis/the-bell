@@ -185,8 +185,19 @@ func (s *Server) apiRoutes(r chi.Router) {
 		}
 		ph := handler.NewPostHandler(s.postService, phOpts...)
 		r.Route("/v1/posts", func(r chi.Router) {
-			r.Get("/", ph.ListFeed)
-			r.Get("/{id}", ph.GetByID)
+			// Public reads, but personalized: the response depends on who is
+			// asking. Without a user in context the handler cannot attach the
+			// caller's own reactions, and cannot tell an author or moderator
+			// from a stranger when deciding whether a removed post is theirs
+			// to see. OptionalAuth supplies identity when there is one and
+			// lets anonymous readers through untouched.
+			r.Group(func(r chi.Router) {
+				if s.optionalAuth != nil {
+					r.Use(s.optionalAuth)
+				}
+				r.Get("/", ph.ListFeed)
+				r.Get("/{id}", ph.GetByID)
+			})
 
 			r.Group(func(r chi.Router) {
 				r.Use(s.protected(guard{
@@ -287,7 +298,7 @@ func (s *Server) apiRoutes(r chi.Router) {
 	}
 
 	if s.configRepo != nil {
-		ch := handler.NewConfigHandler(s.configRepo)
+		ch := handler.NewConfigHandler(s.configRepo, s.transactor)
 		r.Get("/v1/config", ch.GetConfig)
 
 		r.Route("/v1/admin/config", func(r chi.Router) {

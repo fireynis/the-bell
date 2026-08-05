@@ -318,6 +318,167 @@ func TestPostHandler_GetByID(t *testing.T) {
 	}
 }
 
+// Strangers no longer receive a removed post at all, so the note's guarantee
+// now matters most for the callers who DO receive it: a moderator gets the
+// post, and must still not get the private note through the public post shape.
+// Exposing it takes a deliberate moderator-facing response type.
+func TestPostHandler_GetByID_DoesNotLeakRemovalReason(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:            "post-1",
+		AuthorID:      "user-1",
+		Body:          "the post body",
+		Status:        domain.PostRemovedByMod,
+		RemovalReason: "harassment of another member; third strike",
+		CreatedAt:     fixedNow,
+	}
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+	req = withChiURLParam(req, "id", "post-1")
+	req = withUser(req, &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true})
+	rec := httptest.NewRecorder()
+
+	h.GetByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, "removal_reason") {
+		t.Errorf("response carries a removal_reason key: %s", body)
+	}
+	if strings.Contains(body, "harassment") {
+		t.Errorf("response leaked the moderator's note: %s", body)
+	}
+}
+
+// The feed is the highest-traffic path, so it gets the same assertion rather
+// than relying on the query filter alone to keep removed posts out of it.
+func TestPostHandler_ListFeed_DoesNotLeakRemovalReason(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:            "post-1",
+		AuthorID:      "user-1",
+		Body:          "visible post",
+		Status:        domain.PostVisible,
+		RemovalReason: "should never reach the wire",
+		CreatedAt:     fixedNow,
+	}
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	rec := httptest.NewRecorder()
+	h.ListFeed(rec, httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "should never reach the wire") {
+		t.Errorf("feed leaked a removal reason: %s", rec.Body.String())
+	}
+}
+
+// A removed post must be indistinguishable from one that never existed — same
+// status and the same bytes — or the refusal itself confirms the id is real.
+func TestPostHandler_GetByID_RemovedPostIs404ToAStranger(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:            "post-1",
+		AuthorID:      "author-1",
+		Body:          "the post body",
+		Status:        domain.PostRemovedByMod,
+		RemovalReason: "harassment; third strike",
+		CreatedAt:     fixedNow,
+	}
+	svc := newTestPostService(repo)
+	h := handler.NewPostHandler(svc)
+
+	// A stranger asking for the removed post.
+	removed := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+	removed = withChiURLParam(removed, "id", "post-1")
+	removed = withUser(removed, &domain.User{ID: "stranger", Role: domain.RoleMember, IsActive: true})
+	removedRec := httptest.NewRecorder()
+	h.GetByID(removedRec, removed)
+
+	// The same caller asking for an id that was never issued.
+	missing := httptest.NewRequest(http.MethodGet, "/api/v1/posts/no-such-post", nil)
+	missing = withChiURLParam(missing, "id", "no-such-post")
+	missing = withUser(missing, &domain.User{ID: "stranger", Role: domain.RoleMember, IsActive: true})
+	missingRec := httptest.NewRecorder()
+	h.GetByID(missingRec, missing)
+
+	if removedRec.Code != http.StatusNotFound {
+		t.Fatalf("removed post status = %d, want %d; body: %s", removedRec.Code, http.StatusNotFound, removedRec.Body.String())
+	}
+	if got, want := removedRec.Body.String(), missingRec.Body.String(); got != want {
+		t.Errorf("removed-post body = %q, missing-post body = %q; they must be byte-identical", got, want)
+	}
+	if removedRec.Code != missingRec.Code {
+		t.Errorf("removed-post status = %d, missing-post status = %d", removedRec.Code, missingRec.Code)
+	}
+	if strings.Contains(removedRec.Body.String(), "harassment") {
+		t.Errorf("refusal leaked the removal reason: %s", removedRec.Body.String())
+	}
+}
+
+func TestPostHandler_GetByID_RemovedPostIs404ToAnonymous(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Body: "b",
+		Status: domain.PostRemovedByAuthor, CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+	req = withChiURLParam(req, "id", "post-1")
+	rec := httptest.NewRecorder()
+
+	h.GetByID(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// The flow this whole change had to avoid breaking: a moderator opening the
+// report queue fetches the reported post by id, and it is routinely no longer
+// visible — the author deletes it once reported.
+func TestPostHandler_GetByID_ModeratorStillSeesARemovedPost(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Body: "the reported body",
+		Status: domain.PostRemovedByAuthor, CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	for _, viewer := range []*domain.User{
+		{ID: "mod-1", Role: domain.RoleModerator, IsActive: true},
+		{ID: "council-1", Role: domain.RoleCouncil, IsActive: true},
+		{ID: "author-1", Role: domain.RoleMember, IsActive: true},
+	} {
+		t.Run(string(viewer.Role), func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+			req = withChiURLParam(req, "id", "post-1")
+			req = withUser(req, viewer)
+			rec := httptest.NewRecorder()
+
+			h.GetByID(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var post domain.Post
+			decodeBody(t, rec, &post)
+			if post.Body != "the reported body" {
+				t.Errorf("body = %q, want the post content", post.Body)
+			}
+		})
+	}
+}
+
 func TestPostHandler_GetByID_NotFound(t *testing.T) {
 	repo := newMockPostRepo()
 	svc := newTestPostService(repo)

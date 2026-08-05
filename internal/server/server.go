@@ -32,10 +32,12 @@ type Server struct {
 	reactionService         *service.ReactionService
 	statsService            *service.StatsService
 	configRepo              service.ConfigRepository
+	transactor              service.Transactor
 	reactionRepo            handler.ReactionEnricher
 	sseBroker               *sse.Broker
 	imageStore              storage.Storage
 	authMiddleware          func(http.Handler) http.Handler
+	optionalAuth            func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
 }
 
@@ -92,6 +94,13 @@ func WithConfigRepo(cr service.ConfigRepository) Option {
 	return func(s *Server) { s.configRepo = cr }
 }
 
+// WithTransactor sets the transactor used by handlers that must write several
+// rows atomically. Without it, PUT /admin/config refuses to write at all rather
+// than applying part of a request — see handler.ConfigHandler.UpdateConfig.
+func WithTransactor(tx service.Transactor) Option {
+	return func(s *Server) { s.transactor = tx }
+}
+
 // WithReactionRepo sets the reaction enricher used to attach reaction data to posts.
 func WithReactionRepo(rr handler.ReactionEnricher) Option {
 	return func(s *Server) { s.reactionRepo = rr }
@@ -105,6 +114,18 @@ func WithImageStore(store storage.Storage) Option {
 // WithAuth sets the authentication middleware for protected routes.
 func WithAuth(mw func(http.Handler) http.Handler) Option {
 	return func(s *Server) { s.authMiddleware = mw }
+}
+
+// WithOptionalAuth sets the middleware used on routes that are public but
+// personalized — it must populate a user when the request carries a session
+// and pass the request through untouched when it does not. See
+// middleware.OptionalAuth.
+//
+// It is separate from WithAuth because the two cannot be the same value: the
+// routes below need identity without requiring it, and installing the
+// rejecting middleware there would make the feed unreadable while logged out.
+func WithOptionalAuth(mw func(http.Handler) http.Handler) Option {
+	return func(s *Server) { s.optionalAuth = mw }
 }
 
 // WithSSEBroker sets the SSE broker for real-time event streaming.

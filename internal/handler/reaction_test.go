@@ -38,12 +38,13 @@ func (m *mockReactionRepo) AddReaction(_ context.Context, reaction *domain.React
 	return nil
 }
 
+// Mirrors the real adapter: queries/reactions.sql RemoveReaction is a plain
+// :exec DELETE, so removing something that is not there matches no rows and
+// returns nil. This fake used to invent a "not found" error, and the handler
+// test below asserted the fake's behaviour rather than the endpoint's — the
+// production path could not produce a 404 at all.
 func (m *mockReactionRepo) RemoveReaction(_ context.Context, userID, postID string, reactionType domain.ReactionType) error {
-	key := reactionKey(userID, postID, reactionType)
-	if _, ok := m.reactions[key]; !ok {
-		return service.ErrReactionNotFound
-	}
-	delete(m.reactions, key)
+	delete(m.reactions, reactionKey(userID, postID, reactionType))
 	return nil
 }
 
@@ -333,9 +334,15 @@ func TestReactionHandler_Remove_InvalidType(t *testing.T) {
 	}
 }
 
-// Removing a reaction the user never left is a client mistake, not a server
-// failure — the handler used to report it as a 500.
-func TestReactionHandler_Remove_NotFound(t *testing.T) {
+// Removing a reaction the user never left is a no-op, not an error: a reaction
+// is a toggle, so a double-tap or a retried request is ordinary use and 204 is
+// the retry-safe answer. It also matches what the database actually does — the
+// DELETE matches no rows and reports nothing.
+//
+// A 404 here would be actively worse than useless: the frontend reaction button
+// reverts its optimistic toggle on any error, so the reaction would snap back to
+// "present" in the UI when the server has none.
+func TestReactionHandler_Remove_NotPresentIsNoContent(t *testing.T) {
 	repo := newMockReactionRepo()
 	svc := newTestReactionService(repo)
 	h := handler.NewReactionHandler(svc, nil)
@@ -347,8 +354,34 @@ func TestReactionHandler_Remove_NotFound(t *testing.T) {
 
 	h.Remove(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+}
+
+// Removing the same reaction twice is the same as removing it once. The second
+// call is what a retry or a double-tap looks like.
+func TestReactionHandler_Remove_IsIdempotent(t *testing.T) {
+	repo := newMockReactionRepo()
+	svc := newTestReactionService(repo)
+	h := handler.NewReactionHandler(svc, nil)
+
+	add := httptest.NewRequest(http.MethodPost, "/api/v1/posts/post-1/reactions", strings.NewReader(`{"type":"bell"}`))
+	add = withChiURLParams(add, map[string]string{"postId": "post-1"})
+	add = withUser(add, testUser())
+	h.Add(httptest.NewRecorder(), add)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/posts/post-1/reactions/bell", nil)
+		req = withChiURLParams(req, map[string]string{"postId": "post-1", "type": "bell"})
+		req = withUser(req, testUser())
+		rec := httptest.NewRecorder()
+
+		h.Remove(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("attempt %d: status = %d, want %d; body: %s", attempt, rec.Code, http.StatusNoContent, rec.Body.String())
+		}
 	}
 }
 

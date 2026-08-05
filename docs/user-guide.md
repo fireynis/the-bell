@@ -60,7 +60,7 @@ You can edit a post's text within **15 minutes** of creation. After that window 
 
 ### Deleting Posts
 
-You can delete your own posts at any time. Deleted posts are marked as `removed_by_author` and no longer appear in the feed.
+You can delete your own posts at any time. Deleted posts are marked as `removed_by_author` and no longer appear in the feed or on your profile.
 
 ### Feed
 
@@ -163,9 +163,17 @@ Moderators and council members can access the moderation queue, which shows all 
 |--------|----------|---------------|-------|--------|
 | Warn (minor) | 1 | -5 points | 90 days | No immediate restriction |
 | Warn (moderate) | 2 | -10 points | 180 days | No immediate restriction |
-| Mute | 3 | -25 points | 270 days | Trust forced below posting threshold (< 30) |
+| Mute | 3 | -25 points | 270 days | Cannot post until the mute expires. Trust score is not changed |
 | Suspend | 4 | -40 points | 365 days | Account deactivated |
 | Ban | 5 | -100 points | Permanent | Role set to `banned`, trust set to 0 |
+
+A mute lasts exactly as long as the moderator set it for, and it is recorded
+separately from the trust score rather than by forcing the score down. You can
+see your own mute — and when it ends — on your profile; nobody else can. Note
+that the trust penalty above still applies and decays on its own schedule, so
+your score may stay reduced after the mute itself has ended.
+
+A mute cannot currently be lifted early: it runs for the duration it was given.
 
 ### Trust Penalty Propagation
 

@@ -51,16 +51,31 @@ type mockUserEnforcer struct {
 	deactivatedIDs []string
 	roleUpdates    map[string]domain.Role
 	trustUpdates   map[string]float64
-	deactivateErr  error
-	roleErr        error
-	trustErr       error
+	// mutes records every SetUserMutedUntil call, including the nil that lifts
+	// a mute, so a test can tell "muted until nil" from "never called".
+	mutes         map[string]*time.Time
+	mutedIDs      []string
+	deactivateErr error
+	roleErr       error
+	trustErr      error
+	muteErr       error
 }
 
 func newMockUserEnforcer() *mockUserEnforcer {
 	return &mockUserEnforcer{
 		roleUpdates:  make(map[string]domain.Role),
 		trustUpdates: make(map[string]float64),
+		mutes:        make(map[string]*time.Time),
 	}
+}
+
+func (m *mockUserEnforcer) SetUserMutedUntil(_ context.Context, id string, until *time.Time) error {
+	if m.muteErr != nil {
+		return m.muteErr
+	}
+	m.mutes[id] = until
+	m.mutedIDs = append(m.mutedIDs, id)
+	return nil
 }
 
 func (m *mockUserEnforcer) DeactivateUser(_ context.Context, id string) error {
@@ -419,9 +434,11 @@ func TestModerationActionService_TakeAction_PenaltiesCalledCorrectly(t *testing.
 	}
 }
 
-// --- Enforcement: mute drops trust below posting threshold ---
+// --- Enforcement: mute records its expiry ---
 
-func TestModerationActionService_TakeAction_MuteEnforcement_HighTrust(t *testing.T) {
+// The mute length is the one the moderator chose, and it is the same instant
+// the action row records. Deriving it twice would let the two drift.
+func TestModerationActionService_TakeAction_MuteSetsMutedUntilFromTheChosenDuration(t *testing.T) {
 	actionRepo := newMockActionRepo()
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 80.0}
@@ -429,23 +446,60 @@ func TestModerationActionService_TakeAction_MuteEnforcement_HighTrust(t *testing
 
 	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
 
-	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "muted", int64Ptr(3600))
+	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "muted", int64Ptr(3600))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	score, ok := enforcer.trustUpdates["target-1"]
+	until, ok := enforcer.mutes["target-1"]
 	if !ok {
-		t.Fatal("expected trust score update for target-1")
+		t.Fatal("expected muted_until to be set for target-1")
 	}
-	if score != 29.0 {
-		t.Errorf("trust score = %v, want 29.0", score)
+	if until == nil {
+		t.Fatal("muted_until was set to nil, which lifts the mute")
+	}
+	if want := fixedNow.Add(time.Hour); !until.Equal(want) {
+		t.Errorf("muted_until = %v, want %v — the hour the moderator chose", until, want)
+	}
+	// The action row and the user column must name the same instant.
+	if result.Action.ExpiresAt == nil || !result.Action.ExpiresAt.Equal(*until) {
+		t.Errorf("action expires_at = %v but muted_until = %v; they must agree", result.Action.ExpiresAt, until)
+	}
+}
+
+// A mute must not move the trust score. Dropping it below the posting threshold
+// was the old mechanism, and it both stacked a second punishment on the penalty
+// the action already propagates and was undone by the next recalculation.
+func TestModerationActionService_TakeAction_MuteLeavesTrustAlone(t *testing.T) {
+	actionRepo := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 80.0}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if _, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionMute, 3, "muted", int64Ptr(3600)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if score, ok := enforcer.trustUpdates["target-1"]; ok {
+		t.Errorf("mute wrote trust score %v; muted_until is the mechanism now", score)
+	}
+	if len(enforcer.deactivatedIDs) != 0 {
+		t.Errorf("mute deactivated %v; a mute is not a suspension", enforcer.deactivatedIDs)
+	}
+	if len(enforcer.roleUpdates) != 0 {
+		t.Errorf("mute changed roles %v; a mute is not a ban", enforcer.roleUpdates)
 	}
 }
 
 // --- Enforcement: mute no-op when trust already below threshold ---
 
-func TestModerationActionService_TakeAction_MuteEnforcement_LowTrust(t *testing.T) {
+// A user already below the posting threshold is still muted. The old
+// trust-drop mechanism skipped them — they could not post anyway — but that
+// left no record of the mute, so it lapsed silently the moment their score
+// recovered.
+func TestModerationActionService_TakeAction_MuteAppliesBelowThePostingThreshold(t *testing.T) {
 	actionRepo := newMockActionRepo()
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 20.0}
@@ -458,8 +512,15 @@ func TestModerationActionService_TakeAction_MuteEnforcement_LowTrust(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	until, ok := enforcer.mutes["target-1"]
+	if !ok {
+		t.Fatal("a low-trust user was not muted; their score may recover before the mute would have")
+	}
+	if until == nil || !until.Equal(fixedNow.Add(time.Hour)) {
+		t.Errorf("muted_until = %v, want %v", until, fixedNow.Add(time.Hour))
+	}
 	if _, ok := enforcer.trustUpdates["target-1"]; ok {
-		t.Error("expected no trust update when trust already below threshold")
+		t.Error("a mute wrote a trust score")
 	}
 }
 
@@ -607,14 +668,14 @@ func TestModerationActionService_TakeAction_EnforcesWhenGraphUnavailable(t *test
 		verify   func(t *testing.T, e *mockUserEnforcer)
 	}{
 		{
-			name: "mute drops trust below posting threshold", action: domain.ActionMute, severity: 3, duration: int64Ptr(3600),
+			name: "mute records its expiry", action: domain.ActionMute, severity: 3, duration: int64Ptr(3600),
 			verify: func(t *testing.T, e *mockUserEnforcer) {
-				score, ok := e.trustUpdates["target-1"]
+				until, ok := e.mutes["target-1"]
 				if !ok {
-					t.Fatal("expected trust score update for target-1")
+					t.Fatal("expected muted_until to be set for target-1")
 				}
-				if score != domain.PostingThreshold-1.0 {
-					t.Errorf("trust score = %v, want %v", score, domain.PostingThreshold-1.0)
+				if until == nil || !until.Equal(fixedNow.Add(time.Hour)) {
+					t.Errorf("muted_until = %v, want %v", until, fixedNow.Add(time.Hour))
 				}
 			},
 		},

@@ -137,7 +137,7 @@ func TestPostService_Create(t *testing.T) {
 			repo := newMockPostRepo()
 			svc := NewPostService(repo, clock)
 
-			post, err := svc.Create(context.Background(), PostAuthor{ID: tt.authorID}, tt.body, tt.imagePath)
+			post, err := svc.Create(context.Background(), postingUser(tt.authorID), tt.body, tt.imagePath)
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -538,7 +538,10 @@ func TestPostService_Create_CachesPostWithAuthorFields(t *testing.T) {
 	svc := NewPostService(repo, nil)
 	svc.SetFeedCache(cache)
 
-	author := PostAuthor{ID: "u1", DisplayName: "Ada Lovelace", AvatarURL: "/avatars/ada.png"}
+	author := &domain.User{
+		ID: "u1", DisplayName: "Ada Lovelace", AvatarURL: "/avatars/ada.png",
+		IsActive: true, TrustScore: 50, Role: domain.RoleMember,
+	}
 
 	post, err := svc.Create(context.Background(), author, "hello town", "")
 	if err != nil {
@@ -613,5 +616,73 @@ func TestPostService_UpdateBody_DoesNotInvalidateWhenEditRejected(t *testing.T) 
 
 	if cache.updated != nil {
 		t.Error("feed cache was invalidated for an edit that never happened")
+	}
+}
+
+// postingUser is a member who clears every gate in CanPost, so a test asserting
+// on body validation is not silently short-circuited by authorization.
+func postingUser(id string) *domain.User {
+	return &domain.User{
+		ID:         id,
+		IsActive:   true,
+		TrustScore: domain.PostingThreshold,
+		Role:       domain.RoleMember,
+	}
+}
+
+// The handler checks CanPost too, but this is the check that cannot be
+// bypassed: before it existed, one line in one handler was the only thing
+// between a muted user and a post. Every gate is exercised here, not just the
+// mute, because the service is now the authority for all of them.
+func TestPostService_Create_RefusesUsersWhoCannotPost(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	muted := now.Add(time.Hour)
+
+	tests := []struct {
+		name   string
+		author *domain.User
+	}{
+		{"muted", &domain.User{ID: "u1", IsActive: true, TrustScore: 95, Role: domain.RoleMember, MutedUntil: &muted}},
+		{"banned", &domain.User{ID: "u1", IsActive: true, TrustScore: 95, Role: domain.RoleBanned}},
+		{"pending", &domain.User{ID: "u1", IsActive: true, TrustScore: 95, Role: domain.RolePending}},
+		{"deactivated", &domain.User{ID: "u1", IsActive: false, TrustScore: 95, Role: domain.RoleMember}},
+		{"below the posting threshold", &domain.User{ID: "u1", IsActive: true, TrustScore: 10, Role: domain.RoleMember}},
+		{"no author at all", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockPostRepo()
+			svc := NewPostService(repo, func() time.Time { return now })
+
+			post, err := svc.Create(context.Background(), tt.author, "hello town", "")
+			if !errors.Is(err, ErrForbidden) {
+				t.Fatalf("Create() error = %v, want ErrForbidden", err)
+			}
+			if post != nil {
+				t.Errorf("Create() returned %+v, want nil", post)
+			}
+			if len(repo.posts) != 0 {
+				t.Errorf("%d posts were written despite the rejection", len(repo.posts))
+			}
+		})
+	}
+}
+
+// The mute is evaluated against the service's own clock, so a mute that has
+// expired by the time the post arrives does not block it.
+func TestPostService_Create_ExpiredMuteDoesNotBlock(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	expired := now.Add(-time.Second)
+
+	repo := newMockPostRepo()
+	svc := NewPostService(repo, func() time.Time { return now })
+
+	author := &domain.User{
+		ID: "u1", IsActive: true, TrustScore: 50, Role: domain.RoleMember, MutedUntil: &expired,
+	}
+
+	if _, err := svc.Create(context.Background(), author, "hello town", ""); err != nil {
+		t.Fatalf("Create() error = %v, want the expired mute ignored", err)
 	}
 }

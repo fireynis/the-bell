@@ -74,8 +74,14 @@ func validateActionRequest(
 	if actionType == domain.ActionBan && durationSeconds != nil {
 		return actionRequest{}, fmt.Errorf("%w: bans cannot have a duration", ErrValidation)
 	}
-	if (actionType == domain.ActionMute || actionType == domain.ActionSuspend) && durationSeconds == nil {
-		return actionRequest{}, fmt.Errorf("%w: %s requires a duration", ErrValidation, actionType)
+	// An indefinite mute is a suspension, and we have one of those. Naming the
+	// right tool beats refusing and leaving the moderator to guess.
+	if actionType == domain.ActionMute && durationSeconds == nil {
+		return actionRequest{}, fmt.Errorf(
+			"%w: mute requires a duration; use suspend for an indefinite restriction", ErrValidation)
+	}
+	if actionType == domain.ActionSuspend && durationSeconds == nil {
+		return actionRequest{}, fmt.Errorf("%w: suspend requires a duration", ErrValidation)
 	}
 
 	var duration *time.Duration
@@ -101,9 +107,8 @@ func validateActionRequest(
 type enforcementStep int
 
 const (
-	// enforceDropBelowPostingThreshold silences a user by pushing their trust
-	// just under the posting threshold.
-	enforceDropBelowPostingThreshold enforcementStep = iota
+	// enforceMute records when the mute expires on the user row.
+	enforceMute enforcementStep = iota
 	// enforceDeactivate suspends the account.
 	enforceDeactivate
 	// enforceBanRole moves the user to the banned role.
@@ -114,16 +119,19 @@ const (
 
 // planEnforcement decides which immediate state changes an action implies.
 //
-// A mute only needs to act when the user is currently above the posting
-// threshold: someone already below it cannot post, and lowering their score
-// further would stack extra punishment on top of the trust penalty.
-func planEnforcement(actionType domain.ActionType, user *domain.User) []enforcementStep {
+// A mute writes muted_until and nothing else. It used to push the user's trust
+// just under the posting threshold instead, which the trust worker undid within
+// seconds of the penalty landing — moderation state cannot live in a score a
+// background job is free to recompute. The trust penalty the action propagates
+// is punishment enough; the mute is a separate, authoritative fact.
+//
+// The user's current score is no longer an input: a mute applies even to
+// someone already below the threshold, because their score may recover before
+// the mute expires.
+func planEnforcement(actionType domain.ActionType) []enforcementStep {
 	switch actionType {
 	case domain.ActionMute:
-		if user != nil && user.TrustScore >= domain.PostingThreshold {
-			return []enforcementStep{enforceDropBelowPostingThreshold}
-		}
-		return nil
+		return []enforcementStep{enforceMute}
 	case domain.ActionSuspend:
 		return []enforcementStep{enforceDeactivate}
 	case domain.ActionBan:
@@ -178,6 +186,7 @@ type UserEnforcer interface {
 	DeactivateUser(ctx context.Context, id string) error
 	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
 	UpdateUserTrustScore(ctx context.Context, id string, score float64) error
+	SetUserMutedUntil(ctx context.Context, id string, until *time.Time) error
 }
 
 // ActionHistoryEntry pairs a moderation action with its trust penalties.
@@ -270,7 +279,7 @@ func (s *ModerationActionService) TakeAction(
 	// the vouch graph: it needs only the action type and the user. Running it
 	// second meant an unreachable graph returned early and left a banned user
 	// un-banned and still able to post.
-	enforceErr := s.enforce(ctx, req.ActionType, targetUser)
+	enforceErr := s.enforce(ctx, req.ActionType, targetUser, expiresAt)
 	if enforceErr != nil {
 		enforceErr = fmt.Errorf("enforcing action: %w", enforceErr)
 	}
@@ -358,16 +367,20 @@ func (s *ModerationHistoryService) GetActionHistory(
 }
 
 // enforce applies the state changes planned by planEnforcement.
-func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User) error {
+//
+// expiresAt is the action's own expiry, computed once in TakeAction from the
+// duration the moderator chose. Reusing it rather than recomputing keeps the
+// action row's expires_at and the user's muted_until from ever disagreeing.
+func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User, expiresAt *time.Time) error {
 	if s.enforcer == nil {
 		return nil
 	}
 
-	for _, step := range planEnforcement(actionType, user) {
+	for _, step := range planEnforcement(actionType) {
 		var err error
 		switch step {
-		case enforceDropBelowPostingThreshold:
-			err = s.enforcer.UpdateUserTrustScore(ctx, user.ID, mutedTrustScore)
+		case enforceMute:
+			err = s.enforcer.SetUserMutedUntil(ctx, user.ID, expiresAt)
 		case enforceDeactivate:
 			err = s.enforcer.DeactivateUser(ctx, user.ID)
 		case enforceBanRole:

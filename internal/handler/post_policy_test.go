@@ -59,3 +59,72 @@ func TestNextCursor_ZeroLimitDoesNotPanic(t *testing.T) {
 		t.Errorf("cursor = %q, want empty", got)
 	}
 }
+
+// A removed post stays readable to the people with a reason to read it, and is
+// invisible to everyone else. The caller turns false into a 404 rather than a
+// 403 so that a refusal cannot be told apart from a post that never existed.
+func TestCanViewPost(t *testing.T) {
+	const authorID = "author-1"
+
+	post := func(status domain.PostStatus) *domain.Post {
+		return &domain.Post{ID: "post-1", AuthorID: authorID, Status: status}
+	}
+	viewer := func(id string, role domain.Role) *domain.User {
+		return &domain.User{ID: id, Role: role, IsActive: true}
+	}
+
+	tests := []struct {
+		name   string
+		post   *domain.Post
+		viewer *domain.User
+		want   bool
+	}{
+		{"anonymous reader sees a visible post", post(domain.PostVisible), nil, true},
+		{"any member sees a visible post", post(domain.PostVisible), viewer("other", domain.RoleMember), true},
+		{"the author sees their own visible post", post(domain.PostVisible), viewer(authorID, domain.RoleMember), true},
+
+		{"the author still sees their post after a moderator removes it", post(domain.PostRemovedByMod), viewer(authorID, domain.RoleMember), true},
+		{"the author still sees a post they deleted themselves", post(domain.PostRemovedByAuthor), viewer(authorID, domain.RoleMember), true},
+		{"a moderator sees a removed post", post(domain.PostRemovedByMod), viewer("mod-1", domain.RoleModerator), true},
+		{"council sees a removed post", post(domain.PostRemovedByMod), viewer("council-1", domain.RoleCouncil), true},
+		// The report queue's live case: reported, then deleted by the author.
+		{"a moderator sees a post the author deleted", post(domain.PostRemovedByAuthor), viewer("mod-1", domain.RoleModerator), true},
+
+		{"an unrelated member cannot see a removed post", post(domain.PostRemovedByMod), viewer("other", domain.RoleMember), false},
+		{"an anonymous reader cannot see a removed post", post(domain.PostRemovedByMod), nil, false},
+		{"an anonymous reader cannot see an author-deleted post", post(domain.PostRemovedByAuthor), nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canViewPost(tt.post, tt.viewer); got != tt.want {
+				t.Errorf("canViewPost() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A suspended moderator is an ordinary reader. CanModerate already requires an
+// active account; this pins that canViewPost does not route around it.
+func TestCanViewPost_SuspendedModeratorLosesTheModeratorView(t *testing.T) {
+	removed := &domain.Post{ID: "post-1", AuthorID: "author-1", Status: domain.PostRemovedByMod}
+	suspended := &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: false}
+
+	if canViewPost(removed, suspended) {
+		t.Error("a suspended moderator was shown a removed post")
+	}
+}
+
+// Anonymous callers reach this endpoint, and a missing post reaches this
+// function on some paths; neither may panic.
+func TestCanViewPost_NilsAreSafe(t *testing.T) {
+	if canViewPost(nil, nil) {
+		t.Error("a nil post was reported viewable")
+	}
+	if canViewPost(nil, &domain.User{ID: "u1", Role: domain.RoleCouncil, IsActive: true}) {
+		t.Error("a nil post was reported viewable to council")
+	}
+	if !canViewPost(&domain.Post{Status: domain.PostVisible}, nil) {
+		t.Error("a visible post was hidden from an anonymous reader")
+	}
+}

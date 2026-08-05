@@ -181,28 +181,22 @@ func TestValidateActionRequest_SeverityIsBoundToActionType(t *testing.T) {
 }
 
 func TestPlanEnforcement(t *testing.T) {
-	above := &domain.User{ID: "u", TrustScore: domain.PostingThreshold + 10}
-	below := &domain.User{ID: "u", TrustScore: domain.PostingThreshold - 10}
-
 	tests := []struct {
 		name       string
 		actionType domain.ActionType
-		user       *domain.User
 		want       []enforcementStep
 	}{
-		{"warn changes no state", domain.ActionWarn, above, nil},
-		{"mute silences a user who can post", domain.ActionMute, above, []enforcementStep{enforceDropBelowPostingThreshold}},
-		{"mute is a no-op below the threshold", domain.ActionMute, below, nil},
-		{"mute at exactly the threshold still acts", domain.ActionMute, &domain.User{TrustScore: domain.PostingThreshold}, []enforcementStep{enforceDropBelowPostingThreshold}},
-		{"suspend deactivates", domain.ActionSuspend, above, []enforcementStep{enforceDeactivate}},
-		{"ban sets role and zeroes trust", domain.ActionBan, above, []enforcementStep{enforceBanRole, enforceZeroTrust}},
-		{"unknown action changes no state", domain.ActionType("???"), above, nil},
-		{"nil user does not panic", domain.ActionMute, nil, nil},
+		{"warn changes no state", domain.ActionWarn, nil},
+		{"mute records its expiry", domain.ActionMute, []enforcementStep{enforceMute}},
+		{"suspend deactivates", domain.ActionSuspend, []enforcementStep{enforceDeactivate}},
+		{"ban sets role and zeroes trust", domain.ActionBan, []enforcementStep{enforceBanRole, enforceZeroTrust}},
+		{"unknown action changes no state", domain.ActionType("???"), nil},
+		{"empty action changes no state", domain.ActionType(""), nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := planEnforcement(tt.actionType, tt.user)
+			got := planEnforcement(tt.actionType)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
@@ -215,10 +209,40 @@ func TestPlanEnforcement(t *testing.T) {
 	}
 }
 
+// A mute writes muted_until and nothing else. It must not touch the trust
+// score: it used to drop the score below the posting threshold, which the trust
+// worker recomputed away within seconds, and which also stacked a second
+// punishment on top of the penalty the action already propagates.
+func TestPlanEnforcement_MuteDoesNotTouchTrust(t *testing.T) {
+	for _, step := range planEnforcement(domain.ActionMute) {
+		if step == enforceZeroTrust {
+			t.Error("mute plan zeroes trust; a mute is not a ban")
+		}
+		if step != enforceMute {
+			t.Errorf("mute plan contains %v, want only enforceMute", step)
+		}
+	}
+}
+
+// The mute applies regardless of the user's current score. Keying it on the
+// score — as the old trust-drop version had to — meant a user already below the
+// threshold was never actually muted, so their mute silently lapsed the moment
+// their score recovered.
+func TestPlanEnforcement_MuteIsIndependentOfTrustScore(t *testing.T) {
+	want := planEnforcement(domain.ActionMute)
+
+	for _, score := range []float64{0, domain.PostingThreshold - 10, domain.PostingThreshold, 100} {
+		got := planEnforcement(domain.ActionMute)
+		if len(got) != len(want) || len(got) != 1 || got[0] != enforceMute {
+			t.Errorf("score %v: plan = %v, want a mute regardless of score", score, got)
+		}
+	}
+}
+
 // A ban must revoke posting rights via the role and clear the score; doing only
 // one would leave a banned account able to recover trust or keep its old score.
 func TestPlanEnforcement_BanIsBothRoleAndTrust(t *testing.T) {
-	steps := planEnforcement(domain.ActionBan, &domain.User{TrustScore: 95})
+	steps := planEnforcement(domain.ActionBan)
 
 	var sawRole, sawTrust bool
 	for _, s := range steps {

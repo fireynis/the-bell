@@ -1,5 +1,14 @@
 # Mute/Suspend/Ban Enforcement Implementation Plan
 
+> **SUPERSEDED (2026-08-04) — historical record.** The mute mechanic described
+> below (drop the user's trust score just under the posting threshold) was
+> replaced by a `users.muted_until` column, because a background trust
+> recalculation would undo the score drop within seconds of the penalty landing.
+> `CanPost` now takes a clock and checks the mute directly. Current source of
+> truth: `internal/domain/user.go`, `internal/service/moderation_action.go`
+> (`planEnforcement`), and `docs/api-reference.md`. Suspend and ban are
+> unchanged. Kept as-is: it records why the original approach was chosen.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** When a moderation action (mute/suspend/ban) is taken, immediately enforce it by updating the target user's state, and add middleware to reject write requests from affected users.

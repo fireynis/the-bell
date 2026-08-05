@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router";
-import { api } from "../api/client";
+import { userApi, vouchApi } from "../api/client";
 import { useAuth } from "../context/AuthContext";
-import type {
-  ApiError,
-  Post,
-  User,
-  UserPostsResponse,
-  VouchesResponse,
-} from "../api/types";
+import type { ApiError, Post, User, VouchesResponse } from "../api/types";
 import Avatar from "../components/Avatar";
 import ErrorBanner from "../components/ErrorBanner";
 import PostCard from "../components/PostCard";
@@ -17,9 +11,13 @@ import Spinner from "../components/Spinner";
 import TrustBar from "../components/TrustBar";
 import EditProfileForm from "./profile/EditProfileForm";
 import VouchList from "./profile/VouchList";
+import VouchAction from "./profile/VouchAction";
 import { vouchingBlockReason } from "../lib/gating";
 
 type Tab = "posts" | "vouches";
+
+/** How many of a profile's posts to show; the page does not paginate them. */
+const POST_LIMIT = 50;
 
 export default function Profile() {
   const { userId } = useParams<{ userId: string }>();
@@ -33,36 +31,42 @@ export default function Profile() {
   const [user, setUser] = useState<User | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [vouches, setVouches] = useState<VouchesResponse | null>(null);
+  // The viewer's own vouches, needed on someone else's profile to answer
+  // "have I already vouched for them" and "have I any vouches left today".
+  const [viewerVouches, setViewerVouches] = useState<VouchesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>("posts");
 
-  const apiPath = isOwnProfile ? "/users/me" : `/users/${userId}`;
+  const viewerId = viewer?.id;
 
   const fetchProfile = useCallback(async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const userData = await api.get<User>(apiPath);
+      const userData = isOwnProfile ? await userApi.getProfile() : await userApi.getById(userId!);
       setUser(userData);
 
       const resolvedId = userData.id;
+      const needsViewerVouches = !!viewerId && viewerId !== resolvedId;
 
-      const [postsData, vouchData] = await Promise.all([
-        api.get<UserPostsResponse>(`/users/${resolvedId}/posts?limit=50`),
-        api.get<VouchesResponse>(`/users/${resolvedId}/vouches`),
+      const [postsData, vouchData, viewerVouchData] = await Promise.all([
+        userApi.listPosts(resolvedId, POST_LIMIT),
+        vouchApi.listForUser(resolvedId),
+        needsViewerVouches ? vouchApi.listForUser(viewerId) : Promise.resolve(null),
       ]);
 
       setPosts(postsData.posts ?? []);
       setVouches(vouchData);
+      setViewerVouches(viewerVouchData);
     } catch (err) {
       const apiErr = err as ApiError;
       setError(apiErr.error ?? "Failed to load profile.");
     } finally {
       setLoading(false);
     }
-  }, [apiPath]);
+  }, [isOwnProfile, userId, viewerId]);
 
   useEffect(() => {
     fetchProfile();
@@ -168,6 +172,21 @@ export default function Profile() {
               >
                 {vouchBlock ?? "You have enough trust to vouch for other members."}
               </p>
+            </div>
+          )}
+
+          {!isOwnProfile && (
+            <div
+              className="mt-4 border-t pt-4"
+              style={{ borderColor: "var(--color-border-light)" }}
+            >
+              <VouchAction
+                viewer={viewer}
+                target={user}
+                received={vouches?.received ?? []}
+                given={viewerVouches?.given ?? []}
+                onChanged={fetchProfile}
+              />
             </div>
           )}
         </div>

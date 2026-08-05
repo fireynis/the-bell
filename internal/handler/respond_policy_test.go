@@ -21,7 +21,6 @@ func TestStatusForError(t *testing.T) {
 		{"forbidden", service.ErrForbidden, http.StatusForbidden, "forbidden"},
 		{"rate limited", service.ErrRateLimit, http.StatusTooManyRequests, "rate limit exceeded"},
 		{"edit window", service.ErrEditWindow, http.StatusConflict, "edit window expired"},
-		{"missing reaction is a 404, not a server failure", service.ErrReactionNotFound, http.StatusNotFound, "reaction not found"},
 		{"invalid reaction type is the caller's mistake", service.ErrInvalidReactionType, http.StatusBadRequest, "invalid reaction type"},
 		{"unknown error", errors.New("connection refused"), http.StatusInternalServerError, "internal error"},
 		{"nil error is treated as internal", nil, http.StatusInternalServerError, "internal error"},
@@ -51,7 +50,6 @@ func TestStatusForError_UnwrapsWrappedSentinels(t *testing.T) {
 		{service.ErrForbidden, http.StatusForbidden},
 		{service.ErrRateLimit, http.StatusTooManyRequests},
 		{service.ErrEditWindow, http.StatusConflict},
-		{service.ErrReactionNotFound, http.StatusNotFound},
 		{service.ErrInvalidReactionType, http.StatusBadRequest},
 	}
 
