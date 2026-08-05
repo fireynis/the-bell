@@ -13,6 +13,20 @@ import (
 
 const dailyVouchLimit = 3
 
+const (
+	// revocationPenaltyPoints and revocationPenaltyDecayDays are the cost of
+	// withdrawing an endorsement, per the design doc: "-3 for 30 days when you
+	// revoke a vouch (prevents vouch-and-revoke gaming, but small enough that
+	// revoking a bad actor is still clearly worth it)".
+	//
+	// The size is the point. Vouching and revoking in a loop should cost
+	// something, while removing a vouch you have come to regret must never cost
+	// you the ability to vouch at all — 3 points against the 100-point scale
+	// leaves a voucher at the threshold still above it.
+	revocationPenaltyPoints    = 3.0
+	revocationPenaltyDecayDays = 30
+)
+
 // startOfDay returns local midnight for now — the window the daily vouch limit
 // counts over. The limit is "3 per day" as a resident of the town experiences a
 // day, so the window follows the clock's own location rather than UTC; on a DST
@@ -52,6 +66,7 @@ type VouchService struct {
 	users      UserGetter
 	now        func() time.Time
 	trustQueue TrustRecalcQueue
+	penalties  PenaltyRepository
 	logger     *slog.Logger
 }
 
@@ -73,6 +88,56 @@ func NewVouchService(vouches VouchRepository, graph GraphQuerier, users UserGett
 // do not recalculate.
 func (s *VouchService) SetTrustQueue(q TrustRecalcQueue) {
 	s.trustQueue = q
+}
+
+// SetPenaltyRepository attaches the store used to record revocation penalties.
+// Left nil, revocation still works and simply carries no cost, the same way an
+// absent trust queue degrades rather than failing.
+func (s *VouchService) SetPenaltyRepository(p PenaltyRepository) {
+	s.penalties = p
+}
+
+// applyRevocationPenalty charges the voucher for withdrawing their endorsement.
+//
+// It writes the penalty row directly rather than going through
+// PropagatePenalties, which would spread the cost to the voucher's own vouchers.
+// That is right for moderation — the people who endorsed an offender share the
+// consequences — and wrong here: revoking is a self-inflicted cost on one
+// person, so it stays at hop depth 0 and reaches nobody else.
+//
+// CreatedAt and DecaysAt come from a single clock reading because
+// penaltyDecayDays recovers the window as the difference between them; two
+// reads would make a "30 day" penalty decay over 29 or 31.
+//
+// A revocation that has already happened must not be undone because the penalty
+// could not be recorded, so a failure is logged rather than returned.
+func (s *VouchService) applyRevocationPenalty(ctx context.Context, voucherID string, now time.Time) {
+	if s.penalties == nil {
+		return
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		s.logger.Warn("generating revocation penalty id failed", "voucher_id", voucherID, "error", err)
+		return
+	}
+
+	decaysAt := now.AddDate(0, 0, revocationPenaltyDecayDays)
+	penalty := &domain.TrustPenalty{
+		ID:     id.String(),
+		UserID: voucherID,
+		// No moderation action: nobody moderated anything. The column is
+		// nullable precisely so this penalty can exist.
+		ModerationActionID: "",
+		PenaltyAmount:      revocationPenaltyPoints,
+		HopDepth:           0,
+		CreatedAt:          now,
+		DecaysAt:           &decaysAt,
+	}
+
+	if err := s.penalties.CreateTrustPenalty(ctx, penalty); err != nil {
+		s.logger.Warn("recording vouch revocation penalty failed", "voucher_id", voucherID, "error", err)
+	}
 }
 
 // enqueueVouchRecalc asks for both sides of a vouch edge to be recomputed.
@@ -215,6 +280,19 @@ func (s *VouchService) Revoke(ctx context.Context, vouchID, actorID string) erro
 
 	if err := s.graph.RemoveVouchEdge(ctx, vouch.VoucherID, vouch.VoucheeID); err != nil {
 		return fmt.Errorf("removing graph edge: %w", err)
+	}
+
+	// Only a voucher withdrawing their own endorsement pays. The penalty exists
+	// to make vouch-and-revoke gaming cost something, and the gamer is the
+	// voucher; a moderator or council member revoking someone else's vouch is
+	// doing the job, and taxing them for it would discourage exactly the
+	// clean-up the trust graph depends on. Their instrument for punishing a bad
+	// voucher is a moderation action, which carries its own penalty.
+	//
+	// This is also why enqueueVouchRecalc does not need the actor: the party
+	// charged here is always the voucher, whom it already enqueues.
+	if vouch.VoucherID == actorID {
+		s.applyRevocationPenalty(ctx, vouch.VoucherID, s.now())
 	}
 
 	s.enqueueVouchRecalc(ctx, vouch.VoucherID, vouch.VoucheeID)

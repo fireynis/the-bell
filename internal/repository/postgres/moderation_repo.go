@@ -116,7 +116,7 @@ func (r *PenaltyRepo) CreateTrustPenalty(ctx context.Context, penalty *domain.Tr
 	_, err := r.q.CreateTrustPenalty(ctx, CreateTrustPenaltyParams{
 		ID:                 penalty.ID,
 		UserID:             penalty.UserID,
-		ModerationActionID: penalty.ModerationActionID,
+		ModerationActionID: moderationActionID(penalty.ModerationActionID),
 		PenaltyAmount:      penalty.PenaltyAmount,
 		HopDepth:           int32(penalty.HopDepth),
 		CreatedAt:          pgtype.Timestamptz{Time: penalty.CreatedAt, Valid: true},
@@ -139,7 +139,7 @@ func (r *PenaltyRepo) ListActivePenaltiesByUser(ctx context.Context, userID stri
 }
 
 func (r *PenaltyRepo) ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error) {
-	rows, err := r.q.ListTrustPenaltiesByActionID(ctx, actionID)
+	rows, err := r.q.ListTrustPenaltiesByActionID(ctx, moderationActionID(actionID))
 	if err != nil {
 		return nil, err
 	}
@@ -151,11 +151,21 @@ func (r *PenaltyRepo) ListPenaltiesByActionID(ctx context.Context, actionID stri
 	return penalties, nil
 }
 
+// moderationActionID converts the domain's "" sentinel into SQL NULL.
+//
+// moderation_action_id is nullable because a penalty is not necessarily
+// moderation-caused: revoking a vouch penalises the voucher with no moderator
+// or action behind it. The domain keeps a plain string, with "" meaning "not
+// moderation-caused", the same way it keeps DecaysAt's absence as a nil pointer.
+func moderationActionID(id string) pgtype.Text {
+	return pgtype.Text{String: id, Valid: id != ""}
+}
+
 func trustPenaltyFromRow(row TrustPenalty) domain.TrustPenalty {
 	p := domain.TrustPenalty{
 		ID:                 row.ID,
 		UserID:             row.UserID,
-		ModerationActionID: row.ModerationActionID,
+		ModerationActionID: row.ModerationActionID.String,
 		PenaltyAmount:      row.PenaltyAmount,
 		HopDepth:           int(row.HopDepth),
 		CreatedAt:          row.CreatedAt.Time,

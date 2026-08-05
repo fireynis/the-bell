@@ -35,6 +35,9 @@ func TestMigrations_ColumnsLandInPublicSchema(t *testing.T) {
 		{"users", "trust_below_since"},
 		{"posts", "status"},
 		{"role_history", "new_role"},
+		// Altered by 00015, which runs after the AGE migrations: if search_path
+		// were left pointing at ag_catalog the ALTER would miss this table.
+		{"trust_penalties", "moderation_action_id"},
 	}
 
 	for _, tt := range tests {
@@ -205,5 +208,44 @@ func TestUserRepo_MutedUntil_ReachesEveryUserRead(t *testing.T) {
 		if got.CanPost(time.Now()) {
 			t.Errorf("%s: CanPost() = true during an active mute", name)
 		}
+	}
+}
+
+// Migration 00015 dropped NOT NULL on trust_penalties.moderation_action_id so
+// that a penalty which no moderator caused — revoking a vouch costs the voucher
+// -3 for 30 days — can be written at all. Before it, both an empty string and a
+// synthetic id failed the foreign key, so the design doc's revocation penalty
+// was unimplementable.
+func TestMigrations_PenaltyMayHaveNoModerationAction(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+
+	var nullable string
+	err := pool.QueryRow(ctx,
+		`SELECT is_nullable FROM information_schema.columns
+		 WHERE table_schema = 'public' AND table_name = 'trust_penalties'
+		   AND column_name = 'moderation_action_id'`,
+	).Scan(&nullable)
+	if err != nil {
+		t.Fatalf("looking up trust_penalties.moderation_action_id: %v", err)
+	}
+	if nullable != "YES" {
+		t.Errorf("moderation_action_id is_nullable = %q, want YES — a penalty with no moderation action behind it cannot be written", nullable)
+	}
+
+	// The foreign key must still hold for every non-NULL value, so moderation
+	// penalties stay tied to a real action.
+	var constraints int
+	err = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM information_schema.table_constraints
+		 WHERE table_schema = 'public' AND table_name = 'trust_penalties'
+		   AND constraint_type = 'FOREIGN KEY'
+		   AND constraint_name = 'trust_penalties_moderation_action_id_fkey'`,
+	).Scan(&constraints)
+	if err != nil {
+		t.Fatalf("looking up the foreign key: %v", err)
+	}
+	if constraints != 1 {
+		t.Errorf("found %d moderation_action_id foreign keys, want 1 — dropping NOT NULL must not drop the reference", constraints)
 	}
 }

@@ -20,7 +20,7 @@ RETURNING id, user_id, moderation_action_id, penalty_amount, hop_depth, created_
 type CreateTrustPenaltyParams struct {
 	ID                 string             `json:"id"`
 	UserID             string             `json:"user_id"`
-	ModerationActionID string             `json:"moderation_action_id"`
+	ModerationActionID pgtype.Text        `json:"moderation_action_id"`
 	PenaltyAmount      float64            `json:"penalty_amount"`
 	HopDepth           int32              `json:"hop_depth"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
@@ -89,7 +89,7 @@ WHERE moderation_action_id = $1
 ORDER BY hop_depth ASC
 `
 
-func (q *Queries) ListTrustPenaltiesByActionID(ctx context.Context, moderationActionID string) ([]TrustPenalty, error) {
+func (q *Queries) ListTrustPenaltiesByActionID(ctx context.Context, moderationActionID pgtype.Text) ([]TrustPenalty, error) {
 	rows, err := q.db.Query(ctx, listTrustPenaltiesByActionID, moderationActionID)
 	if err != nil {
 		return nil, err

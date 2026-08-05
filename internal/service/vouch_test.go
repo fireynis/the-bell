@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -853,5 +854,266 @@ func TestVouchService_Vouch_RejectedVouchEnqueuesNothing(t *testing.T) {
 	}
 	if len(queue.enqueued) != 0 {
 		t.Errorf("enqueued %v, want nothing for a rejected vouch", queue.enqueued)
+	}
+}
+
+// --- Revocation penalty (design doc: -3 for 30 days) ---
+
+// revocableVouch builds the common fixture: an active vouch, its graph edge,
+// and the voucher.
+func revocableVouch(voucherTrust float64) (*mockVouchRepo, *mockGraph, *mockUserGetter) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	graph.edges[[2]string{"voucher-1", "vouchee-1"}] = true
+	repo.vouches["vouch-1"] = &domain.Vouch{
+		ID: "vouch-1", VoucherID: "voucher-1", VoucheeID: "vouchee-1",
+		Status: domain.VouchActive,
+	}
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", voucherTrust)
+	return repo, graph, users
+}
+
+func TestVouchService_Revoke_ChargesTheVoucherThreePointsForThirtyDays(t *testing.T) {
+	repo, graph, users := revocableVouch(50.0)
+	penalties := newMockPenaltyRepo()
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+
+	if len(penalties.penalties) != 1 {
+		t.Fatalf("wrote %d penalties, want 1", len(penalties.penalties))
+	}
+	p := penalties.penalties[0]
+
+	// The voucher pays, not the person they vouched for: the vouchee already
+	// loses the endorsement, and charging them would punish being dropped.
+	if p.UserID != "voucher-1" {
+		t.Errorf("penalty charged to %q, want the voucher %q", p.UserID, "voucher-1")
+	}
+	if p.PenaltyAmount != revocationPenaltyPoints {
+		t.Errorf("penalty = %v, want %v", p.PenaltyAmount, revocationPenaltyPoints)
+	}
+	// Nothing moderated anything, so there is no action to point at.
+	if p.ModerationActionID != "" {
+		t.Errorf("moderation action = %q, want empty (no moderation action exists)", p.ModerationActionID)
+	}
+	if !p.CreatedAt.Equal(fixedNow) {
+		t.Errorf("created_at = %v, want %v", p.CreatedAt, fixedNow)
+	}
+	if p.DecaysAt == nil {
+		t.Fatal("penalty is permanent; it must decay after 30 days")
+	}
+	if want := fixedNow.AddDate(0, 0, revocationPenaltyDecayDays); !p.DecaysAt.Equal(want) {
+		t.Errorf("decays_at = %v, want %v", p.DecaysAt, want)
+	}
+	// CreatedAt and DecaysAt must come from one clock read, because the decay
+	// window is recovered as the difference between them.
+	if days := penaltyDecayDays(*p); days != revocationPenaltyDecayDays {
+		t.Errorf("recovered decay window = %d days, want %d", days, revocationPenaltyDecayDays)
+	}
+}
+
+// A revocation penalty is a self-inflicted cost on one person. Moderation
+// penalties propagate to the offender's vouchers; this one must not, or
+// withdrawing one endorsement would quietly dock everyone who endorsed you.
+func TestVouchService_Revoke_PenaltyDoesNotPropagate(t *testing.T) {
+	repo, graph, users := revocableVouch(50.0)
+	penalties := newMockPenaltyRepo()
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+
+	if len(penalties.penalties) != 1 {
+		t.Fatalf("wrote %d penalty rows, want exactly 1 (the penalty propagated)", len(penalties.penalties))
+	}
+	if got := penalties.penalties[0].HopDepth; got != 0 {
+		t.Errorf("hop depth = %d, want 0 (a propagated penalty sits deeper)", got)
+	}
+}
+
+// Moderators and council may revoke anyone's vouch, and doing so costs nobody
+// anything — not the moderator, who is doing the job, and not the voucher, who
+// did not choose to withdraw. The asymmetry with self-revocation is deliberate:
+// the penalty exists to make vouch-and-revoke gaming expensive, and the gamer
+// is always the voucher acting on their own vouch. A moderator who thinks the
+// voucher deserves a penalty takes a moderation action, which carries its own.
+func TestVouchService_Revoke_ByModeratorPenalisesNobody(t *testing.T) {
+	tests := []struct {
+		name string
+		role domain.Role
+	}{
+		{"moderator", domain.RoleModerator},
+		{"council", domain.RoleCouncil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, graph, users := revocableVouch(50.0)
+			users.users["actor-1"] = &domain.User{
+				ID: "actor-1", TrustScore: 80.0, Role: tt.role, IsActive: true,
+			}
+			penalties := newMockPenaltyRepo()
+
+			svc := NewVouchService(repo, graph, users, fixedClock)
+			svc.SetPenaltyRepository(penalties)
+
+			if err := svc.Revoke(context.Background(), "vouch-1", "actor-1"); err != nil {
+				t.Fatalf("Revoke() unexpected error: %v", err)
+			}
+
+			if len(penalties.penalties) != 0 {
+				t.Fatalf("wrote %d penalties, want 0: %+v", len(penalties.penalties), penalties.penalties[0])
+			}
+			// The revocation itself must still have happened.
+			if repo.vouches["vouch-1"].Status != domain.VouchRevoked {
+				t.Error("vouch was not revoked")
+			}
+			if graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+				t.Error("graph edge was not removed")
+			}
+		})
+	}
+}
+
+// The penalty is deliberately small, and this pins how small in the terms that
+// actually matter: what one revocation costs a composite trust score.
+//
+// Moderation is 30% of the composite, so -3 moderation points is -0.9 overall —
+// under a single point, and fully recovered in 30 days.
+func TestVouchService_Revoke_CostsUnderOneCompositePoint(t *testing.T) {
+	repo, graph, users := revocableVouch(65.0)
+	penalties := newMockPenaltyRepo()
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+
+	active := []ActivePenalty{toActivePenalty(*penalties.penalties[0])}
+	penalised := CalcModerationScore(active, fixedNow)
+
+	// Hold the other three components fixed; only the moderation one moves.
+	const tenure, activity, voucher = 80.0, 80.0, 80.0
+	before := CompositeScore(tenure, activity, voucher, 100)
+	after := CompositeScore(tenure, activity, voucher, penalised)
+	cost := before - after
+
+	if cost >= 1.0 {
+		t.Errorf("one revocation costs %v composite points; the penalty is meant to be small enough to ignore", cost)
+	}
+	if math.Abs(cost-0.9) > 0.0001 {
+		t.Errorf("revocation cost = %v composite points, want 0.9 (3 penalty points at the 30%% moderation weight)", cost)
+	}
+
+	// A voucher with any real margin above the threshold keeps vouching.
+	stillAble := &domain.User{
+		ID: "voucher-1", IsActive: true, Role: domain.RoleMember,
+		TrustScore: 65.0 - cost,
+	}
+	if !stillAble.CanVouch() {
+		t.Errorf("a voucher at 65 lost the ability to vouch after one revocation (now %v)", stillAble.TrustScore)
+	}
+}
+
+// The boundary case, documented rather than asserted away: because the penalty
+// costs 0.9 composite points, a voucher sitting between the threshold and
+// threshold+0.9 does drop below it and cannot vouch again until the penalty
+// decays. The design doc promises the penalty is "small enough that revoking a
+// bad actor is still clearly worth it", not that it can never cross a
+// threshold, and someone at exactly 60.0 is marginal by definition.
+//
+// This is pinned so that the narrow band is a known, deliberate consequence
+// rather than a surprise discovered in production.
+func TestVouchService_Revoke_MarginalVoucherFallsBelowTheThreshold(t *testing.T) {
+	const revocationCompositeCost = revocationPenaltyPoints * 0.30
+
+	atThreshold := &domain.User{
+		ID: "voucher-1", IsActive: true, Role: domain.RoleMember,
+		TrustScore: domain.VouchingThreshold - revocationCompositeCost,
+	}
+	if atThreshold.CanVouch() {
+		t.Errorf("expected a voucher starting at exactly the threshold to fall below it (now %v)", atThreshold.TrustScore)
+	}
+
+	// Someone who started just above the band lands just above the threshold.
+	justClear := &domain.User{
+		ID: "voucher-2", IsActive: true, Role: domain.RoleMember,
+		TrustScore: (domain.VouchingThreshold + revocationCompositeCost + 0.01) - revocationCompositeCost,
+	}
+	if !justClear.CanVouch() {
+		t.Errorf("a voucher just above the band lost the ability to vouch (now %v)", justClear.TrustScore)
+	}
+}
+
+// The penalty must fade. A permanent -3 for withdrawing an endorsement would
+// accumulate over a member's lifetime into a real punishment.
+func TestVouchService_Revoke_PenaltyDecaysToNothingAfterThirtyDays(t *testing.T) {
+	repo, graph, users := revocableVouch(50.0)
+	penalties := newMockPenaltyRepo()
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+	active := []ActivePenalty{toActivePenalty(*penalties.penalties[0])}
+
+	dayZero := CalcModerationScore(active, fixedNow)
+	dayFifteen := CalcModerationScore(active, fixedNow.AddDate(0, 0, 15))
+	dayThirtyOne := CalcModerationScore(active, fixedNow.AddDate(0, 0, 31))
+
+	if dayZero >= 100 {
+		t.Errorf("day 0 moderation score = %v, want the full penalty applied", dayZero)
+	}
+	if !(dayZero < dayFifteen && dayFifteen < dayThirtyOne) {
+		t.Errorf("penalty does not ramp off linearly: day0=%v day15=%v day31=%v", dayZero, dayFifteen, dayThirtyOne)
+	}
+	if dayThirtyOne != 100 {
+		t.Errorf("day 31 moderation score = %v, want 100 (the penalty should be gone)", dayThirtyOne)
+	}
+}
+
+// A deployment with no penalty store still revokes; the revocation simply
+// carries no cost, the same way an absent trust queue skips recalculation.
+func TestVouchService_Revoke_WithoutPenaltyStoreStillRevokes(t *testing.T) {
+	repo, graph, users := revocableVouch(50.0)
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+	if repo.vouches["vouch-1"].Status != domain.VouchRevoked {
+		t.Error("vouch was not revoked")
+	}
+}
+
+// A revocation that already happened must not be undone because the penalty
+// could not be recorded.
+func TestVouchService_Revoke_PenaltyWriteFailureDoesNotFailTheRevocation(t *testing.T) {
+	repo, graph, users := revocableVouch(50.0)
+	penalties := newMockPenaltyRepo()
+	penalties.createErr = errors.New("penalty store unavailable")
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	if err := svc.Revoke(context.Background(), "vouch-1", "voucher-1"); err != nil {
+		t.Fatalf("Revoke() returned %v; a failed penalty write must not undo the revocation", err)
+	}
+	if repo.vouches["vouch-1"].Status != domain.VouchRevoked {
+		t.Error("vouch was not revoked")
 	}
 }

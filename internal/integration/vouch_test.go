@@ -187,3 +187,96 @@ func TestVouchApprovalStillRequiresCouncilOverHTTP(t *testing.T) {
 		t.Errorf("status = %d, want %d for a member: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
+
+// The unit tests prove Revoke asks for a penalty; this proves the row actually
+// lands. It is the assertion the schema previously made impossible — the column
+// was NOT NULL REFERENCES moderation_actions(id), so a penalty with no
+// moderation action behind it could not be written at all.
+func TestVouchRevocationWritesRealPenaltyRow(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	svcs := newTestServices(t, pool)
+
+	voucher := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("pen-voucher"), domain.RoleMember, 80.0)
+	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("pen-vouchee"), domain.RoleMember, 50.0)
+
+	vouch, err := svcs.VouchService.Vouch(ctx, voucher.ID, vouchee.ID)
+	if err != nil {
+		t.Fatalf("Vouch() error = %v", err)
+	}
+	if err := svcs.VouchService.Revoke(ctx, vouch.ID, voucher.ID); err != nil {
+		t.Fatalf("Revoke() error = %v", err)
+	}
+
+	var (
+		amount   float64
+		hopDepth int
+		actionID *string
+		window   float64
+	)
+	err = pool.QueryRow(ctx,
+		`SELECT penalty_amount, hop_depth, moderation_action_id,
+		        EXTRACT(EPOCH FROM (decays_at - created_at)) / 86400
+		 FROM trust_penalties WHERE user_id = $1`,
+		voucher.ID,
+	).Scan(&amount, &hopDepth, &actionID, &window)
+	if err != nil {
+		t.Fatalf("reading the revocation penalty back: %v", err)
+	}
+
+	if amount != 3.0 {
+		t.Errorf("penalty_amount = %v, want 3", amount)
+	}
+	if hopDepth != 0 {
+		t.Errorf("hop_depth = %d, want 0 (the penalty must not have propagated)", hopDepth)
+	}
+	if actionID != nil {
+		t.Errorf("moderation_action_id = %q, want NULL — no moderation action exists", *actionID)
+	}
+	// AddDate adds calendar days, so allow for a DST transition inside the window.
+	if window < 29.9 || window > 30.1 {
+		t.Errorf("decay window = %v days, want 30", window)
+	}
+
+	// The vouchee is not charged for being dropped.
+	var voucheePenalties int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM trust_penalties WHERE user_id = $1`, vouchee.ID,
+	).Scan(&voucheePenalties); err != nil {
+		t.Fatalf("counting vouchee penalties: %v", err)
+	}
+	if voucheePenalties != 0 {
+		t.Errorf("vouchee carries %d penalties, want 0", voucheePenalties)
+	}
+}
+
+// A moderator cleaning up someone else's bad endorsement is doing the job, and
+// pays nothing for it — nor does the voucher, who did not choose to withdraw.
+func TestVouchRevocationByModeratorWritesNoPenalty(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	svcs := newTestServices(t, pool)
+
+	voucher := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("mod-rev-voucher"), domain.RoleMember, 80.0)
+	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("mod-rev-vouchee"), domain.RoleMember, 50.0)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("mod-rev-mod"), domain.RoleModerator, 90.0)
+
+	vouch, err := svcs.VouchService.Vouch(ctx, voucher.ID, vouchee.ID)
+	if err != nil {
+		t.Fatalf("Vouch() error = %v", err)
+	}
+	if err := svcs.VouchService.Revoke(ctx, vouch.ID, mod.ID); err != nil {
+		t.Fatalf("Revoke() by moderator error = %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM trust_penalties WHERE user_id = ANY($1)`,
+		[]string{voucher.ID, vouchee.ID, mod.ID},
+	).Scan(&count); err != nil {
+		t.Fatalf("counting penalties: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("moderator revocation wrote %d penalties, want 0", count)
+	}
+}

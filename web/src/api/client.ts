@@ -104,15 +104,10 @@ export const userApi = {
 export const vouchApi = {
   listForUser: (userId: string) => api.get<VouchesResponse>(`/users/${userId}/vouches`),
 
-  // NOTE: as of this writing neither of the two below has a server route.
-  // VouchService.Vouch and VouchService.Revoke exist in
-  // internal/service/vouch.go but nothing in internal/server/routes.go reaches
-  // them — the /v1/vouches group is the council approval flow (GET /pending,
-  // POST /approve/{id}) and is guarded to RoleCouncil. These paths follow the
-  // design doc and the service signatures; confirm them against the handler
-  // once it lands, because the two disagree about revoke: the design doc keys
-  // it by vouchee id, while VouchService.Revoke takes a vouch id.
+  /** Answers 201 with the created vouch. */
   create: (req: CreateVouchRequest) => api.post<Vouch>("/vouches", req),
+
+  /** Answers 204 with no body; api.request short-circuits before parsing. */
   revoke: (vouchId: string) => api.delete(`/vouches/${vouchId}`),
 };
 

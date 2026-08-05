@@ -12,16 +12,21 @@ export const DAILY_VOUCH_LIMIT = 3;
  * for 30 days, to stop vouch-and-revoke gaming while staying small enough that
  * revoking a bad actor is still worth doing.
  *
- * REVOKE_PENALTY_ENFORCED is false because VouchService.Revoke in
- * internal/service/vouch.go does not apply it — it marks the vouch revoked,
- * removes the graph edge and queues a recalculation, and that is all. Telling
- * someone they will lose trust they will not actually lose is a lie the UI must
- * not tell, so the warning copy is written from this flag. Flip it when the
- * service implements the penalty.
+ * REVOKE_PENALTY_ENFORCED was false while VouchService.Revoke did not apply the
+ * penalty — telling someone they will lose trust they will not actually lose is
+ * a lie the UI must not tell. It is now true: Revoke writes a trust_penalty row
+ * of REVOKE_PENALTY for REVOKE_PENALTY_DAYS, but only when the revoker is the
+ * voucher. A moderator revoking someone else's vouch is not penalised, so the
+ * warning is shown from the voucher's own view, which is the only place the
+ * revoke control appears.
+ *
+ * Note REVOKE_PENALTY is the raw penalty, not the score drop. The moderation
+ * component carries 30% of the composite weight, so -3 moves a composite score
+ * by about 0.9 — see TestVouchService_Revoke_CostsUnderOneCompositePoint.
  */
 export const REVOKE_PENALTY = 3;
 export const REVOKE_PENALTY_DAYS = 30;
-export const REVOKE_PENALTY_ENFORCED = false;
+export const REVOKE_PENALTY_ENFORCED = true;
 
 /** Milliseconds in a day, for the local-midnight window below. */
 const DAY_MS = 86_400_000;

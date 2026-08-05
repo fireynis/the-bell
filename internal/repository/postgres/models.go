@@ -73,7 +73,7 @@ type TownConfig struct {
 type TrustPenalty struct {
 	ID                 string             `json:"id"`
 	UserID             string             `json:"user_id"`
-	ModerationActionID string             `json:"moderation_action_id"`
+	ModerationActionID pgtype.Text        `json:"moderation_action_id"`
 	PenaltyAmount      float64            `json:"penalty_amount"`
 	HopDepth           int32              `json:"hop_depth"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`

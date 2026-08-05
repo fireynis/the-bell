@@ -114,6 +114,8 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	reactionSvc := service.NewReactionService(reactionRepo, nil)
 	reportSvc := service.NewReportService(reportRepo, postRepo, nil)
 	vouchSvc := service.NewVouchService(vouchRepo, ageQuerier, userRepo, nil)
+	// Revoking a vouch records a decaying trust penalty against the voucher.
+	vouchSvc.SetPenaltyRepository(penaltyRepo)
 	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)
 	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, nil)
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)

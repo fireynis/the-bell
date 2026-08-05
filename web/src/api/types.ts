@@ -44,6 +44,12 @@ export interface Vouch {
   vouchee_id: string;
   status: string;
   created_at: string;
+  /**
+   * Present only on a revoked vouch. Optional rather than nullable because the
+   * Go field is `*time.Time` with omitempty, so it is absent rather than null —
+   * and the profile listing's vouchEntry DTO never sends it at all.
+   */
+  revoked_at?: string;
 }
 
 export interface VouchesResponse {

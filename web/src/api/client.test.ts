@@ -35,6 +35,11 @@ function noContent(): StubResponse {
   };
 }
 
+/**
+ * What POST /api/v1/vouches answers with. domain.Vouch is tagged to match the
+ * vouchEntry DTO the profile listing uses, so both endpoints describe a vouch
+ * the same way; revoked_at is omitted while the vouch is active.
+ */
 const CREATED_VOUCH: Vouch = {
   id: "01930000-0000-7000-8000-000000000001",
   voucher_id: "voucher-1",
@@ -85,11 +90,34 @@ describe("vouchApi.create", () => {
     await expect(vouchApi.create({ vouchee_id: "vouchee-1" })).resolves.toEqual(CREATED_VOUCH);
   });
 
+  // The create and list endpoints describe a vouch identically, so the id from
+  // one can be handed straight to revoke, which takes a vouch id.
   it("returns a vouch whose id is what revoke will need", async () => {
     stubFetch({ ok: true, status: 201, json: () => Promise.resolve(CREATED_VOUCH) });
 
     const created = await vouchApi.create({ vouchee_id: "vouchee-1" });
     expect(created.id).toBe(CREATED_VOUCH.id);
+  });
+
+  // revoked_at is `*time.Time` with omitempty, so on an active vouch the key is
+  // absent altogether rather than present-and-null. Typing it optional rather
+  // than nullable is what makes that the expected shape.
+  it("omits revoked_at entirely while the vouch is active", async () => {
+    stubFetch({ ok: true, status: 201, json: () => Promise.resolve(CREATED_VOUCH) });
+
+    const created = await vouchApi.create({ vouchee_id: "v" });
+    expect(created).not.toHaveProperty("revoked_at");
+  });
+
+  it("carries revoked_at once the vouch has been revoked", async () => {
+    const revoked: Vouch = {
+      ...CREATED_VOUCH,
+      status: "revoked",
+      revoked_at: "2026-08-06T00:00:00Z",
+    };
+    stubFetch({ ok: true, status: 201, json: () => Promise.resolve(revoked) });
+
+    await expect(vouchApi.create({ vouchee_id: "v" })).resolves.toEqual(revoked);
   });
 });
 
