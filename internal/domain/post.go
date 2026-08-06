@@ -33,6 +33,19 @@ type Post struct {
 	// response type of its own.
 	RemovalReason string `json:"-"`
 
+	// RemovedBy is the id of the moderator who took the post down, and is
+	// likewise never serialized.
+	//
+	// It is moderation metadata of exactly the same kind as RemovalReason, so it
+	// gets the same treatment rather than a second convention: it reaches every
+	// caller RemovalReason reaches, and leaking it would tell anyone holding a
+	// post id which moderator handled the case.
+	//
+	// Empty means nobody — an author deleting their own post, or any post that
+	// predates the removed_by column. The database stores that as NULL, since
+	// the column is a foreign key to users and cannot hold "".
+	RemovedBy string `json:"-"`
+
 	CreatedAt         time.Time            `json:"created_at"`
 	EditedAt          *time.Time           `json:"edited_at,omitempty"`
 	AuthorDisplayName string               `json:"author_display_name,omitempty"`

@@ -16,6 +16,7 @@ import (
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/testsupport"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // mockAuthMiddleware returns middleware that injects the given user into the
@@ -42,6 +43,18 @@ func mockAuthMiddleware(user *domain.User) func(http.Handler) http.Handler {
 // impossible by construction.
 func testDeps(t *testing.T, pool *pgxpool.Pool) *app.Deps {
 	t.Helper()
+	return testDepsWithRedis(t, pool, testsupport.TestRedis(t))
+}
+
+// testDepsWithRedis is testDeps over a caller-supplied Redis client.
+//
+// testsupport.TestRedis hands out a different logical database on every call,
+// so two servers built through testDeps cannot see each other's feed cache.
+// Tests that need several identities acting against one cache — a moderator
+// removing a post while the town's cached feed must stop serving it — supply
+// one client for all of them.
+func testDepsWithRedis(t *testing.T, pool *pgxpool.Pool, rdb *redis.Client) *app.Deps {
+	t.Helper()
 
 	cfg := config.Config{
 		Port:        8080,
@@ -54,7 +67,7 @@ func testDeps(t *testing.T, pool *pgxpool.Pool) *app.Deps {
 		ImageStoragePath: t.TempDir(),
 	}
 
-	deps, err := app.Build(cfg, pool, testsupport.TestRedis(t), testsupport.DiscardLogger())
+	deps, err := app.Build(cfg, pool, rdb, testsupport.DiscardLogger())
 	if err != nil {
 		t.Fatalf("building app dependencies: %v", err)
 	}
@@ -65,12 +78,53 @@ func testDeps(t *testing.T, pool *pgxpool.Pool) *app.Deps {
 // given pool and injecting the authUser via mock auth middleware.
 func testServer(t *testing.T, pool *pgxpool.Pool, authUser *domain.User) *server.Server {
 	t.Helper()
-	deps := testDeps(t, pool)
+	return serverFromDeps(t, pool, testDeps(t, pool), authUser)
+}
 
-	// Options apply in order, so appending WithAuth replaces the Kratos
-	// middleware Build installed. Clone first: appending to deps.ServerOptions
-	// in place would write into its backing array.
-	opts := append(slices.Clone(deps.ServerOptions), server.WithAuth(mockAuthMiddleware(authUser)))
+// testServerWithRedis is testServer over a caller-supplied Redis client. See
+// testDepsWithRedis for when that matters.
+func testServerWithRedis(t *testing.T, pool *pgxpool.Pool, rdb *redis.Client, authUser *domain.User) *server.Server {
+	t.Helper()
+	return serverFromDeps(t, pool, testDepsWithRedis(t, pool, rdb), authUser)
+}
+
+// serverFromDeps installs the mock identity over a built dependency graph.
+//
+// BOTH auth middlewares are replaced, not just the guarded one. The public post
+// routes — GET /api/v1/posts and GET /api/v1/posts/{id} — resolve their caller
+// through OptionalAuth, which app.Build points at Kratos. Overriding only
+// WithAuth left every integration test looking anonymous on those routes, so
+// canViewPost's author-and-moderator branch and the whole user_reactions
+// enrichment path were never exercised with a real identity: a moderator asking
+// for a removed post got the stranger's 404, which reads as a product bug and
+// is not one. This is the same class of gap as a harness that omits a service
+// and silently loses a route family.
+//
+// A test that wants a genuinely anonymous reader uses anonymousTestServer.
+func serverFromDeps(t *testing.T, pool *pgxpool.Pool, deps *app.Deps, authUser *domain.User) *server.Server {
+	t.Helper()
+
+	// Options apply in order, so appending replaces the middleware Build
+	// installed. Clone first: appending to deps.ServerOptions in place would
+	// write into its backing array.
+	opts := append(slices.Clone(deps.ServerOptions),
+		server.WithAuth(mockAuthMiddleware(authUser)),
+		server.WithOptionalAuth(mockAuthMiddleware(authUser)),
+	)
+
+	return server.New(deps.Config, pool, deps.Logger, opts...)
+}
+
+// anonymousTestServer builds a server whose OptionalAuth passes callers through
+// untouched, which is what a reader with no session looks like on a public
+// route. The guarded middleware is left as Build installed it, so anything
+// behind a guard is refused.
+func anonymousTestServer(t *testing.T, pool *pgxpool.Pool, rdb *redis.Client) *server.Server {
+	t.Helper()
+	deps := testDepsWithRedis(t, pool, rdb)
+
+	passthrough := func(next http.Handler) http.Handler { return next }
+	opts := append(slices.Clone(deps.ServerOptions), server.WithOptionalAuth(passthrough))
 
 	return server.New(deps.Config, pool, deps.Logger, opts...)
 }

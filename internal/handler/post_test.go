@@ -92,13 +92,14 @@ func (m *mockPostRepo) UpdatePostBody(_ context.Context, id string, body string)
 	return p, nil
 }
 
-func (m *mockPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason string) error {
+func (m *mockPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason, removedBy string) error {
 	p, ok := m.posts[id]
 	if !ok {
 		return service.ErrNotFound
 	}
 	p.Status = status
 	p.RemovalReason = reason
+	p.RemovedBy = removedBy
 	return nil
 }
 
@@ -446,34 +447,48 @@ func TestPostHandler_GetByID_RemovedPostIs404ToAnonymous(t *testing.T) {
 // The flow this whole change had to avoid breaking: a moderator opening the
 // report queue fetches the reported post by id, and it is routinely no longer
 // visible — the author deletes it once reported.
+//
+// Both removed statuses are pinned. removed_by_mod is the one moderator removal
+// writes, so if it stopped being readable the queue would break the instant a
+// removal succeeded — the moderator would take the post down and immediately
+// lose the ability to see what they had acted on.
 func TestPostHandler_GetByID_ModeratorStillSeesARemovedPost(t *testing.T) {
-	repo := newMockPostRepo()
-	repo.posts["post-1"] = &domain.Post{
-		ID: "post-1", AuthorID: "author-1", Body: "the reported body",
-		Status: domain.PostRemovedByAuthor, CreatedAt: fixedNow,
-	}
-	h := handler.NewPostHandler(newTestPostService(repo))
-
-	for _, viewer := range []*domain.User{
-		{ID: "mod-1", Role: domain.RoleModerator, IsActive: true},
-		{ID: "council-1", Role: domain.RoleCouncil, IsActive: true},
-		{ID: "author-1", Role: domain.RoleMember, IsActive: true},
-	} {
-		t.Run(string(viewer.Role), func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
-			req = withChiURLParam(req, "id", "post-1")
-			req = withUser(req, viewer)
-			rec := httptest.NewRecorder()
-
-			h.GetByID(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	for _, status := range []domain.PostStatus{domain.PostRemovedByAuthor, domain.PostRemovedByMod} {
+		t.Run(string(status), func(t *testing.T) {
+			repo := newMockPostRepo()
+			repo.posts["post-1"] = &domain.Post{
+				ID: "post-1", AuthorID: "author-1", Body: "the reported body",
+				Status: status, RemovalReason: "a private note", RemovedBy: "mod-1",
+				CreatedAt: fixedNow,
 			}
-			var post domain.Post
-			decodeBody(t, rec, &post)
-			if post.Body != "the reported body" {
-				t.Errorf("body = %q, want the post content", post.Body)
+			h := handler.NewPostHandler(newTestPostService(repo))
+
+			for _, viewer := range []*domain.User{
+				{ID: "mod-1", Role: domain.RoleModerator, IsActive: true},
+				{ID: "council-1", Role: domain.RoleCouncil, IsActive: true},
+				{ID: "author-1", Role: domain.RoleMember, IsActive: true},
+			} {
+				t.Run(string(viewer.Role), func(t *testing.T) {
+					req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+					req = withChiURLParam(req, "id", "post-1")
+					req = withUser(req, viewer)
+					rec := httptest.NewRecorder()
+
+					h.GetByID(rec, req)
+
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+					}
+					var post domain.Post
+					decodeBody(t, rec, &post)
+					if post.Body != "the reported body" {
+						t.Errorf("body = %q, want the post content", post.Body)
+					}
+					// Readable, but the moderation metadata still does not ride along.
+					if strings.Contains(rec.Body.String(), "a private note") {
+						t.Errorf("response leaked the removal reason: %s", rec.Body.String())
+					}
+				})
 			}
 		})
 	}
@@ -1077,5 +1092,181 @@ func TestPostHandler_GetByID_EnrichesSinglePost(t *testing.T) {
 	}
 	if len(post.UserReactions) != 1 {
 		t.Errorf("user reactions = %v, want [celebrate]", post.UserReactions)
+	}
+}
+
+// --- moderator post removal ---
+
+func removeRequest(t *testing.T, postID, body string, user *domain.User) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/moderation/posts/"+postID+"/remove", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withChiURLParam(req, "id", postID)
+	if user != nil {
+		req = withUser(req, user)
+	}
+	return req
+}
+
+func activeModerator() *domain.User {
+	return &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}
+}
+
+func TestPostHandler_RemoveByModerator_TakesThePostDown(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Body: "offending", Status: domain.PostVisible,
+		CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	rec := httptest.NewRecorder()
+	h.RemoveByModerator(rec, removeRequest(t, "post-1", `{"reason":"harassment"}`, activeModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if repo.posts["post-1"].Status != domain.PostRemovedByMod {
+		t.Errorf("status = %q, want %q", repo.posts["post-1"].Status, domain.PostRemovedByMod)
+	}
+	if repo.posts["post-1"].RemovalReason != "harassment" {
+		t.Errorf("removal reason = %q, want %q", repo.posts["post-1"].RemovalReason, "harassment")
+	}
+}
+
+// The reason is a moderator's private note. The removal response is the first
+// thing that ever writes a real one, so it is the first thing that could echo
+// one back — and it must not, even to the moderator who just typed it.
+func TestPostHandler_RemoveByModerator_DoesNotEchoTheReason(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Status: domain.PostVisible, CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	rec := httptest.NewRecorder()
+	h.RemoveByModerator(rec, removeRequest(t,
+		"post-1", `{"reason":"harassment of another member"}`, activeModerator()))
+
+	if strings.Contains(rec.Body.String(), "harassment") {
+		t.Errorf("response echoed the moderator's note: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "removal_reason") {
+		t.Errorf("response carries a removal_reason key: %s", rec.Body.String())
+	}
+}
+
+func TestPostHandler_RemoveByModerator_RejectsUnauthenticated(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "author-1", Status: domain.PostVisible}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	rec := httptest.NewRecorder()
+	h.RemoveByModerator(rec, removeRequest(t, "post-1", `{"reason":"spam"}`, nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if repo.posts["post-1"].Status != domain.PostVisible {
+		t.Error("post was removed by an unauthenticated caller")
+	}
+}
+
+// The route group guards this, but the handler must not depend on that alone:
+// a caller who reaches it without the role is refused here too.
+func TestPostHandler_RemoveByModerator_RejectsANonModerator(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "author-1", Status: domain.PostVisible}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	member := &domain.User{ID: "u1", Role: domain.RoleMember, IsActive: true}
+	rec := httptest.NewRecorder()
+	h.RemoveByModerator(rec, removeRequest(t, "post-1", `{"reason":"spam"}`, member))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if repo.posts["post-1"].Status != domain.PostVisible {
+		t.Error("post was removed by a member")
+	}
+}
+
+func TestPostHandler_RemoveByModerator_ErrorStatuses(t *testing.T) {
+	tests := []struct {
+		name       string
+		postID     string
+		body       string
+		wantStatus int
+	}{
+		{"a blank reason is a bad request", "post-1", `{"reason":"   "}`, http.StatusBadRequest},
+		{"a missing reason is a bad request", "post-1", `{}`, http.StatusBadRequest},
+		{"malformed JSON is a bad request", "post-1", `{"reason":`, http.StatusBadRequest},
+		{"an unknown post is not found", "no-such-post", `{"reason":"spam"}`, http.StatusNotFound},
+		{"an already-removed post is a bad request", "post-gone", `{"reason":"spam"}`, http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockPostRepo()
+			repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "a1", Status: domain.PostVisible}
+			repo.posts["post-gone"] = &domain.Post{
+				ID: "post-gone", AuthorID: "a1", Status: domain.PostRemovedByAuthor,
+			}
+			h := handler.NewPostHandler(newTestPostService(repo))
+
+			rec := httptest.NewRecorder()
+			h.RemoveByModerator(rec, removeRequest(t, tt.postID, tt.body, activeModerator()))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+// The audit trail's whole point: the removal names the moderator who made it.
+func TestPostHandler_RemoveByModerator_RecordsWhoRemovedIt(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Status: domain.PostVisible, CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	rec := httptest.NewRecorder()
+	h.RemoveByModerator(rec, removeRequest(t, "post-1", `{"reason":"harassment"}`, activeModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if repo.posts["post-1"].RemovedBy != "mod-1" {
+		t.Errorf("RemovedBy = %q, want the acting moderator %q",
+			repo.posts["post-1"].RemovedBy, "mod-1")
+	}
+}
+
+// The moderator's identity is moderation metadata, exactly like the reason, and
+// must not ride out on the public post shape either.
+func TestPostHandler_GetByID_DoesNotLeakRemovedBy(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Body: "the post body",
+		Status: domain.PostRemovedByMod, RemovalReason: "off topic",
+		RemovedBy: "moderator-42", CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil)
+	req = withChiURLParam(req, "id", "post-1")
+	req = withUser(req, activeModerator())
+	rec := httptest.NewRecorder()
+
+	h.GetByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "moderator-42") {
+		t.Errorf("response named the removing moderator: %s", rec.Body.String())
 	}
 }

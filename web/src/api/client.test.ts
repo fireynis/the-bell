@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiError, Vouch } from "./types";
-import { vouchApi } from "./client";
+import { moderationApi, vouchApi } from "./client";
 
 /**
  * These exercise the client against the response shapes the vouch handler
@@ -189,5 +189,89 @@ describe("a refusal from the server", () => {
 
     const err = await vouchApi.create({ vouchee_id: "v" }).catch((e: ApiError) => e);
     expect(err).toEqual({ error: "Bad Gateway", status: 502 });
+  });
+});
+
+/**
+ * POST /api/v1/moderation/posts/{id}/remove answers 204 with no body. The
+ * removal reason is a moderator's private note that the server deliberately
+ * never serializes, so there is nothing to parse and nothing to read back.
+ */
+describe("moderationApi.removePost", () => {
+  it("posts the reason to the removal endpoint for that post", async () => {
+    const fetchMock = stubFetch(noContent());
+
+    await moderationApi.removePost("post-1", "harassment");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/posts/post-1/remove");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ reason: "harassment" });
+  });
+
+  it("resolves on a 204 without trying to parse the empty body", async () => {
+    const response = noContent();
+    const jsonSpy = vi.spyOn(response, "json");
+    stubFetch(response);
+
+    await expect(moderationApi.removePost("post-1", "spam")).resolves.toBeUndefined();
+    expect(jsonSpy).not.toHaveBeenCalled();
+  });
+
+  // The server's wording is the accurate one — "post is already removed" when
+  // another moderator got there first, or the role refusal — so it has to reach
+  // the card rather than being replaced with a generic message.
+  it.each([
+    [400, "validation: post is already removed"],
+    [400, "validation: reason must not be empty"],
+    [403, "forbidden"],
+    [404, "not found"],
+  ])("surfaces the %d message %o verbatim", async (status, message) => {
+    stubFetch({
+      ok: false,
+      status,
+      json: () => Promise.resolve({ error: message }),
+    });
+
+    const err = await moderationApi.removePost("post-1", "spam").catch((e: ApiError) => e);
+
+    expect(err).toEqual({ error: message, status });
+  });
+});
+
+/**
+ * PATCH /api/v1/moderation/reports/{id} is what resolves a report. It is
+ * pinned here because the failure mode it guards against is silent: the queue
+ * used to drop a report from local state and never tell the server, so the
+ * report returned `pending` on the next load.
+ */
+describe("moderationApi.updateReportStatus", () => {
+  it("patches the report to reviewed", async () => {
+    const fetchMock = stubFetch({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "report-1", status: "reviewed" }),
+    });
+
+    await moderationApi.updateReportStatus("report-1", "reviewed");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/reports/report-1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body as string)).toEqual({ status: "reviewed" });
+  });
+
+  it("surfaces a refusal rather than resolving", async () => {
+    stubFetch({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ error: "internal error" }),
+    });
+
+    const err = await moderationApi
+      .updateReportStatus("report-1", "reviewed")
+      .catch((e: ApiError) => e);
+
+    expect(err).toEqual({ error: "internal error", status: 500 });
   });
 });

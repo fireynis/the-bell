@@ -37,6 +37,7 @@ type Post struct {
 	RemovalReason string             `json:"removal_reason"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	EditedAt      pgtype.Timestamptz `json:"edited_at"`
+	RemovedBy     pgtype.Text        `json:"removed_by"`
 }
 
 type Reaction struct {

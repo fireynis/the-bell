@@ -4,12 +4,14 @@ import { moderationApi } from "../api/client.ts";
 import type { Report, Post, ApiError } from "../api/types.ts";
 import Spinner from "./Spinner.tsx";
 import { formatAbsoluteTime, formatRelativeTime } from "../lib/time.ts";
+import { canRemovePost } from "../lib/moderation.ts";
 
 interface ReportCardProps {
   report: Report;
   currentUserId: string;
   onDismiss: (reportId: string) => void;
   onTakeAction: (report: Report, postAuthorId: string) => void;
+  onRemovePost: (report: Report, postId: string) => void;
 }
 
 export default function ReportCard({
@@ -17,6 +19,7 @@ export default function ReportCard({
   currentUserId,
   onDismiss,
   onTakeAction,
+  onRemovePost,
 }: ReportCardProps) {
   const [post, setPost] = useState<Post | null>(null);
   const [postError, setPostError] = useState(false);
@@ -153,6 +156,27 @@ export default function ReportCard({
         >
           {dismissing ? "Dismissing..." : "Dismiss"}
         </button>
+        {/* The remedy for the post itself. Take Action below acts against the
+            author instead; before this existed the offending post stayed up no
+            matter what the moderator did. */}
+        {canRemovePost(post) && (
+          <button
+            onClick={() => onRemovePost(report, report.post_id)}
+            className="rounded-md px-3 py-1.5 text-sm font-medium"
+            style={{
+              backgroundColor: "var(--color-surface-tertiary)",
+              color: "var(--color-danger)",
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.filter = "";
+            }}
+          >
+            Remove Post
+          </button>
+        )}
         {post && !isOwnPost && (
           <button
             onClick={() => onTakeAction(report, post.author_id)}

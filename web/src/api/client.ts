@@ -127,6 +127,15 @@ export const moderationApi = {
   getActionHistory: (userId: string, limit: number, offset: number) =>
     api.get<ActionHistoryResponse>(`/moderation/actions/${userId}?limit=${limit}&offset=${offset}`),
   getPost: (postId: string) => api.get<Post>(`/posts/${postId}`),
+
+  /**
+   * Takes a post down on the moderator's authority, recording why.
+   *
+   * Answers 204 with no body: the reason is a moderator's private note that
+   * domain.Post never serializes, so there is nothing to read back.
+   */
+  removePost: (postId: string, reason: string) =>
+    api.post<void>(`/moderation/posts/${postId}/remove`, { reason }),
 };
 
 export const configApi = {

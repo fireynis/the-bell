@@ -126,3 +126,50 @@ func TestPost_RemovalReasonSurvivesInMemory(t *testing.T) {
 		t.Errorf("RemovalReason = %q, want it readable in Go", post.RemovalReason)
 	}
 }
+
+// RemovedBy names the moderator who took a post down. It is moderation
+// metadata, exactly like RemovalReason, and rides on the same struct the public
+// read paths return — so it gets the same guarantee rather than a second
+// convention. Leaking it would tell any reader holding a post id which
+// moderator handled the case.
+func TestPost_RemovedByIsNeverSerialized(t *testing.T) {
+	post := domain.Post{
+		ID:            "post-1",
+		AuthorID:      "author-1",
+		Body:          "the post body",
+		Status:        domain.PostRemovedByMod,
+		RemovalReason: "off topic",
+		RemovedBy:     "moderator-42",
+		CreatedAt:     time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+	}
+
+	encoded, err := json.Marshal(post)
+	if err != nil {
+		t.Fatalf("marshalling post: %v", err)
+	}
+
+	// Checked as a decoded key rather than a substring: the status value of a
+	// moderator-removed post is literally "removed_by_mod", so a substring
+	// search for "removed_by" matches every such post whether or not the field
+	// leaked, and would pass for the wrong reason.
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("post is not valid JSON: %v", err)
+	}
+	if _, present := decoded["removed_by"]; present {
+		t.Errorf("serialized post carries a removed_by key: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "moderator-42") {
+		t.Errorf("serialized post named the moderator: %s", encoded)
+	}
+}
+
+// Hidden from JSON, not dropped from the type: the repository reads it back and
+// a moderator-facing response type would need it.
+func TestPost_RemovedBySurvivesInMemory(t *testing.T) {
+	post := domain.Post{RemovedBy: "moderator-42"}
+
+	if post.RemovedBy != "moderator-42" {
+		t.Errorf("RemovedBy = %q, want it readable in Go", post.RemovedBy)
+	}
+}

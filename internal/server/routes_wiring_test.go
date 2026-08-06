@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
@@ -39,7 +41,7 @@ func (stubPostRepo) ListPostsByAuthor(context.Context, string, int) ([]*domain.P
 func (stubPostRepo) UpdatePostBody(context.Context, string, string) (*domain.Post, error) {
 	return &domain.Post{ID: "p1"}, nil
 }
-func (stubPostRepo) UpdatePostStatus(context.Context, string, domain.PostStatus, string) error {
+func (stubPostRepo) UpdatePostStatus(context.Context, string, domain.PostStatus, string, string) error {
 	return nil
 }
 
@@ -127,60 +129,90 @@ func newWiredServer(t *testing.T, cfg config.Config) *Server {
 	)
 }
 
-// Every route below is registered somewhere in routes/apiRoutes. The point of
-// the test is the absence of 404: a 401 or 403 proves the path resolved and
-// the guard ran, whereas a 404 means the route silently stopped existing.
+// Every route below is registered somewhere in routes/apiRoutes, and each row
+// names the pattern it must resolve to.
+//
+// The absence of a 404 is NOT sufficient evidence, which is what this test used
+// to rely on. chi runs a subrouter's middleware before it resolves the path
+// within that subrouter, so every group declared with r.Route + r.Use — /v1/me,
+// /v1/moderation, /v1/feed/live, the report and reaction routes — answers 401
+// or 403 for a path that was never registered at all. Verified: a request to
+// /api/v1/moderation/nonexistent returns 401, and the moderator post-removal
+// row passed this table before its route existed.
+//
+// So registration is checked against the router itself. chi's Find returns the
+// registered pattern for a method and path, or "" when nothing matches, and it
+// consults the routing tree rather than serving the request — no middleware, no
+// guard, nothing to mistake for a match. Asserting the exact pattern rather
+// than merely "something matched" also catches a route that silently moves.
+//
+// The status assertion stays: it is what proves the guard on a resolved route.
 func TestRoutesAreRegistered(t *testing.T) {
 	srv := newWiredServer(t, config.Config{Port: 0, ImageStoragePath: t.TempDir()})
 	h := srv.Handler()
 
+	// The handler is the chi router itself; Find is not on http.Handler.
+	mux, ok := h.(*chi.Mux)
+	if !ok {
+		t.Fatalf("server handler is %T, want *chi.Mux — registration cannot be verified", h)
+	}
+
 	tests := []struct {
-		name   string
-		method string
-		path   string
-		want   int
+		name    string
+		method  string
+		path    string
+		pattern string
+		want    int
 	}{
-		{"health", http.MethodGet, "/healthz", http.StatusOK},
+		{"health", http.MethodGet, "/healthz", "/healthz", http.StatusOK},
 
 		// Public reads — no session required.
-		{"feed", http.MethodGet, "/api/v1/posts", http.StatusOK},
-		{"single post", http.MethodGet, "/api/v1/posts/p1", http.StatusOK},
-		{"user profile", http.MethodGet, "/api/v1/users/u1", http.StatusOK},
-		{"user posts", http.MethodGet, "/api/v1/users/u1/posts", http.StatusOK},
-		{"user vouches", http.MethodGet, "/api/v1/users/u1/vouches", http.StatusOK},
-		{"town config", http.MethodGet, "/api/v1/config", http.StatusOK},
+		{"feed", http.MethodGet, "/api/v1/posts", "/api/v1/posts", http.StatusOK},
+		{"single post", http.MethodGet, "/api/v1/posts/p1", "/api/v1/posts/{id}", http.StatusOK},
+		{"user profile", http.MethodGet, "/api/v1/users/u1", "/api/v1/users/{id}", http.StatusOK},
+		{"user posts", http.MethodGet, "/api/v1/users/u1/posts", "/api/v1/users/{id}/posts", http.StatusOK},
+		{"user vouches", http.MethodGet, "/api/v1/users/u1/vouches", "/api/v1/users/{id}/vouches", http.StatusOK},
+		{"town config", http.MethodGet, "/api/v1/config", "/api/v1/config", http.StatusOK},
 
 		// Guarded routes — rejected without a user in context.
-		{"live feed", http.MethodGet, "/api/v1/feed/live", http.StatusUnauthorized},
-		{"me", http.MethodGet, "/api/v1/me", http.StatusUnauthorized},
-		{"create post", http.MethodPost, "/api/v1/posts", http.StatusUnauthorized},
-		{"edit post", http.MethodPatch, "/api/v1/posts/p1", http.StatusUnauthorized},
-		{"delete post", http.MethodDelete, "/api/v1/posts/p1", http.StatusUnauthorized},
-		{"add reaction", http.MethodPost, "/api/v1/posts/p1/reactions", http.StatusUnauthorized},
-		{"remove reaction", http.MethodDelete, "/api/v1/posts/p1/reactions/like", http.StatusUnauthorized},
-		{"users me", http.MethodGet, "/api/v1/users/me", http.StatusUnauthorized},
-		{"update users me", http.MethodPut, "/api/v1/users/me", http.StatusUnauthorized},
-		{"report post", http.MethodPost, "/api/v1/posts/p1/report", http.StatusUnauthorized},
-		{"moderation queue", http.MethodGet, "/api/v1/moderation/queue", http.StatusUnauthorized},
-		{"update report", http.MethodPatch, "/api/v1/moderation/reports/r1", http.StatusUnauthorized},
-		{"moderation action", http.MethodPost, "/api/v1/moderation/actions", http.StatusUnauthorized},
-		{"list actions", http.MethodGet, "/api/v1/moderation/actions/u1", http.StatusUnauthorized},
-		{"pending vouches", http.MethodGet, "/api/v1/vouches/pending", http.StatusUnauthorized},
-		{"approve vouch", http.MethodPost, "/api/v1/vouches/approve/v1", http.StatusUnauthorized},
-		{"cast vote", http.MethodPost, "/api/v1/admin/council/votes", http.StatusUnauthorized},
-		{"list votes", http.MethodGet, "/api/v1/admin/council/votes", http.StatusUnauthorized},
-		{"admin stats", http.MethodGet, "/api/v1/admin/stats", http.StatusUnauthorized},
-		{"admin config", http.MethodPut, "/api/v1/admin/config", http.StatusUnauthorized},
+		{"live feed", http.MethodGet, "/api/v1/feed/live", "/api/v1/feed/live", http.StatusUnauthorized},
+		{"me", http.MethodGet, "/api/v1/me", "/api/v1/me", http.StatusUnauthorized},
+		{"create post", http.MethodPost, "/api/v1/posts", "/api/v1/posts", http.StatusUnauthorized},
+		{"edit post", http.MethodPatch, "/api/v1/posts/p1", "/api/v1/posts/{id}", http.StatusUnauthorized},
+		{"delete post", http.MethodDelete, "/api/v1/posts/p1", "/api/v1/posts/{id}", http.StatusUnauthorized},
+		{"add reaction", http.MethodPost, "/api/v1/posts/p1/reactions", "/api/v1/posts/{postId}/reactions", http.StatusUnauthorized},
+		{"remove reaction", http.MethodDelete, "/api/v1/posts/p1/reactions/like", "/api/v1/posts/{postId}/reactions/{type}", http.StatusUnauthorized},
+		{"users me", http.MethodGet, "/api/v1/users/me", "/api/v1/users/me", http.StatusUnauthorized},
+		{"update users me", http.MethodPut, "/api/v1/users/me", "/api/v1/users/me", http.StatusUnauthorized},
+		{"report post", http.MethodPost, "/api/v1/posts/p1/report", "/api/v1/posts/{id}/report", http.StatusUnauthorized},
+		{"moderation queue", http.MethodGet, "/api/v1/moderation/queue", "/api/v1/moderation/queue", http.StatusUnauthorized},
+		{"update report", http.MethodPatch, "/api/v1/moderation/reports/r1", "/api/v1/moderation/reports/{id}", http.StatusUnauthorized},
+		{"moderation action", http.MethodPost, "/api/v1/moderation/actions", "/api/v1/moderation/actions", http.StatusUnauthorized},
+		{"list actions", http.MethodGet, "/api/v1/moderation/actions/u1", "/api/v1/moderation/actions/{user_id}", http.StatusUnauthorized},
+		{"remove post", http.MethodPost, "/api/v1/moderation/posts/p1/remove", "/api/v1/moderation/posts/{id}/remove", http.StatusUnauthorized},
+		{"pending vouches", http.MethodGet, "/api/v1/vouches/pending", "/api/v1/vouches/pending", http.StatusUnauthorized},
+		{"approve vouch", http.MethodPost, "/api/v1/vouches/approve/v1", "/api/v1/vouches/approve/{id}", http.StatusUnauthorized},
+		{"cast vote", http.MethodPost, "/api/v1/admin/council/votes", "/api/v1/admin/council/votes", http.StatusUnauthorized},
+		{"list votes", http.MethodGet, "/api/v1/admin/council/votes", "/api/v1/admin/council/votes", http.StatusUnauthorized},
+		{"admin stats", http.MethodGet, "/api/v1/admin/stats", "/api/v1/admin/stats", http.StatusUnauthorized},
+		{"admin config", http.MethodPut, "/api/v1/admin/config", "/api/v1/admin/config", http.StatusUnauthorized},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Registration, asked of the routing tree directly.
+			got := mux.Find(chi.NewRouteContext(), tt.method, tt.path)
+			if got == "" {
+				t.Fatalf("%s %s is not registered", tt.method, tt.path)
+			}
+			if got != tt.pattern {
+				t.Fatalf("%s %s resolves to %q, want %q", tt.method, tt.path, got, tt.pattern)
+			}
+
+			// Behaviour of the guard on that resolved route.
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
 
-			if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
-				t.Fatalf("%s %s is not registered: status = %d", tt.method, tt.path, rec.Code)
-			}
 			if rec.Code != tt.want {
 				t.Errorf("%s %s status = %d, want %d", tt.method, tt.path, rec.Code, tt.want)
 			}
@@ -619,5 +651,107 @@ func TestVouchRoutesCarryTwoDifferentGuards(t *testing.T) {
 				t.Errorf("%s %s status = %d for role %q, want %d", tt.method, tt.path, rec.Code, tt.viewer.Role, http.StatusForbidden)
 			}
 		})
+	}
+}
+
+// recordingPostRepo captures the status write, so a test can tell a route that
+// reached its handler from one that merely got past the guard.
+type recordingPostRepo struct {
+	stubPostRepo
+	status    domain.PostStatus
+	reason    string
+	removedBy string
+}
+
+func (r *recordingPostRepo) UpdatePostStatus(_ context.Context, _ string, status domain.PostStatus, reason, removedBy string) error {
+	r.status, r.reason, r.removedBy = status, reason, removedBy
+	return nil
+}
+
+// TestRoutesAreRegistered cannot prove a route under /v1/moderation exists.
+// chi runs a subrouter's middleware before it resolves the path within it, so
+// the group's own guard answers 401 for a path that was never registered —
+// every moderation entry in that table passes whether or not its route is
+// wired. This test closes that hole for the removal route by supplying a
+// moderator, so only a route that actually resolves can reach the handler.
+func TestModerationPostRemovalRouteResolves(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	repo := &recordingPostRepo{}
+	moderator := &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}
+
+	srv := New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithPostService(service.NewPostService(repo, nil)),
+		WithAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(middleware.WithUser(r.Context(), moderator)))
+			})
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/moderation/posts/p1/remove", strings.NewReader(`{"reason":"harassment"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if repo.status != domain.PostRemovedByMod {
+		t.Errorf("status written = %q, want %q", repo.status, domain.PostRemovedByMod)
+	}
+	if repo.reason != "harassment" {
+		t.Errorf("reason written = %q, want %q", repo.reason, "harassment")
+	}
+}
+
+// The removal route must be registered on the post service alone. Hanging it
+// off the report or moderation-action branch would mean a deployment without
+// those silently loses the ability to take a post down.
+func TestModerationPostRemovalRouteNeedsOnlyThePostService(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	srv := New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithPostService(service.NewPostService(stubPostRepo{}, nil)),
+	)
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/moderation/posts/p1/remove", strings.NewReader(`{"reason":"spam"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("route is not registered without the report service: status = %d", rec.Code)
+	}
+}
+
+// A member who reaches the route is refused. The service checks the role too,
+// but the route guard is what keeps a non-moderator from ever reaching it.
+func TestModerationPostRemovalRouteRefusesAMember(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	repo := &recordingPostRepo{}
+	member := &domain.User{ID: "u1", Role: domain.RoleMember, IsActive: true}
+
+	srv := New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithPostService(service.NewPostService(repo, nil)),
+		WithAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(middleware.WithUser(r.Context(), member)))
+			})
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/moderation/posts/p1/remove", strings.NewReader(`{"reason":"spam"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if repo.status != "" {
+		t.Errorf("a member's removal reached the repository: status written = %q", repo.status)
 	}
 }

@@ -41,6 +41,8 @@ func TestMigrations_ColumnsLandInPublicSchema(t *testing.T) {
 		// Altered by 00015, which runs after the AGE migrations: if search_path
 		// were left pointing at ag_catalog the ALTER would miss this table.
 		{"trust_penalties", "moderation_action_id"},
+		// Added by 00017, the newest column after the AGE hazard.
+		{"posts", "removed_by"},
 	}
 
 	for _, tt := range tests {

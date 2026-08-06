@@ -43,7 +43,7 @@ func (q *Queries) CountPostsToday(ctx context.Context) (int64, error) {
 const createPost = `-- name: CreatePost :one
 INSERT INTO posts (id, author_id, body, image_path, status, removal_reason, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, author_id, body, image_path, status, removal_reason, created_at, edited_at
+RETURNING id, author_id, body, image_path, status, removal_reason, created_at, edited_at, removed_by
 `
 
 type CreatePostParams struct {
@@ -76,12 +76,13 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, e
 		&i.RemovalReason,
 		&i.CreatedAt,
 		&i.EditedAt,
+		&i.RemovedBy,
 	)
 	return i, err
 }
 
 const getPostByID = `-- name: GetPostByID :one
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at, p.removed_by,
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -106,6 +107,7 @@ func (q *Queries) GetPostByID(ctx context.Context, id string) (GetPostByIDRow, e
 		&i.Post.RemovalReason,
 		&i.Post.CreatedAt,
 		&i.Post.EditedAt,
+		&i.Post.RemovedBy,
 		&i.AuthorDisplayName,
 		&i.AuthorAvatarUrl,
 	)
@@ -113,7 +115,7 @@ func (q *Queries) GetPostByID(ctx context.Context, id string) (GetPostByIDRow, e
 }
 
 const listPostsByAuthor = `-- name: ListPostsByAuthor :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at, p.removed_by,
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -154,6 +156,7 @@ func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorPa
 			&i.Post.RemovalReason,
 			&i.Post.CreatedAt,
 			&i.Post.EditedAt,
+			&i.Post.RemovedBy,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -168,7 +171,7 @@ func (q *Queries) ListPostsByAuthor(ctx context.Context, arg ListPostsByAuthorPa
 }
 
 const listPostsFeed = `-- name: ListPostsFeed :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at, p.removed_by,
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -206,6 +209,7 @@ func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([
 			&i.Post.RemovalReason,
 			&i.Post.CreatedAt,
 			&i.Post.EditedAt,
+			&i.Post.RemovedBy,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -220,7 +224,7 @@ func (q *Queries) ListPostsFeed(ctx context.Context, arg ListPostsFeedParams) ([
 }
 
 const listPostsFeedFirst = `-- name: ListPostsFeedFirst :many
-SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+SELECT p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at, p.removed_by,
        u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 FROM posts p
 JOIN users u ON p.author_id = u.id
@@ -253,6 +257,7 @@ func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]ListPo
 			&i.Post.RemovalReason,
 			&i.Post.CreatedAt,
 			&i.Post.EditedAt,
+			&i.Post.RemovedBy,
 			&i.AuthorDisplayName,
 			&i.AuthorAvatarUrl,
 		); err != nil {
@@ -267,17 +272,26 @@ func (q *Queries) ListPostsFeedFirst(ctx context.Context, limit int32) ([]ListPo
 }
 
 const softDeletePost = `-- name: SoftDeletePost :exec
-UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1
+UPDATE posts SET status = $2, removal_reason = $3, removed_by = $4 WHERE id = $1
 `
 
 type SoftDeletePostParams struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	RemovalReason string `json:"removal_reason"`
+	ID            string      `json:"id"`
+	Status        string      `json:"status"`
+	RemovalReason string      `json:"removal_reason"`
+	RemovedBy     pgtype.Text `json:"removed_by"`
 }
 
+// Serves both takedown paths: an author deleting their own post, and a
+// moderator removing someone else's. removed_by is the moderator's id, and NULL
+// for an author deletion — there is no moderator to name.
 func (q *Queries) SoftDeletePost(ctx context.Context, arg SoftDeletePostParams) error {
-	_, err := q.db.Exec(ctx, softDeletePost, arg.ID, arg.Status, arg.RemovalReason)
+	_, err := q.db.Exec(ctx, softDeletePost,
+		arg.ID,
+		arg.Status,
+		arg.RemovalReason,
+		arg.RemovedBy,
+	)
 	return err
 }
 
@@ -285,7 +299,7 @@ const updatePostBody = `-- name: UpdatePostBody :one
 UPDATE posts p SET body = $2, edited_at = NOW()
 FROM users u
 WHERE p.id = $1 AND u.id = p.author_id
-RETURNING p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at,
+RETURNING p.id, p.author_id, p.body, p.image_path, p.status, p.removal_reason, p.created_at, p.edited_at, p.removed_by,
           u.display_name AS author_display_name, u.avatar_url AS author_avatar_url
 `
 
@@ -315,6 +329,7 @@ func (q *Queries) UpdatePostBody(ctx context.Context, arg UpdatePostBodyParams) 
 		&i.Post.RemovalReason,
 		&i.Post.CreatedAt,
 		&i.Post.EditedAt,
+		&i.Post.RemovedBy,
 		&i.AuthorDisplayName,
 		&i.AuthorAvatarUrl,
 	)

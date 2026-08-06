@@ -39,7 +39,10 @@ RETURNING sqlc.embed(p),
           u.display_name AS author_display_name, u.avatar_url AS author_avatar_url;
 
 -- name: SoftDeletePost :exec
-UPDATE posts SET status = $2, removal_reason = $3 WHERE id = $1;
+-- Serves both takedown paths: an author deleting their own post, and a
+-- moderator removing someone else's. removed_by is the moderator's id, and NULL
+-- for an author deletion — there is no moderator to name.
+UPDATE posts SET status = $2, removal_reason = $3, removed_by = $4 WHERE id = $1;
 
 -- name: ListPostsByAuthor :many
 -- Removed posts are excluded here for the same reason they are excluded from

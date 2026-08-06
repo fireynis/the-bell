@@ -1,4 +1,4 @@
-import type { TakeActionRequest } from "../api/types";
+import type { ApiError, Post, TakeActionRequest } from "../api/types";
 import type { ValidationResult } from "./post";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
@@ -28,6 +28,88 @@ const NEEDS_DURATION: readonly ActionType[] = ["mute", "suspend"];
 
 /** Mirrors maxActionReasonLen in internal/service/moderation_action.go. */
 export const MAX_ACTION_REASON_LENGTH = 1000;
+
+/** Mirrors maxRemovalReasonLen in internal/service/post.go. */
+export const MAX_REMOVAL_REASON_LENGTH = 1000;
+
+/**
+ * validateRemovalReason applies the server's rules for a moderator's post
+ * removal note so the dialog can disable its submit button instead of
+ * round-tripping to a guaranteed 400.
+ *
+ * A reason is mandatory here, unlike an author deleting their own post: it is
+ * the only record of why a moderator overrode a member's speech.
+ *
+ * The length is measured in UTF-8 bytes because the server's check is
+ * `len(reason)` on a Go string. Measuring JS string length would wave through a
+ * reason of multi-byte characters that the server then rejects.
+ */
+export function validateRemovalReason(reason: string): ValidationResult {
+  const trimmed = (reason ?? "").trim();
+  if (trimmed.length === 0) {
+    return { valid: false, error: "A reason is required." };
+  }
+  const bytes = new TextEncoder().encode(trimmed).length;
+  if (bytes > MAX_REMOVAL_REASON_LENGTH) {
+    return {
+      valid: false,
+      error: `Reason is ${bytes} bytes; the maximum is ${MAX_REMOVAL_REASON_LENGTH}.`,
+    };
+  }
+  return { valid: true };
+}
+
+/**
+ * canRemovePost reports whether the queue should offer to take a post down.
+ *
+ * Mirrors canRemoveByModerator in internal/service/post.go: only a visible post
+ * may be removed, so offering the control on one that is already gone would
+ * guarantee a 400. A null post is one the card has not loaded yet, or failed
+ * to — either way there is nothing to act on.
+ */
+export function canRemovePost(post: Post | null | undefined): boolean {
+  return post?.status === "visible";
+}
+
+/** What the queue should do with a report after acting on it. */
+export interface ResolutionResult {
+  /** Whether the report may be dropped from the queue. */
+  resolved: boolean;
+  /** Why it could not be, present only when `resolved` is false. */
+  error?: string;
+}
+
+/**
+ * reportResolutionOutcome decides what the queue does after it has tried to
+ * mark a report reviewed.
+ *
+ * Taking action used to drop the report from local state and never tell the
+ * server, so it came back `pending` on the next load and moderators re-reviewed
+ * work they had already done. Resolving it is a second request, and this decides
+ * what happens when that request is the thing that fails.
+ *
+ * A 404 still resolves: another moderator got there first, so the report is
+ * gone either way and holding it in this moderator's queue helps nobody. This
+ * matches how ReportCard already treats a 404 when dismissing.
+ *
+ * Any other failure does NOT resolve. The action or removal already succeeded,
+ * so the report is genuinely still pending on the server — dropping it from the
+ * queue anyway is exactly the divergence this function exists to stop, and the
+ * message says the action stuck so the moderator does not redo it.
+ */
+export function reportResolutionOutcome(err: ApiError | null): ResolutionResult {
+  if (err === null) {
+    return { resolved: true };
+  }
+  if (err.status === 404) {
+    return { resolved: true };
+  }
+  const detail = err.error ? `: ${err.error}` : ".";
+  return {
+    resolved: false,
+    error: `The action went through, but the report could not be marked reviewed${detail} It is still in the queue.`,
+  };
+}
 
 /** The largest duration the dialog offers, one year in hours. */
 export const MAX_DURATION_HOURS = 8760;

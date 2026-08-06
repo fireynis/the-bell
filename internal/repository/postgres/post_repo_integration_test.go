@@ -85,8 +85,9 @@ func TestPostRepo_GetPostByID_ReturnsRemovedPosts(t *testing.T) {
 	repo := postgres.NewPostRepo(postgres.New(pool))
 
 	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-author"), domain.RoleMember, 50)
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-mod"), domain.RoleModerator, 90)
 	newPost(t, pool, "post-removed", author.ID, domain.PostVisible, time.Now())
-	if err := repo.UpdatePostStatus(ctx, "post-removed", domain.PostRemovedByMod, "off topic"); err != nil {
+	if err := repo.UpdatePostStatus(ctx, "post-removed", domain.PostRemovedByMod, "off topic", moderator.ID); err != nil {
 		t.Fatalf("UpdatePostStatus: %v", err)
 	}
 
@@ -174,6 +175,7 @@ func TestPostRepo_ListPostsByAuthor_ExcludesRemovedPosts(t *testing.T) {
 
 	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-author"), domain.RoleMember, 50)
 	other := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-other"), domain.RoleMember, 50)
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-mod"), domain.RoleModerator, 90)
 
 	now := time.Now()
 	newPost(t, pool, "author-visible", author.ID, domain.PostVisible, now)
@@ -183,7 +185,7 @@ func TestPostRepo_ListPostsByAuthor_ExcludesRemovedPosts(t *testing.T) {
 
 	// The removal carries a note that must never leave the moderation tools.
 	const privateNote = "harassment; second warning issued"
-	if err := repo.UpdatePostStatus(ctx, "author-removed", domain.PostRemovedByMod, privateNote); err != nil {
+	if err := repo.UpdatePostStatus(ctx, "author-removed", domain.PostRemovedByMod, privateNote, moderator.ID); err != nil {
 		t.Fatalf("UpdatePostStatus: %v", err)
 	}
 
@@ -416,10 +418,11 @@ func TestPostRepo_UpdatePostStatus(t *testing.T) {
 	repo := postgres.NewPostRepo(postgres.New(pool))
 
 	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-author"), domain.RoleMember, 50)
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-mod"), domain.RoleModerator, 90)
 	newPost(t, pool, "post-1", author.ID, domain.PostVisible, time.Now())
 	newPost(t, pool, "post-2", author.ID, domain.PostVisible, time.Now())
 
-	if err := repo.UpdatePostStatus(ctx, "post-1", domain.PostRemovedByMod, "off topic"); err != nil {
+	if err := repo.UpdatePostStatus(ctx, "post-1", domain.PostRemovedByMod, "off topic", moderator.ID); err != nil {
 		t.Fatalf("UpdatePostStatus: %v", err)
 	}
 
@@ -447,7 +450,7 @@ func TestPostRepo_UpdatePostStatus_UnknownIDIsNoop(t *testing.T) {
 	pool := testsupport.TestDB(t)
 
 	err := postgres.NewPostRepo(postgres.New(pool)).
-		UpdatePostStatus(context.Background(), "no-such-post", domain.PostRemovedByMod, "reason")
+		UpdatePostStatus(context.Background(), "no-such-post", domain.PostRemovedByMod, "reason", "")
 	if err != nil {
 		t.Errorf("UpdatePostStatus on an unknown post: %v", err)
 	}
@@ -459,4 +462,68 @@ func postIDs(posts []*domain.Post) string {
 		ids[i] = p.ID
 	}
 	return strings.Join(ids, ", ")
+}
+
+// removed_by is what makes the removal attributable. It is a foreign key to
+// users, so the author-deletion path — which has no moderator — must store NULL
+// rather than an id nobody has, and must read back as empty.
+func TestPostRepo_UpdatePostStatus_RecordsTheRemovingModerator(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewPostRepo(postgres.New(pool))
+
+	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("removedby-author"), domain.RoleMember, 50)
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("removedby-mod"), domain.RoleModerator, 90)
+
+	newPost(t, pool, "by-mod", author.ID, domain.PostVisible, time.Now())
+	newPost(t, pool, "by-author", author.ID, domain.PostVisible, time.Now())
+
+	if err := repo.UpdatePostStatus(ctx, "by-mod", domain.PostRemovedByMod, "off topic", moderator.ID); err != nil {
+		t.Fatalf("UpdatePostStatus (moderator): %v", err)
+	}
+	if err := repo.UpdatePostStatus(ctx, "by-author", domain.PostRemovedByAuthor, "", ""); err != nil {
+		t.Fatalf("UpdatePostStatus (author): %v", err)
+	}
+
+	byMod, err := repo.GetPostByID(ctx, "by-mod")
+	if err != nil {
+		t.Fatalf("GetPostByID(by-mod): %v", err)
+	}
+	if byMod.RemovedBy != moderator.ID {
+		t.Errorf("RemovedBy = %q, want the moderator %q", byMod.RemovedBy, moderator.ID)
+	}
+
+	byAuthor, err := repo.GetPostByID(ctx, "by-author")
+	if err != nil {
+		t.Fatalf("GetPostByID(by-author): %v", err)
+	}
+	if byAuthor.RemovedBy != "" {
+		t.Errorf("RemovedBy = %q on an author deletion, want empty", byAuthor.RemovedBy)
+	}
+
+	// NULL in the column, not the empty string: "" is not a valid users.id and
+	// would have to be rejected by the foreign key if it were ever written.
+	var stored *string
+	if err := pool.QueryRow(ctx, `SELECT removed_by FROM posts WHERE id = $1`, "by-author").Scan(&stored); err != nil {
+		t.Fatalf("reading removed_by: %v", err)
+	}
+	if stored != nil {
+		t.Errorf("removed_by = %q on an author deletion, want NULL", *stored)
+	}
+}
+
+// The column is a real foreign key, so a removal naming a user who does not
+// exist is rejected by the database rather than silently recorded.
+func TestPostRepo_UpdatePostStatus_UnknownModeratorIsRejected(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewPostRepo(postgres.New(pool))
+
+	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("fk-author"), domain.RoleMember, 50)
+	newPost(t, pool, "fk-post", author.ID, domain.PostVisible, time.Now())
+
+	err := repo.UpdatePostStatus(ctx, "fk-post", domain.PostRemovedByMod, "off topic", "no-such-user")
+	if err == nil {
+		t.Fatal("UpdatePostStatus accepted a moderator id that is not a user")
+	}
 }

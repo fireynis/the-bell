@@ -3,12 +3,17 @@ import {
   ACTION_TYPES,
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
+  MAX_REMOVAL_REASON_LENGTH,
   buildActionRequest,
+  canRemovePost,
   needsDuration,
+  reportResolutionOutcome,
   severitiesFor,
   validateAction,
+  validateRemovalReason,
   type ActionInput,
 } from "./moderation";
+import type { ApiError, Post } from "../api/types";
 
 function input(overrides: Partial<ActionInput> = {}): ActionInput {
   return { actionType: "warn", severity: 1, reason: "Repeated spam", ...overrides };
@@ -214,5 +219,106 @@ describe("buildActionRequest", () => {
       action_type: "ban",
       severity: 5,
     });
+  });
+});
+
+describe("validateRemovalReason", () => {
+  it("accepts an ordinary reason", () => {
+    expect(validateRemovalReason("Harassment of another member")).toEqual({ valid: true });
+  });
+
+  // The reason is the only record of why a moderator overrode a member's
+  // speech, so unlike an author's own deletion it cannot be blank.
+  it.each(["", "   ", "\t\n "])("rejects the blank reason %o", (reason) => {
+    expect(validateRemovalReason(reason).valid).toBe(false);
+  });
+
+  it("accepts a reason of exactly the maximum length", () => {
+    expect(validateRemovalReason("a".repeat(MAX_REMOVAL_REASON_LENGTH)).valid).toBe(true);
+  });
+
+  it("rejects a reason one character over the maximum", () => {
+    expect(validateRemovalReason("a".repeat(MAX_REMOVAL_REASON_LENGTH + 1)).valid).toBe(false);
+  });
+
+  // validateRemovalReason in internal/service/post.go measures len(reason),
+  // which is bytes. Measuring JS string length instead would wave through a
+  // reason of multi-byte characters that the server then rejects with a 400 —
+  // exactly the round trip this check exists to prevent.
+  it("measures the limit in bytes, as the server does", () => {
+    const reason = "é".repeat(501); // 501 characters, 1002 bytes
+    expect(reason.length).toBeLessThan(MAX_REMOVAL_REASON_LENGTH);
+    expect(validateRemovalReason(reason).valid).toBe(false);
+  });
+
+  it("measures the trimmed reason, so padding cannot push it over", () => {
+    expect(validateRemovalReason(`  ${"a".repeat(MAX_REMOVAL_REASON_LENGTH)}  `).valid).toBe(true);
+  });
+});
+
+describe("canRemovePost", () => {
+  const visible = { id: "p1", status: "visible" } as Post;
+
+  it("offers removal for a visible post", () => {
+    expect(canRemovePost(visible)).toBe(true);
+  });
+
+  // Mirrors canRemoveByModerator in internal/service/post.go: the server
+  // refuses to re-remove, so offering the control would guarantee a 400.
+  it.each(["removed_by_author", "removed_by_mod"])("hides the control for a %s post", (status) => {
+    expect(canRemovePost({ ...visible, status } as Post)).toBe(false);
+  });
+
+  // The card renders before its post has loaded, and renders on error too.
+  it("hides the control while the post has not loaded", () => {
+    expect(canRemovePost(null)).toBe(false);
+  });
+});
+
+describe("reportResolutionOutcome", () => {
+  // The bug this exists to close: taking action removed the report from local
+  // state and never told the server, so it came back `pending` on reload and
+  // moderators re-reviewed work they had already done.
+  it("resolves the report when the PATCH succeeded", () => {
+    expect(reportResolutionOutcome(null)).toEqual({ resolved: true });
+  });
+
+  // Another moderator got there first. The report is gone either way, so it
+  // should still leave the queue — this mirrors ReportCard's dismiss handler.
+  it("treats a 404 as already resolved by someone else", () => {
+    expect(reportResolutionOutcome({ status: 404, error: "not found" })).toEqual({
+      resolved: true,
+    });
+  });
+
+  // The action or removal already succeeded, so the UI must not claim the
+  // report was handled when the server still has it pending. Leaving it in the
+  // queue is what makes the divergence visible.
+  it.each([
+    [403, "forbidden"],
+    [500, "internal error"],
+    [400, "validation: status must be 'reviewed' or 'dismissed'"],
+  ])("leaves the report in the queue on a %d", (status, message) => {
+    const outcome = reportResolutionOutcome({ status, error: message });
+    expect(outcome.resolved).toBe(false);
+    expect(outcome.error).toBeTruthy();
+  });
+
+  it("surfaces the server's own wording", () => {
+    const outcome = reportResolutionOutcome({ status: 500, error: "database is down" });
+    expect(outcome.error).toContain("database is down");
+  });
+
+  // The action succeeded even though the follow-up failed, so the message must
+  // not read as though nothing happened.
+  it("says the action succeeded when only the follow-up failed", () => {
+    const outcome = reportResolutionOutcome({ status: 500, error: "boom" });
+    expect(outcome.error?.toLowerCase()).toContain("still");
+  });
+
+  it("copes with a rejection that carries no message", () => {
+    const outcome = reportResolutionOutcome({ status: 0 } as ApiError);
+    expect(outcome.resolved).toBe(false);
+    expect(outcome.error).toBeTruthy();
   });
 });

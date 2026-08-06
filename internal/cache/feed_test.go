@@ -79,7 +79,7 @@ func (s *stubPostRepo) UpdatePostBody(_ context.Context, id string, body string)
 	return nil, service.ErrNotFound
 }
 
-func (s *stubPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason string) error {
+func (s *stubPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason, removedBy string) error {
 	for _, p := range s.posts {
 		if p.ID == id {
 			p.Status = status

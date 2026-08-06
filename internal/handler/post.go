@@ -301,6 +301,39 @@ func (h *PostHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type removePostRequest struct {
+	Reason string `json:"reason"`
+}
+
+// RemoveByModerator handles POST /api/v1/moderation/posts/{id}/remove.
+//
+// It answers 204 and deliberately returns no body. The reason the moderator
+// just typed is a private note (see domain.Post.RemovalReason), and echoing it
+// back would make this the first response on the wire to carry one — the exact
+// leak that put `json:"-"` on the field. A moderator UI that needs to read
+// reasons back must ask for them through a response type that says so.
+func (h *PostHandler) RemoveByModerator(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req removePostRequest
+	if err := Decode(r, &req); err != nil {
+		Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	if err := h.posts.RemoveByModerator(r.Context(), user, chi.URLParam(r, "id"), req.Reason); err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // nextCursor returns the cursor for the page following posts, or "" when this
 // page is the last one.
 //

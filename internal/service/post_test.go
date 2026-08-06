@@ -73,13 +73,14 @@ func (m *mockPostRepo) UpdatePostBody(_ context.Context, id string, body string)
 	return p, nil
 }
 
-func (m *mockPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason string) error {
+func (m *mockPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason, removedBy string) error {
 	p, ok := m.posts[id]
 	if !ok {
 		return ErrNotFound
 	}
 	p.Status = status
 	p.RemovalReason = reason
+	p.RemovedBy = removedBy
 	return nil
 }
 
@@ -685,4 +686,210 @@ func TestPostService_Create_ExpiredMuteDoesNotBlock(t *testing.T) {
 	if _, err := svc.Create(context.Background(), author, "hello town", ""); err != nil {
 		t.Fatalf("Create() error = %v, want the expired mute ignored", err)
 	}
+}
+
+// moderatingUser is an active moderator, so a test asserting on removal
+// behaviour is not silently short-circuited by authorization.
+func moderatingUser(id string) *domain.User {
+	return &domain.User{ID: id, IsActive: true, Role: domain.RoleModerator}
+}
+
+func TestPostService_RemoveByModerator(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "user-1", Body: "offending", Status: domain.PostVisible,
+	}
+
+	svc := NewPostService(repo, nil)
+
+	err := svc.RemoveByModerator(context.Background(), moderatingUser("mod-1"), "post-1", "  harassment  ")
+	if err != nil {
+		t.Fatalf("RemoveByModerator() unexpected error: %v", err)
+	}
+
+	p := repo.posts["post-1"]
+	if p.Status != domain.PostRemovedByMod {
+		t.Errorf("Status = %q, want %q", p.Status, domain.PostRemovedByMod)
+	}
+	// The trimmed reason is what lands, matching validateRemovalReason.
+	if p.RemovalReason != "harassment" {
+		t.Errorf("RemovalReason = %q, want %q", p.RemovalReason, "harassment")
+	}
+	// Without this the removal has a note but no author, which is not an audit
+	// trail — it records that "a moderator" acted, not which one.
+	if p.RemovedBy != "mod-1" {
+		t.Errorf("RemovedBy = %q, want the acting moderator %q", p.RemovedBy, "mod-1")
+	}
+}
+
+// An author deleting their own post has no moderator to name. Writing anything
+// here would be an invention, and the column is a foreign key to users.
+func TestPostService_Delete_RecordsNoRemovingModerator(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible,
+	}
+	svc := NewPostService(repo, nil)
+
+	if err := svc.Delete(context.Background(), "post-1", "user-1"); err != nil {
+		t.Fatalf("Delete() unexpected error: %v", err)
+	}
+
+	if got := repo.posts["post-1"].RemovedBy; got != "" {
+		t.Errorf("RemovedBy = %q on an author deletion, want empty", got)
+	}
+}
+
+// The route group guards this endpoint, but the service is the check that
+// cannot be bypassed: one line in routes.go is otherwise all that stands
+// between an ordinary member and taking down anyone's post. This is the same
+// reasoning that put the CanPost check inside Create.
+func TestPostService_RemoveByModerator_RefusesUsersWhoCannotModerate(t *testing.T) {
+	tests := []struct {
+		name      string
+		moderator *domain.User
+	}{
+		{"an ordinary member", &domain.User{ID: "u1", IsActive: true, Role: domain.RoleMember}},
+		{"a pending user", &domain.User{ID: "u1", IsActive: true, Role: domain.RolePending}},
+		{"a banned user", &domain.User{ID: "u1", IsActive: true, Role: domain.RoleBanned}},
+		{"a deactivated moderator", &domain.User{ID: "u1", IsActive: false, Role: domain.RoleModerator}},
+		{"a deactivated council member", &domain.User{ID: "u1", IsActive: false, Role: domain.RoleCouncil}},
+		{"no user at all", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockPostRepo()
+			repo.posts["post-1"] = &domain.Post{
+				ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible,
+			}
+			svc := NewPostService(repo, nil)
+
+			err := svc.RemoveByModerator(context.Background(), tt.moderator, "post-1", "spam")
+			if !errors.Is(err, ErrForbidden) {
+				t.Fatalf("RemoveByModerator() error = %v, want ErrForbidden", err)
+			}
+			if repo.posts["post-1"].Status != domain.PostVisible {
+				t.Errorf("post was removed despite the rejection: status = %q", repo.posts["post-1"].Status)
+			}
+		})
+	}
+}
+
+// The council moderates too, and the route group admits them.
+func TestPostService_RemoveByModerator_AllowsCouncil(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible}
+	svc := NewPostService(repo, nil)
+
+	council := &domain.User{ID: "c1", IsActive: true, Role: domain.RoleCouncil}
+	if err := svc.RemoveByModerator(context.Background(), council, "post-1", "spam"); err != nil {
+		t.Fatalf("RemoveByModerator() error = %v, want the council admitted", err)
+	}
+}
+
+func TestPostService_RemoveByModerator_RejectsAnEmptyReason(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible}
+	svc := NewPostService(repo, nil)
+
+	err := svc.RemoveByModerator(context.Background(), moderatingUser("mod-1"), "post-1", "   ")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("RemoveByModerator() error = %v, want ErrValidation", err)
+	}
+	if repo.posts["post-1"].Status != domain.PostVisible {
+		t.Error("post was removed despite the reason being rejected")
+	}
+}
+
+func TestPostService_RemoveByModerator_UnknownPost(t *testing.T) {
+	svc := NewPostService(newMockPostRepo(), nil)
+
+	err := svc.RemoveByModerator(context.Background(), moderatingUser("mod-1"), "no-such-post", "spam")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("RemoveByModerator() error = %v, want ErrNotFound", err)
+	}
+}
+
+// Re-removing would overwrite the record: on a post the author deleted it
+// would erase removed_by_author, and on one another moderator handled it would
+// replace their note. Neither post is visible to the town either way.
+func TestPostService_RemoveByModerator_RefusesAPostThatIsAlreadyGone(t *testing.T) {
+	for _, status := range []domain.PostStatus{domain.PostRemovedByAuthor, domain.PostRemovedByMod} {
+		t.Run(string(status), func(t *testing.T) {
+			repo := newMockPostRepo()
+			repo.posts["post-1"] = &domain.Post{
+				ID: "post-1", AuthorID: "user-1", Status: status, RemovalReason: "the original note",
+			}
+			svc := NewPostService(repo, nil)
+
+			err := svc.RemoveByModerator(context.Background(), moderatingUser("mod-1"), "post-1", "a second note")
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("RemoveByModerator() error = %v, want ErrValidation", err)
+			}
+			if repo.posts["post-1"].RemovalReason != "the original note" {
+				t.Errorf("RemovalReason = %q, want the original note left intact",
+					repo.posts["post-1"].RemovalReason)
+			}
+			if repo.posts["post-1"].Status != status {
+				t.Errorf("Status = %q, want %q left intact", repo.posts["post-1"].Status, status)
+			}
+		})
+	}
+}
+
+// The feed cache holds whole posts in a Redis sorted set, so a removal that
+// skips invalidation keeps serving the post to the whole town until the entry
+// is evicted by length — which is not bounded by the feed TTL. PostService's
+// author-deletion path calls InvalidateOnDelete for exactly this reason.
+func TestPostService_RemoveByModerator_InvalidatesFeedCache(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible}
+
+	cache := &deleteRecordingFeedCache{}
+	svc := NewPostService(repo, nil)
+	svc.SetFeedCache(cache)
+
+	if err := svc.RemoveByModerator(context.Background(), moderatingUser("mod-1"), "post-1", "spam"); err != nil {
+		t.Fatalf("RemoveByModerator() unexpected error: %v", err)
+	}
+
+	if cache.deleted != "post-1" {
+		t.Errorf("feed cache invalidated for %q, want %q; a removed post keeps serving from Redis",
+			cache.deleted, "post-1")
+	}
+}
+
+// A rejected removal must not invalidate: the post is still in the feed, and
+// clearing the key would evict the whole town's feed for nothing.
+func TestPostService_RemoveByModerator_DoesNotInvalidateWhenRefused(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{ID: "post-1", AuthorID: "user-1", Status: domain.PostVisible}
+
+	cache := &deleteRecordingFeedCache{}
+	svc := NewPostService(repo, nil)
+	svc.SetFeedCache(cache)
+
+	member := &domain.User{ID: "u1", IsActive: true, Role: domain.RoleMember}
+	if err := svc.RemoveByModerator(context.Background(), member, "post-1", "spam"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("RemoveByModerator() error = %v, want ErrForbidden", err)
+	}
+
+	if cache.deleted != "" {
+		t.Errorf("feed cache was invalidated for %q, but the removal never happened", cache.deleted)
+	}
+}
+
+// deleteRecordingFeedCache captures the post ID the service invalidates on.
+type deleteRecordingFeedCache struct {
+	deleted string
+}
+
+func (c *deleteRecordingFeedCache) GetFeed(context.Context, string, int) ([]*domain.Post, error) {
+	return nil, nil
+}
+func (c *deleteRecordingFeedCache) InvalidateOnCreate(context.Context, *domain.Post) {}
+func (c *deleteRecordingFeedCache) InvalidateOnUpdate(context.Context, *domain.Post) {}
+func (c *deleteRecordingFeedCache) InvalidateOnDelete(_ context.Context, postID string) {
+	c.deleted = postID
 }

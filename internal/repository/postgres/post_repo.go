@@ -108,11 +108,15 @@ func (r *PostRepo) UpdatePostBody(ctx context.Context, id string, body string) (
 	return postFromRow(row.Post, row.AuthorDisplayName, row.AuthorAvatarUrl), nil
 }
 
-func (r *PostRepo) UpdatePostStatus(ctx context.Context, id string, status domain.PostStatus, reason string) error {
+// UpdatePostStatus takes a post down. removedBy is the moderator's id, or ""
+// when the author deleted their own post — the column is a foreign key to
+// users, so "" is stored as NULL rather than as an id nobody has.
+func (r *PostRepo) UpdatePostStatus(ctx context.Context, id string, status domain.PostStatus, reason, removedBy string) error {
 	return r.q.SoftDeletePost(ctx, SoftDeletePostParams{
 		ID:            id,
 		Status:        string(status),
 		RemovalReason: reason,
+		RemovedBy:     pgtype.Text{String: removedBy, Valid: removedBy != ""},
 	})
 }
 
@@ -129,6 +133,7 @@ func postFromRow(row Post, authorDisplayName, authorAvatarURL string) *domain.Po
 		ImagePath:         row.ImagePath,
 		Status:            domain.PostStatus(row.Status),
 		RemovalReason:     row.RemovalReason,
+		RemovedBy:         row.RemovedBy.String,
 		CreatedAt:         row.CreatedAt.Time,
 		AuthorDisplayName: authorDisplayName,
 		AuthorAvatarURL:   authorAvatarURL,

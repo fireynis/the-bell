@@ -163,15 +163,9 @@ func (s *Server) apiRoutes(r chi.Router) {
 	if s.reportService != nil {
 		reportH = handler.NewReportHandler(s.reportService)
 	}
-
-	// GET /api/v1/me — return the authenticated user.
-	// Intentionally skips RequireActive so suspended/banned users can still
-	// learn their own status and role (the frontend RequireRole guard needs this).
-	r.Route("/v1/me", func(r chi.Router) {
-		r.Use(s.protected(guard{skipActive: true})...)
-		r.Get("/", uh.GetMe)
-	})
-
+	// Built here rather than inside the /v1/posts block because moderator post
+	// removal lives under /v1/moderation and needs the same handler.
+	var postH *handler.PostHandler
 	if s.postService != nil {
 		var phOpts []handler.PostHandlerOption
 		if s.imageStore != nil {
@@ -183,7 +177,18 @@ func (s *Server) apiRoutes(r chi.Router) {
 		if s.sseBroker != nil {
 			phOpts = append(phOpts, handler.WithPostPublisher(s.sseBroker))
 		}
-		ph := handler.NewPostHandler(s.postService, phOpts...)
+		postH = handler.NewPostHandler(s.postService, phOpts...)
+	}
+
+	// GET /api/v1/me — return the authenticated user.
+	// Intentionally skips RequireActive so suspended/banned users can still
+	// learn their own status and role (the frontend RequireRole guard needs this).
+	r.Route("/v1/me", func(r chi.Router) {
+		r.Use(s.protected(guard{skipActive: true})...)
+		r.Get("/", uh.GetMe)
+	})
+
+	if postH != nil {
 		r.Route("/v1/posts", func(r chi.Router) {
 			// Public reads, but personalized: the response depends on who is
 			// asking. Without a user in context the handler cannot attach the
@@ -195,8 +200,8 @@ func (s *Server) apiRoutes(r chi.Router) {
 				if s.optionalAuth != nil {
 					r.Use(s.optionalAuth)
 				}
-				r.Get("/", ph.ListFeed)
-				r.Get("/{id}", ph.GetByID)
+				r.Get("/", postH.ListFeed)
+				r.Get("/{id}", postH.GetByID)
 			})
 
 			r.Group(func(r chi.Router) {
@@ -204,9 +209,9 @@ func (s *Server) apiRoutes(r chi.Router) {
 					role:  domain.RoleMember,
 					limit: &rateSpec{"posts", 10, time.Hour},
 				})...)
-				r.Post("/", ph.Create)
-				r.Patch("/{id}", ph.Update)
-				r.Delete("/{id}", ph.Delete)
+				r.Post("/", postH.Create)
+				r.Patch("/{id}", postH.Update)
+				r.Delete("/{id}", postH.Delete)
 			})
 		})
 	}
@@ -251,13 +256,20 @@ func (s *Server) apiRoutes(r chi.Router) {
 		})
 	}
 
-	if reportH != nil || s.moderationActionService != nil {
+	if reportH != nil || s.moderationActionService != nil || postH != nil {
 		r.Route("/v1/moderation", func(r chi.Router) {
 			r.Use(s.protected(guard{role: domain.RoleModerator})...)
 
 			if reportH != nil {
 				r.Get("/queue", reportH.ListQueue)
 				r.Patch("/reports/{id}", reportH.UpdateReportStatus)
+			}
+
+			// Taking a post down needs only the post service, so it is
+			// registered on its own branch: a deployment without reports or
+			// moderation actions must not lose the remedy for the post itself.
+			if postH != nil {
+				r.Post("/posts/{id}/remove", postH.RemoveByModerator)
 			}
 
 			if s.moderationActionService != nil {
