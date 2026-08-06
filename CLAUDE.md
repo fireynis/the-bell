@@ -39,9 +39,9 @@ docker compose up -d --build             # deploy (from project root)
 ```
 
 Integration tests are no longer confined to `internal/integration/`. They live
-in four packages — `internal/app`, `internal/integration`, `internal/middleware`
-and `internal/repository/postgres` — so scope the tag to `./...` rather than one
-directory or you will silently skip most of them.
+in five packages — `internal/app`, `internal/database`, `internal/integration`,
+`internal/middleware` and `internal/repository/postgres` — so scope the tag to
+`./...` rather than one directory or you will silently skip most of them.
 
 **Use `tsc -b`, never `tsc --noEmit`.** `web/tsconfig.json` is a solution file
 (`"files": []` plus project references), so plain `tsc` has no inputs and exits
