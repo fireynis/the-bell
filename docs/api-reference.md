@@ -144,10 +144,17 @@ Returns the authenticated user's profile. Does not require the user to be active
 
 ##### `muted_until`
 
-`muted_until` appears **only on the endpoints that return your own profile** —
-this one, `GET /api/v1/users/me`, and the response to `PUT /api/v1/users/me`. It
-is never present on another user's profile: a mute is between that user and the
-moderators.
+`muted_until` appears on exactly four responses, and no others:
+
+- the three that return **your own profile** — this one, `GET /api/v1/users/me`,
+  and the response to `PUT /api/v1/users/me`; and
+- `GET /api/v1/moderation/users/{user_id}/mute`, which is **moderator-only**.
+
+It is never present on another user's profile. `GET /api/v1/users/{id}` does not
+carry it whether or not that user is muted, and that route is not even
+authenticated. A mute is between the muted user and the moderators; the
+moderator route is the moderators' side of the same conversation, not a
+widening of it.
 
 The field is **omitted entirely** when there is no mute in force, so its
 presence is the whole answer to "am I muted?". A mute whose time has already
@@ -766,7 +773,7 @@ Takes a moderation action against a user. Creates the action record and propagat
 | `action_type` | string | Yes | `warn`, `mute`, `suspend`, or `ban` |
 | `severity` | int | Yes | Must match action type (see below) |
 | `reason` | string | Yes | Non-empty, max 1,000 characters |
-| `duration_seconds` | int/null | Depends | Required for `mute` and `suspend`; rejected for `ban`. Must be positive when given |
+| `duration_seconds` | int/null | Depends | Required for `mute` and `suspend`; rejected for `warn` and `ban`. Must be positive when given |
 
 Action type to severity mapping:
 
@@ -781,14 +788,15 @@ Validation rules:
 - Cannot moderate yourself
 - Target user must exist
 - Reason is required, max 1,000 characters
-- Bans cannot have a duration
+- Warnings and bans cannot have a duration
 - Mutes and suspends require a duration
 - A duration, where allowed, must be greater than zero
 
-A `warn` is the one action with no rule either way: it neither requires
-`duration_seconds` nor rejects it. A duration sent with a warn is stored on the
-action's `expires_at` and has no effect on the user, since a warn imposes no
-restriction to expire. Send `null`.
+`warn` and `ban` reject `duration_seconds` for the same reason: neither ends.
+A warning is a permanent note on the record and imposes no restriction that
+could expire, so a duration sent with one would be written to the action's
+`expires_at` describing nothing — and anything later deciding "is this still in
+force" from that column would read the warning as temporary. Send `null`.
 
 A mute sent without `duration_seconds` is rejected with
 `mute requires a duration; use suspend for an indefinite restriction` — an
@@ -808,8 +816,12 @@ action's `expires_at` are the same instant, so the two cannot disagree. A mute
 applies even to a user already below the posting threshold — their score may
 recover before the mute expires.
 
-Mutes cannot currently be lifted early through the API; a mute runs for the
-duration it was given.
+A mute can be ended early by a moderator with
+`DELETE /api/v1/moderation/users/{user_id}/mute`. Doing so clears `muted_until`
+and **leaves this action row exactly as written** — its `expires_at` still shows
+the original end time. The audit trail records what was decided at the time, so
+it is not the place to ask whether a mute is still in force; use
+`GET /api/v1/moderation/users/{user_id}/mute` for that.
 
 **Response** `201 Created`:
 
@@ -901,6 +913,109 @@ Returns moderation action history for a user, including associated trust penalti
     }
   ]
 }
+```
+
+---
+
+#### `GET /api/v1/moderation/users/{user_id}/mute`
+
+Reports whether a user is currently muted, and until when.
+
+**Auth**: Required
+**Role**: `moderator` or higher
+
+**Response** `200 OK`, user is muted:
+
+```json
+{"muted_until": "2025-07-02T16:00:00Z"}
+```
+
+**Response** `200 OK`, user is **not** muted:
+
+```json
+{}
+```
+
+**Response** `404 Not Found`: no user with that id.
+
+The field is **omitted entirely** rather than sent as `null`, so its presence is
+the whole answer — the same rule the self-profile responses use, so a client can
+read both shapes with one code path. A mute whose time has already passed is
+reported as no mute at all, so the client needs no clock of its own.
+
+##### Why this endpoint exists
+
+`muted_until` is on no other response a moderator can see. Without this, the
+only available clue would be a past `mute` action in the audit trail — and that
+row **never changes after a mute is lifted or expires**, so reading it would go
+on reporting a mute that no longer exists. Ask this endpoint, not
+`GET /api/v1/moderation/actions/{user_id}`, whether somebody is muted right now.
+
+Unlike the `DELETE` below, this does **not** refuse a self-query: a moderator
+may ask about their own mute here.
+
+---
+
+#### `DELETE /api/v1/moderation/users/{user_id}/mute`
+
+Ends a mute before its duration runs out — for a mute applied in error, or one a
+moderator agrees to shorten after an appeal.
+
+**Auth**: Required
+**Role**: `moderator` or higher
+
+**Response** `204 No Content`
+**Response** `400 Bad Request`: `validation error: cannot moderate yourself` —
+see below.
+**Response** `403 Forbidden`: not an active moderator or council member.
+**Response** `404 Not Found`: no user with that id.
+
+##### Idempotent
+
+`204` is returned whether or not the user was actually muted. The caller asked
+for a state and the state now holds, which is the same reasoning behind
+`DELETE /api/v1/posts/{postId}/reactions/{type}` returning `204` for a reaction
+that was never left.
+
+A user who does **not exist** is still a `404`, though. Idempotence is about the
+mute, not about the id: a mistyped user id must never report that somebody was
+released.
+
+##### A moderator cannot lift their own mute
+
+Self-lifting is refused with `400`, and it is the one case no route guard can
+catch — a mute does not deactivate an account, so a muted moderator passes both
+the active check and the role check and would otherwise be able to overturn a
+colleague's decision about themselves. The service refuses it explicitly, ahead
+of the role check, so the caller gets the specific answer rather than being sent
+off to acquire a role that still would not permit it.
+
+Note the status: this is `400`, not `403`. Being muted is not a permissions
+problem, and `POST /api/v1/moderation/actions` refuses self-moderation the same
+way with the same message.
+
+##### It writes no action row and touches no trust
+
+Lifting a mute records **no `moderation_actions` row**. It therefore does not
+appear in the member's action history, costs nobody trust, propagates no penalty
+through the vouch graph, and queues no recalculation.
+
+That is deliberate. Every severity in `moderation_actions` is 1–5 and every one
+of those names a real trust penalty — there is no severity meaning "not a
+punishment", so a release would have to file itself as one, against the person
+released and against everyone who vouched for them. The audit trail is also
+rendered to the member as a badge and the words "Severity: N", so an act of
+mercy would be shown to them as a sanction. This is the same wall
+`POST /api/v1/moderation/posts/{id}/remove` hit from the other side.
+
+The consequence for readers: **the original mute action stays in the audit trail
+exactly as written**, with its original `expires_at`, and nothing there marks it
+as lifted. A durable member-visible record of the lift would need storage of its
+own. What exists today is a server log line.
+
+```bash
+curl -X DELETE https://bell.example.com/api/v1/moderation/users/0193a7b2-.../mute \
+  -H "Cookie: ory_kratos_session=..."
 ```
 
 ---

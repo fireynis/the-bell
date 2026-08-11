@@ -173,6 +173,12 @@ Moderators and council members can access the moderation queue, which shows all 
 
 **Review Reports**: Mark reports as `reviewed` or `dismissed`.
 
+**Check and Lift Mutes**: See whether a member is currently muted and when the
+mute ends, and end it early if it was applied in error or the member appeals
+successfully. Check the mute rather than reading the audit trail: a past mute
+entry keeps its original end time forever and will keep suggesting a mute that
+may already be over. A moderator cannot lift a mute on themselves.
+
 **Remove a Post**: Take a single post down with a reason. The post stops
 appearing in the feed and on its author's profile, exactly as an author's own
 deletion does. The difference is what is recorded: a moderator removal stores
@@ -199,11 +205,26 @@ that is a moderation action.
 
 A mute lasts exactly as long as the moderator set it for, and it is recorded
 separately from the trust score rather than by forcing the score down. You can
-see your own mute — and when it ends — on your profile; nobody else can. Note
-that the trust penalty above still applies and decays on its own schedule, so
-your score may stay reduced after the mute itself has ended.
+see your own mute — and when it ends — on your profile. Moderators and council
+members can see it too, since they are the other party to it; nobody else can,
+and it appears nowhere on your public profile. Note that the trust penalty above
+still applies and decays on its own schedule, so your score may stay reduced
+after the mute itself has ended.
 
-A mute cannot currently be lifted early: it runs for the duration it was given.
+**Lifting a mute early.** A moderator or council member can end a mute before it
+runs out — for one applied in error, or one they agree to shorten after you
+appeal. Lifting is not a further punishment and is not recorded as one: it costs
+nobody trust, propagates nothing through the vouch graph, and does not appear in
+anyone's moderation history.
+
+One consequence is worth knowing if you read your own history: the original mute
+entry stays exactly as it was written, still showing the end time the moderator
+first chose, with nothing marking it as lifted. That record is what was decided
+at the time, not a live status. If your mute has been lifted you can simply
+post again; your profile is the place that tells you whether a mute is still in
+force.
+
+Moderators cannot lift their own mutes.
 
 ### Trust Penalty Propagation
 
