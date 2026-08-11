@@ -9,7 +9,6 @@ import (
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/testsupport"
 )
 
@@ -18,8 +17,8 @@ import (
 // silently changes someone's standing in the town, so every one is checked
 // against a real database.
 
-func roleUsers(users []service.RoleCheckerUser) map[string]service.RoleCheckerUser {
-	byID := make(map[string]service.RoleCheckerUser, len(users))
+func roleUsers(users []*domain.User) map[string]*domain.User {
+	byID := make(map[string]*domain.User, len(users))
 	for _, u := range users {
 		byID[u.ID] = u
 	}
@@ -147,7 +146,7 @@ func TestRoleCheckerRepo_TrustBelowSince_SetAndClear(t *testing.T) {
 	}
 }
 
-func mustFindRoleUser(t *testing.T, repo *postgres.RoleCheckerRepo, id string) service.RoleCheckerUser {
+func mustFindRoleUser(t *testing.T, repo *postgres.RoleCheckerRepo, id string) *domain.User {
 	t.Helper()
 
 	users, err := repo.ListActiveNonBannedUsers(context.Background())

@@ -122,7 +122,7 @@ func newWiredServer(t *testing.T, cfg config.Config) *Server {
 		WithUserService(service.NewUserService(stubUserRepo{}, nil)),
 		WithVouchService(service.NewVouchService(stubVouchRepo{}, nil, nil, nil)),
 		WithReportService(service.NewReportService(nil, nil, nil)),
-		WithModerationActionService(service.NewModerationActionService(nil, nil, nil, nil, nil, nil)),
+		WithModerationActionService(service.NewModerationActionService(nil, nil, nil, nil, nil, nil, nil)),
 		WithApprovalService(service.NewApprovalService(nil, nil)),
 		WithVotingService(service.NewVotingService(nil, nil)),
 		WithReactionService(service.NewReactionService(nil, nil)),

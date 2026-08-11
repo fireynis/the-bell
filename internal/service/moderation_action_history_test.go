@@ -90,7 +90,7 @@ func TestModerationActionService_GetActionHistory_DelegatesToHistoryService(t *t
 		{ID: "pen-1", UserID: "user-1", ModerationActionID: "act-1", PenaltyAmount: 5.0, CreatedAt: now},
 	}
 
-	svc := NewModerationActionService(actionRepo, newMockActionUserLookup(), nil, nil, penaltyLister, fixedClock)
+	svc := NewModerationActionService(actionRepo, newMockActionUserLookup(), nil, nil, penaltyLister, nil, fixedClock)
 
 	entries, err := svc.GetActionHistory(context.Background(), "user-1", false, 20, 0)
 	if err != nil {

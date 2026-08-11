@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,6 +84,138 @@ func (s *stubVouchLister) ListGivenVouches(_ context.Context, _ string) ([]*doma
 }
 
 var vouchedAt = time.Date(2026, 3, 1, 12, 30, 45, 0, time.UTC)
+
+type stubMuteLiftLister struct {
+	lifts []domain.ModerationRelief
+	err   error
+
+	gotUserID string
+	calls     int
+}
+
+func (s *stubMuteLiftLister) MuteLifts(_ context.Context, userID string, _ int) ([]domain.ModerationRelief, error) {
+	s.calls++
+	s.gotUserID = userID
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.lifts, nil
+}
+
+// ownProfileResponse decoded far enough to check the moderation half.
+type ownProfileBody struct {
+	ID         string `json:"id"`
+	MutedUntil string `json:"muted_until"`
+	MuteLifts  []struct {
+		LiftedAt           string `json:"lifted_at"`
+		PreviousMutedUntil string `json:"previous_muted_until"`
+		ModeratorID        string `json:"moderator_id"`
+	} `json:"mute_lifts"`
+}
+
+// --- mute lifts on the self profile ---
+
+// A member who was muted and then released could not see that anywhere: the
+// mute disappears from their profile when it is lifted, and the whole audit
+// trail is moderator-only. The lift is the one moderation fact they are shown.
+func TestUserHandler_GetMe_ShowsMuteLifts(t *testing.T) {
+	previous := time.Date(2026, 3, 2, 14, 0, 0, 0, time.UTC)
+	lifted := time.Date(2026, 3, 1, 14, 0, 0, 0, time.UTC)
+	lifts := &stubMuteLiftLister{lifts: []domain.ModerationRelief{{
+		ID: "relief-1", TargetUserID: "user-1", ModeratorID: "mod-1",
+		Type: domain.ReliefMuteLift, PreviousExpiresAt: &previous,
+		WasInForce: true, CreatedAt: lifted,
+	}}}
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetMuteLiftLister(lifts)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if lifts.gotUserID != "user-1" {
+		t.Errorf("lifts read for %q, want the session user %q", lifts.gotUserID, "user-1")
+	}
+
+	var body ownProfileBody
+	decodeBody(t, rec, &body)
+	if len(body.MuteLifts) != 1 {
+		t.Fatalf("%d mute lifts in the response, want 1; body: %s", len(body.MuteLifts), rec.Body.String())
+	}
+	got := body.MuteLifts[0]
+	if got.LiftedAt != "2026-03-01T14:00:00Z" {
+		t.Errorf("lifted_at = %q, want %q", got.LiftedAt, "2026-03-01T14:00:00Z")
+	}
+	if got.PreviousMutedUntil != "2026-03-02T14:00:00Z" {
+		t.Errorf("previous_muted_until = %q, want %q", got.PreviousMutedUntil, "2026-03-02T14:00:00Z")
+	}
+	// The moderator who released them is deliberately not named. Which
+	// moderator acted is on no member-facing response today, and deciding that
+	// members may see it is a policy question, not a side effect of this field.
+	if got.ModeratorID != "" {
+		t.Errorf("moderator_id = %q; the member view must not name the moderator", got.ModeratorID)
+	}
+}
+
+// Omitted entirely rather than sent as an empty array, matching muted_until:
+// the field's presence is the whole answer, so a member who has never been
+// released sees nothing rather than an empty section.
+func TestUserHandler_GetMe_OmitsMuteLiftsWhenThereAreNone(t *testing.T) {
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetMuteLiftLister(&stubMuteLiftLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "mute_lifts") {
+		t.Errorf("mute_lifts is present for a member with no lifts: %s", rec.Body.String())
+	}
+}
+
+// A failed read is reported rather than rendered as "no lifts". An empty list
+// is a definite answer to "was I ever released?", and returning it when the
+// truth is unknown is the silent wrong answer this record exists to replace.
+func TestUserHandler_GetMe_ReportsAFailedLiftRead(t *testing.T) {
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetMuteLiftLister(&stubMuteLiftLister{err: errors.New("db unavailable")})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+// A deployment without the moderation service wired still serves profiles. The
+// handler predates the lister and every other field is independent of it.
+func TestUserHandler_GetMe_WithoutALiftListerStillServesTheProfile(t *testing.T) {
+	h := handler.NewUserHandler(nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
 
 // --- GetMe tests ---
 

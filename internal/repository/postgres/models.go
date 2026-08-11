@@ -28,6 +28,16 @@ type ModerationAction struct {
 	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
 }
 
+type ModerationRelief struct {
+	ID                string             `json:"id"`
+	TargetUserID      string             `json:"target_user_id"`
+	ModeratorID       string             `json:"moderator_id"`
+	ReliefType        string             `json:"relief_type"`
+	PreviousExpiresAt pgtype.Timestamptz `json:"previous_expires_at"`
+	WasInForce        bool               `json:"was_in_force"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
 type Post struct {
 	ID            string             `json:"id"`
 	AuthorID      string             `json:"author_id"`

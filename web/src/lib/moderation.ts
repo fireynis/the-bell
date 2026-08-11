@@ -1,4 +1,4 @@
-import type { ApiError, MuteStatus, Post, TakeActionRequest } from "../api/types";
+import type { ApiError, MuteLift, MuteStatus, Post, TakeActionRequest, User } from "../api/types";
 import type { ValidationResult } from "./post";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
@@ -256,13 +256,7 @@ export function activeMuteExpiry(
   status: MuteStatus | null | undefined,
   now: Date,
 ): Date | null {
-  const raw = status?.muted_until;
-  if (!raw) return null;
-
-  const expiry = new Date(raw);
-  if (Number.isNaN(expiry.getTime())) return null;
-
-  return expiry.getTime() > now.getTime() ? expiry : null;
+  return parseActiveExpiry(status?.muted_until, now);
 }
 
 /**
@@ -281,4 +275,58 @@ export function liftMuteBlockReason(viewerId: string, targetId: string): string 
     return "You cannot moderate yourself.";
   }
   return null;
+}
+
+/**
+ * What a member's own profile has to say about their moderation state.
+ *
+ * A mute and a lift are separate facts and both can be true at once: being
+ * muted again does not undo having been released from an earlier mute, so
+ * collapsing them into one status would hide half the record.
+ */
+export interface OwnMuteNotice {
+  /** When an active mute ends, or null when none is in force. */
+  mutedUntil: Date | null;
+  /** The most recent early release, or null when there has never been one. */
+  latestLift: MuteLift | null;
+  /** Whether there is anything at all to show, so the caller can skip the UI. */
+  hasAnything: boolean;
+}
+
+/**
+ * ownMuteNotice reads the moderation half of the caller's own profile.
+ *
+ * It exists because muted_until disappears the moment a mute is lifted. Without
+ * the lift record a member released early would see their profile simply stop
+ * saying they were muted, with nothing anywhere to say it happened — the whole
+ * moderation audit trail sits behind the moderator-only /v1/moderation routes.
+ *
+ * The expiry is re-checked against `now` even though the server already omits
+ * an expired muted_until: a page left open outlives the response that loaded
+ * it, and would otherwise go on telling a member they cannot post. An
+ * unparseable timestamp reads as no mute rather than an Invalid Date, matching
+ * activeMuteExpiry.
+ *
+ * Another member's profile carries neither field, so it reports nothing — this
+ * is never a way to learn about somebody else's moderation.
+ */
+export function ownMuteNotice(user: User | null | undefined, now: Date): OwnMuteNotice {
+  const mutedUntil = parseActiveExpiry(user?.muted_until, now);
+  const latestLift = user?.mute_lifts?.[0] ?? null;
+
+  return {
+    mutedUntil,
+    latestLift,
+    hasAnything: mutedUntil !== null || latestLift !== null,
+  };
+}
+
+/** Shared by ownMuteNotice and activeMuteExpiry: a timestamp still in the future, or null. */
+function parseActiveExpiry(raw: string | undefined, now: Date): Date | null {
+  if (!raw) return null;
+
+  const expiry = new Date(raw);
+  if (Number.isNaN(expiry.getTime())) return null;
+
+  return expiry.getTime() > now.getTime() ? expiry : null;
 }

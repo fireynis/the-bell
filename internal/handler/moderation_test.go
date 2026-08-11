@@ -111,6 +111,31 @@ func (m *mockPenaltyGraph) FindVouchersWithDepth(_ context.Context, _ string, _ 
 
 // --- test helpers ---
 
+// mockReliefRepoH is the moderation_reliefs store these handler tests run
+// against. LiftMute records the release here, so a nil one would make every
+// lift fail at the HTTP boundary for a reason unrelated to what is under test.
+type mockReliefRepoH struct {
+	reliefs []*domain.ModerationRelief
+}
+
+func newMockReliefRepoH() *mockReliefRepoH { return &mockReliefRepoH{} }
+
+func (m *mockReliefRepoH) CreateModerationRelief(_ context.Context, relief *domain.ModerationRelief) error {
+	m.reliefs = append(m.reliefs, relief)
+	return nil
+}
+
+func (m *mockReliefRepoH) ListMuteLiftsInForce(_ context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error) {
+	var out []domain.ModerationRelief
+	for _, r := range m.reliefs {
+		if r.TargetUserID != targetUserID || !r.WasInForce || len(out) == limit {
+			continue
+		}
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
 func newTestModerationActionService(
 	actions service.ModerationActionRepository,
 	users service.ActionUserLookup,
@@ -118,7 +143,7 @@ func newTestModerationActionService(
 	graph service.PenaltyGraphQuerier,
 ) *service.ModerationActionService {
 	modSvc := service.NewModerationService(penalties, graph, func() time.Time { return fixedNow })
-	return service.NewModerationActionService(actions, users, modSvc, nil, nil, func() time.Time { return fixedNow })
+	return service.NewModerationActionService(actions, users, modSvc, nil, nil, newMockReliefRepoH(), func() time.Time { return fixedNow })
 }
 
 func newTestModerationActionServiceWithPenalties(
@@ -129,7 +154,7 @@ func newTestModerationActionServiceWithPenalties(
 	penaltyLister service.PenaltyLister,
 ) *service.ModerationActionService {
 	modSvc := service.NewModerationService(penalties, graph, func() time.Time { return fixedNow })
-	return service.NewModerationActionService(actions, users, modSvc, nil, penaltyLister, func() time.Time { return fixedNow })
+	return service.NewModerationActionService(actions, users, modSvc, nil, penaltyLister, newMockReliefRepoH(), func() time.Time { return fixedNow })
 }
 
 // --- TakeAction success ---
@@ -508,7 +533,7 @@ func newTestModerationActionServiceWithEnforcer(
 ) *service.ModerationActionService {
 	modSvc := service.NewModerationService(newMockPenaltyRepoH(), newMockPenaltyGraphH(), func() time.Time { return fixedNow })
 	return service.NewModerationActionService(
-		newMockActionRepoH(), users, modSvc, enforcer, nil, func() time.Time { return fixedNow })
+		newMockActionRepoH(), users, modSvc, enforcer, nil, newMockReliefRepoH(), func() time.Time { return fixedNow })
 }
 
 func liftMuteRequest(userID string, caller *domain.User) *http.Request {

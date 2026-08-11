@@ -13,7 +13,7 @@ import (
 
 // mockRoleCheckerRepo is an in-memory RoleCheckerRepository for testing.
 type mockRoleCheckerRepo struct {
-	users             []RoleCheckerUser
+	users             []*domain.User
 	modVouchCounts    map[string]int64
 	updatedRoles      map[string]domain.Role
 	trustBelowSince   map[string]*time.Time
@@ -37,7 +37,7 @@ func newMockRoleCheckerRepo() *mockRoleCheckerRepo {
 	}
 }
 
-func (m *mockRoleCheckerRepo) ListActiveNonBannedUsers(_ context.Context) ([]RoleCheckerUser, error) {
+func (m *mockRoleCheckerRepo) ListActiveNonBannedUsers(_ context.Context) ([]*domain.User, error) {
 	if m.listUsersErr != nil {
 		return nil, m.listUsersErr
 	}
@@ -99,7 +99,7 @@ func TestRoleChecker_Run(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		users          []RoleCheckerUser
+		users          []*domain.User
 		modVouchCounts map[string]int64
 		wantPromotions int
 		wantDemotions  int
@@ -109,7 +109,7 @@ func TestRoleChecker_Run(t *testing.T) {
 	}{
 		{
 			name: "one pass applies every outcome across a mixed population",
-			users: []RoleCheckerUser{
+			users: []*domain.User{
 				{
 					ID:          "promotable",
 					DisplayName: "Alice",
@@ -172,7 +172,7 @@ func TestRoleChecker_Run(t *testing.T) {
 		},
 		{
 			name:           "no users to check",
-			users:          []RoleCheckerUser{},
+			users:          []*domain.User{},
 			wantPromotions: 0,
 			wantDemotions:  0,
 			wantCleared:    0,
@@ -250,7 +250,7 @@ func TestRoleChecker_Run_ListUsersError(t *testing.T) {
 func TestRoleChecker_DemotionClearsTrustBelowSince(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	repo := newMockRoleCheckerRepo()
-	repo.users = []RoleCheckerUser{
+	repo.users = []*domain.User{
 		{
 			ID:              "user-1",
 			DisplayName:     "Bob",
@@ -279,7 +279,7 @@ func TestRoleChecker_DemotionClearsTrustBelowSince(t *testing.T) {
 
 func TestRoleChecker_PromotionRecordsHistory(t *testing.T) {
 	repo := newMockRoleCheckerRepo()
-	repo.users = []RoleCheckerUser{
+	repo.users = []*domain.User{
 		{
 			ID:          "user-1",
 			DisplayName: "Alice",
@@ -325,7 +325,7 @@ func TestRoleChecker_PromotionRecordsHistory(t *testing.T) {
 func TestRoleChecker_ApplyDemotion_UnrecognizedOutcomeDoesNotDemote(t *testing.T) {
 	repo := newMockRoleCheckerRepo()
 	rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
-	u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
+	u := &domain.User{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
 	result := &RoleCheckResult{}
 
 	decision := demotionDecision{Outcome: demotionOutcome(99), NewRole: domain.RolePending, Reason: "should not apply"}
@@ -349,7 +349,7 @@ func TestRoleChecker_ApplyDemotion_UnrecognizedOutcomeDoesNotDemote(t *testing.T
 func TestRoleChecker_ApplyDemotion_ZeroDecisionIsANoOp(t *testing.T) {
 	repo := newMockRoleCheckerRepo()
 	rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
-	u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
+	u := &domain.User{ID: "user-1", DisplayName: "Bob", TrustScore: 10, Role: domain.RoleMember}
 	result := &RoleCheckResult{}
 
 	if err := rc.applyDemotion(context.Background(), u, demotionDecision{}, roleCheckNow, result); err != nil {
@@ -382,7 +382,7 @@ func TestRoleChecker_ApplyDemotion_OutcomeBookkeeping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newMockRoleCheckerRepo()
 			rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
-			u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
+			u := &domain.User{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
 			result := &RoleCheckResult{}
 
 			if err := rc.applyDemotion(context.Background(), u, demotionDecision{Outcome: tt.outcome}, roleCheckNow, result); err != nil {
@@ -407,7 +407,7 @@ func TestRoleChecker_Run_ContinuesAfterAPerUserFailure(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	repo := newMockRoleCheckerRepo()
 	repo.clearTrustBelowErr = errors.New("db write failed")
-	repo.users = []RoleCheckerUser{
+	repo.users = []*domain.User{
 		{
 			ID: "recovered", DisplayName: "Dave", TrustScore: 90,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
@@ -437,7 +437,7 @@ func TestRoleChecker_Run_ContinuesAfterAPerUserFailure(t *testing.T) {
 // otherwise the run summary would claim a role change that never landed.
 func TestRoleChecker_Run_FailedDemotionWriteIsNotReported(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
-	demotable := []RoleCheckerUser{
+	demotable := []*domain.User{
 		{
 			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
@@ -476,7 +476,7 @@ func TestRoleChecker_Run_DemotionSurvivesAFailedTimerClear(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	repo := newMockRoleCheckerRepo()
 	repo.clearTrustBelowErr = errors.New("db write failed")
-	repo.users = []RoleCheckerUser{
+	repo.users = []*domain.User{
 		{
 			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
@@ -501,7 +501,7 @@ func TestRoleChecker_Run_DemotionSurvivesAFailedTimerClear(t *testing.T) {
 func TestRoleChecker_Run_VouchCountFailureBlocksPromotion(t *testing.T) {
 	repo := newMockRoleCheckerRepo()
 	repo.countModVouchesErr = errors.New("graph unavailable")
-	repo.users = []RoleCheckerUser{
+	repo.users = []*domain.User{
 		{
 			ID: "user-1", DisplayName: "Alice", TrustScore: 90,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
@@ -541,7 +541,7 @@ func TestRoleChecker_ApplyDemotion_TimerWriteErrors(t *testing.T) {
 			repo := newMockRoleCheckerRepo()
 			tt.setup(repo)
 			rc := NewRoleChecker(repo, testLogger(), roleCheckClock)
-			u := RoleCheckerUser{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
+			u := &domain.User{ID: "user-1", DisplayName: "Bob", TrustScore: 65, Role: domain.RoleMember}
 			result := &RoleCheckResult{}
 
 			err := rc.applyDemotion(context.Background(), u, demotionDecision{Outcome: tt.outcome}, roleCheckNow, result)
@@ -557,7 +557,7 @@ func TestRoleChecker_ApplyDemotion_TimerWriteErrors(t *testing.T) {
 
 func TestRoleChecker_NilClock(t *testing.T) {
 	repo := newMockRoleCheckerRepo()
-	repo.users = []RoleCheckerUser{}
+	repo.users = []*domain.User{}
 
 	rc := NewRoleChecker(repo, testLogger(), nil)
 	result, err := rc.Run(context.Background())

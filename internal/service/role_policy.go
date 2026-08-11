@@ -60,7 +60,7 @@ func nextRoleAfterDemotion(current domain.Role) (domain.Role, bool) {
 // below DemotionTrustThreshold continuously for DemotionConsecutiveDays before
 // losing a role. Recovering above the threshold at any point resets the clock,
 // so a single bad week cannot demote someone.
-func evaluateDemotion(u RoleCheckerUser, now time.Time) demotionDecision {
+func evaluateDemotion(u *domain.User, now time.Time) demotionDecision {
 	if u.TrustScore >= domain.DemotionTrustThreshold {
 		if u.TrustBelowSince != nil {
 			return demotionDecision{Outcome: demotionClear}
@@ -103,7 +103,7 @@ type promotionGate struct {
 // evaluatePromotionGate checks the criteria that need no database access.
 // Only members are promoted: pending users have not been vouched in yet,
 // moderators are already there, and council is not an automatic role.
-func evaluatePromotionGate(u RoleCheckerUser, now time.Time) promotionGate {
+func evaluatePromotionGate(u *domain.User, now time.Time) promotionGate {
 	daysSinceJoin := now.Sub(u.JoinedAt).Hours() / 24
 
 	eligible := u.Role == domain.RoleMember &&
@@ -116,7 +116,7 @@ func evaluatePromotionGate(u RoleCheckerUser, now time.Time) promotionGate {
 // evaluatePromotion completes the promotion decision once the moderator vouch
 // count is known. Requiring endorsement by existing moderators is what keeps
 // promotion a community judgement rather than a pure function of activity.
-func evaluatePromotion(u RoleCheckerUser, gate promotionGate, modVouches int64) (promote bool, reason string) {
+func evaluatePromotion(u *domain.User, gate promotionGate, modVouches int64) (promote bool, reason string) {
 	if !gate.Eligible || modVouches < int64(domain.PromotionMinModVouches) {
 		return false, ""
 	}

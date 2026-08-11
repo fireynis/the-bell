@@ -29,7 +29,7 @@ import (
 
 // latestVersion is the highest migration version. Kept as a literal so that
 // adding a migration without considering its Down block trips this file.
-const latestVersion = int64(17)
+const latestVersion = int64(18)
 
 // testProvider builds a goose provider over the test's own database.
 //
@@ -67,6 +67,7 @@ var publicSchemaColumns = []struct{ table, column string }{
 	{"posts", "removed_by"},
 	{"role_history", "new_role"},
 	{"trust_penalties", "moderation_action_id"},
+	{"moderation_reliefs", "relief_type"},
 }
 
 func assertColumnsInPublic(t *testing.T, pool *pgxpool.Pool, when string) {
@@ -128,7 +129,7 @@ func TestMigrations_FullDownAndUpRoundTrip(t *testing.T) {
 	}
 
 	// The application's tables are gone. goose_db_version stays; it is goose's.
-	for _, table := range []string{"users", "posts", "reports", "trust_penalties", "role_history"} {
+	for _, table := range []string{"users", "posts", "reports", "trust_penalties", "role_history", "moderation_reliefs"} {
 		var exists bool
 		if err := pool.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM information_schema.tables

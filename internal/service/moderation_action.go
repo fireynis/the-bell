@@ -189,6 +189,18 @@ type PenaltyLister interface {
 	ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error)
 }
 
+// ModerationReliefRepository persists and reads the record of moderators
+// lifting restrictions rather than imposing them.
+//
+// It is separate from ModerationActionRepository because the two tables mean
+// different things: moderation_actions is punishments applied to a person, and
+// every row in it carries a severity that propagates a trust penalty. A relief
+// has no severity, which is what makes it safe to show the member it concerns.
+type ModerationReliefRepository interface {
+	CreateModerationRelief(ctx context.Context, relief *domain.ModerationRelief) error
+	ListMuteLiftsInForce(ctx context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error)
+}
+
 // ActionUserLookup retrieves a user by ID for moderation action validation.
 type ActionUserLookup interface {
 	GetUserByID(ctx context.Context, id string) (*domain.User, error)
@@ -220,6 +232,7 @@ type ModerationActionService struct {
 	users      ActionUserLookup
 	moderation PenaltyPropagator
 	enforcer   UserEnforcer
+	reliefs    ModerationReliefRepository
 	history    *ModerationHistoryService
 	now        func() time.Time
 	logger     *slog.Logger
@@ -231,6 +244,7 @@ func NewModerationActionService(
 	moderation PenaltyPropagator,
 	enforcer UserEnforcer,
 	penalties PenaltyLister,
+	reliefs ModerationReliefRepository,
 	clock func() time.Time,
 ) *ModerationActionService {
 	if clock == nil {
@@ -241,6 +255,7 @@ func NewModerationActionService(
 		users:      users,
 		moderation: moderation,
 		enforcer:   enforcer,
+		reliefs:    reliefs,
 		history:    NewModerationHistoryService(actions, penalties),
 		now:        clock,
 		// Defaulted rather than taken as a parameter, matching
@@ -403,17 +418,25 @@ func (s *ModerationActionService) MuteStatus(ctx context.Context, moderator *dom
 // PropagatePenalties then walks the vouch graph with. There is no severity
 // meaning "no punishment", so an un-mute row would have to claim one — filing a
 // release as a punishment of the person released, and of everyone who vouched
-// for them. Nor is that only an internal accounting problem: the audit trail is
-// rendered to the member as a badge and the words "Severity: N", so an act of
-// mercy would be shown to them as a sanction. This is the same wall post
-// removal hit from the other side: it had no severity meaning "against content
-// rather than a person".
+// for them. This is the same wall post removal hit from the other side: it had
+// no severity meaning "against content rather than a person".
 //
-// What is left of the record is this log line and the original mute action,
-// which stays exactly as the moderator wrote it. Rewriting that row's expires_at
-// to match would falsify the one thing the audit trail exists to preserve: what
-// was actually decided at the time. A durable, member-visible record of the
-// lift needs a column or table of its own.
+// That would not stay an internal accounting problem either. ActionHistoryCard
+// renders each action as a coloured severity badge and the words "Severity: N",
+// so wherever the audit trail reaches a member, an act of mercy would be shown
+// to them as a sanction. Today it reaches no member at all — the whole trail
+// sits behind /v1/moderation, which requires the moderator role — so this is a
+// statement about what the rendering WOULD do, not about a surface that exists.
+// The severity argument is the load-bearing one and does not depend on it.
+//
+// The record instead goes to moderation_reliefs, which has no severity column
+// at all, and which the member's own profile reads. Columns on the mute action
+// were rejected for a separate reason: nothing stores which action set
+// muted_until, so stamping one means guessing which mute is being ended — with
+// no right answer for a member muted twice in succession, and none at all for a
+// lift against somebody not currently muted. Rewriting that row's expires_at
+// would be worse still, falsifying the one thing the audit trail exists to
+// preserve: what was actually decided at the time.
 //
 // A user who is not muted is not an error: the caller asked for a state and the
 // state already holds, the same reasoning that answers 204 for removing a
@@ -431,15 +454,24 @@ func (s *ModerationActionService) LiftMute(ctx context.Context, moderator *domai
 	if s.enforcer == nil {
 		return fmt.Errorf("lifting mute: service has no user enforcer")
 	}
+	// Checked here for the same reason, one step further on: a deployment that
+	// can clear muted_until but cannot record why would release members with no
+	// durable trace, which is the state moderation_reliefs was added to end.
+	// Better to refuse the lift than to perform an unrecorded one.
+	if s.reliefs == nil {
+		return fmt.Errorf("lifting mute: service has no moderation relief repository")
+	}
 
 	target, err := s.users.GetUserByID(ctx, targetUserID)
 	if err != nil {
 		return err
 	}
 
-	// Captured before the write so the log can say what was cut short.
+	// Captured before the write: muted_until is about to be destroyed, and this
+	// is the only moment its value exists to be recorded.
+	now := s.now()
 	previous := target.MutedUntil
-	wasMuted := target.IsMuted(s.now())
+	wasMuted := target.IsMuted(now)
 
 	if err := s.enforcer.SetUserMutedUntil(ctx, target.ID, nil); err != nil {
 		return fmt.Errorf("lifting mute: %w", err)
@@ -451,7 +483,66 @@ func (s *ModerationActionService) LiftMute(ctx context.Context, moderator *domai
 		"previous_muted_until", previous,
 		"was_muted", wasMuted,
 	)
+
+	// Recorded after the mute is cleared, not before: the release is what the
+	// member asked for and what the moderator decided, so it must not be held
+	// hostage to the bookkeeping. The cost is that a failure here leaves a lift
+	// that happened with no durable record of it, which is why the error is
+	// returned rather than logged — reporting success would recreate exactly the
+	// state this table exists to prevent.
+	if err := s.recordRelief(ctx, moderator.ID, target.ID, previous, wasMuted, now); err != nil {
+		return err
+	}
 	return nil
+}
+
+// recordRelief writes the durable, member-visible record of a lift.
+func (s *ModerationActionService) recordRelief(
+	ctx context.Context,
+	moderatorID, targetUserID string,
+	previous *time.Time,
+	wasInForce bool,
+	now time.Time,
+) error {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("mute lifted but not recorded: generating relief id: %w", err)
+	}
+
+	relief := &domain.ModerationRelief{
+		ID:                id.String(),
+		TargetUserID:      targetUserID,
+		ModeratorID:       moderatorID,
+		Type:              domain.ReliefMuteLift,
+		PreviousExpiresAt: previous,
+		WasInForce:        wasInForce,
+		CreatedAt:         now,
+	}
+	if err := s.reliefs.CreateModerationRelief(ctx, relief); err != nil {
+		return fmt.Errorf("mute lifted but not recorded: %w", err)
+	}
+	return nil
+}
+
+// MuteLifts returns the lifts that released this user from a live mute, newest
+// first, for their own profile.
+//
+// Lifts where the target was not actually muted are excluded: the endpoint is
+// idempotent and accepts a lift against anyone, so showing those would tell a
+// member their mute was lifted when they never had one. was_in_force exists to
+// make that distinction, and the repository applies it in the query rather than
+// here — filtering a limited result set would let a run of no-op lifts push the
+// release that actually freed them out of the window.
+func (s *ModerationActionService) MuteLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error) {
+	if s.reliefs == nil {
+		return nil, nil
+	}
+
+	lifts, err := s.reliefs.ListMuteLiftsInForce(ctx, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing mute lifts: %w", err)
+	}
+	return lifts, nil
 }
 
 // GetActionHistory delegates to ModerationHistoryService.

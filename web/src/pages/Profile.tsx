@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import type { ApiError, Post, User, VouchesResponse } from "../api/types";
 import Avatar from "../components/Avatar";
 import ErrorBanner from "../components/ErrorBanner";
+import OwnMuteNotice from "../components/OwnMuteNotice";
 import PostCard from "../components/PostCard";
 import RoleBadge from "../components/RoleBadge";
 import Spinner from "../components/Spinner";
@@ -151,6 +152,13 @@ export default function Profile() {
               </div>
             </div>
           </div>
+
+          {/*
+            The member's own mute, and any mute a moderator lifted early. Only
+            ever on their own profile: a mute is between the member and the
+            moderators, and the server sends these fields nowhere else.
+          */}
+          {isOwnProfile && <OwnMuteNotice user={user} />}
 
           {isOwnProfile && (
             <div

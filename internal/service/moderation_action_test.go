@@ -102,6 +102,39 @@ func (m *mockUserEnforcer) UpdateUserTrustScore(_ context.Context, id string, sc
 	return nil
 }
 
+// --- mock ModerationReliefRepository ---
+
+type mockReliefRepo struct {
+	reliefs   []*domain.ModerationRelief
+	createErr error
+}
+
+func newMockReliefRepo() *mockReliefRepo { return &mockReliefRepo{} }
+
+func (m *mockReliefRepo) CreateModerationRelief(_ context.Context, relief *domain.ModerationRelief) error {
+	if m.createErr != nil {
+		return m.createErr
+	}
+	m.reliefs = append(m.reliefs, relief)
+	return nil
+}
+
+// Mirrors the query: the was_in_force filter is applied before the limit, not
+// after, so this mock cannot pass a service that filters in the wrong order.
+func (m *mockReliefRepo) ListMuteLiftsInForce(_ context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error) {
+	var out []domain.ModerationRelief
+	for _, r := range m.reliefs {
+		if r.TargetUserID != targetUserID || r.Type != domain.ReliefMuteLift || !r.WasInForce {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
 // --- helpers ---
 
 func newTestModerationActionService(
@@ -111,8 +144,20 @@ func newTestModerationActionService(
 	graph PenaltyGraphQuerier,
 	enforcer UserEnforcer,
 ) *ModerationActionService {
+	return newTestModerationActionServiceWithReliefs(
+		actions, users, penalties, graph, enforcer, newMockReliefRepo())
+}
+
+func newTestModerationActionServiceWithReliefs(
+	actions ModerationActionRepository,
+	users ActionUserLookup,
+	penalties PenaltyRepository,
+	graph PenaltyGraphQuerier,
+	enforcer UserEnforcer,
+	reliefs ModerationReliefRepository,
+) *ModerationActionService {
 	modSvc := NewModerationService(penalties, graph, fixedClock)
-	return NewModerationActionService(actions, users, modSvc, enforcer, nil, fixedClock)
+	return NewModerationActionService(actions, users, modSvc, enforcer, nil, reliefs, fixedClock)
 }
 
 func int64Ptr(v int64) *int64 { return &v }
@@ -657,7 +702,7 @@ func TestModerationActionService_TakeAction_PropagatesThroughTheInterface(t *tes
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0}
 	prop := &stubPropagator{result: []domain.TrustPenalty{{ID: "pen-1", UserID: "target-1"}}}
 
-	svc := NewModerationActionService(newMockActionRepo(), users, prop, newMockUserEnforcer(), nil, fixedClock)
+	svc := NewModerationActionService(newMockActionRepo(), users, prop, newMockUserEnforcer(), nil, newMockReliefRepo(), fixedClock)
 
 	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 2, "reason", nil)
 	if err != nil {
@@ -882,6 +927,129 @@ func TestModerationActionService_LiftMute_WritesNoModerationAction(t *testing.T)
 
 	if len(actions.actions) != 0 {
 		t.Errorf("%d moderation actions were written; lifting a mute carries no severity", len(actions.actions))
+	}
+}
+
+// A lift used to leave nothing but a log line: not queryable, and invisible to
+// the member it released. The record goes in moderation_reliefs, which carries
+// no severity — that is the whole reason it is not a moderation_actions row.
+func TestModerationActionService_LiftMute_RecordsARelief(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	reliefs := newMockReliefRepo()
+	svc := newTestModerationActionServiceWithReliefs(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(),
+		newMockUserEnforcer(), reliefs)
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(reliefs.reliefs) != 1 {
+		t.Fatalf("%d reliefs recorded, want 1", len(reliefs.reliefs))
+	}
+	got := reliefs.reliefs[0]
+	if got.Type != domain.ReliefMuteLift {
+		t.Errorf("type = %q, want %q", got.Type, domain.ReliefMuteLift)
+	}
+	if got.TargetUserID != "target-1" {
+		t.Errorf("target = %q, want target-1", got.TargetUserID)
+	}
+	if got.ModeratorID != "mod-1" {
+		t.Errorf("moderator = %q, want mod-1", got.ModeratorID)
+	}
+	if !got.WasInForce {
+		t.Error("was_in_force is false for a mute that had a day left to run")
+	}
+	// The muted_until being destroyed is the value worth keeping: after the
+	// write it exists nowhere else, and the original action's expires_at is not
+	// a substitute for it.
+	want := fixedNow.Add(24 * time.Hour)
+	if got.PreviousExpiresAt == nil {
+		t.Fatal("previous_expires_at is nil; the destroyed mute expiry was not recorded")
+	}
+	if !got.PreviousExpiresAt.Equal(want) {
+		t.Errorf("previous_expires_at = %v, want %v", *got.PreviousExpiresAt, want)
+	}
+	if got.ID == "" {
+		t.Error("relief has no id")
+	}
+	if !got.CreatedAt.Equal(fixedNow) {
+		t.Errorf("created_at = %v, want %v", got.CreatedAt, fixedNow)
+	}
+}
+
+// The endpoint is idempotent, so a lift against someone who is not muted is a
+// real request that succeeded. It is still recorded, but flagged: was_in_force
+// is what lets the member-facing view show only the lifts that released them
+// from something, rather than announcing a mute they never had.
+func TestModerationActionService_LiftMute_RecordsALiftThatFreedNobody(t *testing.T) {
+	tests := []struct {
+		name        string
+		user        *domain.User
+		wantPrevSet bool
+	}{
+		{
+			name: "never muted",
+			user: &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0},
+		},
+		{
+			// An expired mute is already not in force, so lifting it frees
+			// nobody — but the stale timestamp is still what the row had, and
+			// recording it costs nothing.
+			name:        "mute already expired",
+			user:        &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0, MutedUntil: ptrTime(fixedNow.Add(-time.Hour))},
+			wantPrevSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(tt.user)
+			reliefs := newMockReliefRepo()
+			svc := newTestModerationActionServiceWithReliefs(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(),
+				newMockUserEnforcer(), reliefs)
+
+			if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(reliefs.reliefs) != 1 {
+				t.Fatalf("%d reliefs recorded, want 1", len(reliefs.reliefs))
+			}
+			if reliefs.reliefs[0].WasInForce {
+				t.Error("was_in_force is true for a user who was not muted")
+			}
+			if gotSet := reliefs.reliefs[0].PreviousExpiresAt != nil; gotSet != tt.wantPrevSet {
+				t.Errorf("previous_expires_at set = %v, want %v", gotSet, tt.wantPrevSet)
+			}
+		})
+	}
+}
+
+// The mute is already cleared by the time the relief is written, so a failed
+// record cannot be swallowed: reporting success would leave exactly the state
+// this table exists to prevent — a member released with nothing durable saying
+// so. The error names the half that succeeded.
+func TestModerationActionService_LiftMute_ReportsAFailedReliefRecord(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	reliefs := newMockReliefRepo()
+	reliefs.createErr = errors.New("db unavailable")
+	svc := newTestModerationActionServiceWithReliefs(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer, reliefs)
+
+	err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1")
+	if err == nil {
+		t.Fatal("expected an error when the relief record fails")
+	}
+	// The mute really was lifted; the caller must be able to tell that from a
+	// lift that did not happen at all.
+	if until, called := enforcer.mutes["target-1"]; !called || until != nil {
+		t.Errorf("muted_until = %v (called %v), want the mute cleared regardless", until, called)
 	}
 }
 

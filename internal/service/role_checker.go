@@ -12,7 +12,7 @@ import (
 
 // RoleCheckerRepository abstracts the database queries needed by the role checker.
 type RoleCheckerRepository interface {
-	ListActiveNonBannedUsers(ctx context.Context) ([]RoleCheckerUser, error)
+	ListActiveNonBannedUsers(ctx context.Context) ([]*domain.User, error)
 	CountActiveModeratorVouchesForUser(ctx context.Context, userID string) (int64, error)
 	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
 	UpdateUserTrustBelowSince(ctx context.Context, id string, since time.Time) error
@@ -20,15 +20,14 @@ type RoleCheckerRepository interface {
 	CreateRoleHistoryEntry(ctx context.Context, entry *domain.RoleHistory) error
 }
 
-// RoleCheckerUser is the user data needed by the role checker.
-type RoleCheckerUser struct {
-	ID              string
-	DisplayName     string
-	TrustScore      float64
-	Role            domain.Role
-	JoinedAt        time.Time
-	TrustBelowSince *time.Time
-}
+// The role checker works directly on *domain.User rather than a narrowed
+// projection of it. There used to be a RoleCheckerUser struct here holding the
+// six fields the policy reads, which the Postgres adapter filled in by hand —
+// which meant internal/repository/postgres had to import internal/service to
+// name a plain data type, inverting the dependency between persistence and
+// business logic. Every field of it was already a field of domain.User, and
+// ListActiveNonBannedUsers is a SELECT *, so the projection narrowed nothing
+// that had not already been fetched.
 
 // RoleChange records a single promotion or demotion.
 type RoleChange struct {
@@ -103,7 +102,7 @@ func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 // checkPromotion evaluates whether a member should be promoted to moderator.
 // The policy itself lives in evaluatePromotionGate/evaluatePromotion; this
 // method only supplies the vouch count and applies the outcome.
-func (rc *RoleChecker) checkPromotion(ctx context.Context, u RoleCheckerUser, now time.Time, result *RoleCheckResult) error {
+func (rc *RoleChecker) checkPromotion(ctx context.Context, u *domain.User, now time.Time, result *RoleCheckResult) error {
 	gate := evaluatePromotionGate(u, now)
 	if !gate.Eligible {
 		return nil
@@ -137,7 +136,7 @@ func (rc *RoleChecker) checkPromotion(ctx context.Context, u RoleCheckerUser, no
 
 // checkDemotion applies the sustained-low-trust policy decided by
 // evaluateDemotion.
-func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now time.Time, result *RoleCheckResult) error {
+func (rc *RoleChecker) checkDemotion(ctx context.Context, u *domain.User, now time.Time, result *RoleCheckResult) error {
 	return rc.applyDemotion(ctx, u, evaluateDemotion(u, now), now, result)
 }
 
@@ -145,7 +144,7 @@ func (rc *RoleChecker) checkDemotion(ctx context.Context, u RoleCheckerUser, now
 // handled explicitly and an unrecognized one is an error, so a demotionOutcome
 // added to the policy later cannot silently fall through into taking a role
 // away from someone.
-func (rc *RoleChecker) applyDemotion(ctx context.Context, u RoleCheckerUser, decision demotionDecision, now time.Time, result *RoleCheckResult) error {
+func (rc *RoleChecker) applyDemotion(ctx context.Context, u *domain.User, decision demotionDecision, now time.Time, result *RoleCheckResult) error {
 	switch decision.Outcome {
 	case demotionNone, demotionWait:
 		return nil
@@ -195,7 +194,7 @@ func (rc *RoleChecker) applyDemotion(ctx context.Context, u RoleCheckerUser, dec
 }
 
 // changeRole updates the user's role and records the change in role_history.
-func (rc *RoleChecker) changeRole(ctx context.Context, u RoleCheckerUser, newRole domain.Role, reason string, now time.Time) error {
+func (rc *RoleChecker) changeRole(ctx context.Context, u *domain.User, newRole domain.Role, reason string, now time.Time) error {
 	if err := rc.repo.UpdateUserRole(ctx, u.ID, newRole); err != nil {
 		return fmt.Errorf("updating role: %w", err)
 	}

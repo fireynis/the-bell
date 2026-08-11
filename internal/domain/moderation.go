@@ -23,6 +23,37 @@ type ModerationAction struct {
 	ExpiresAt    *time.Time     `json:"expires_at,omitempty"`
 }
 
+// ReliefType names a non-punitive moderator act — one that lifts a restriction
+// rather than imposing one.
+type ReliefType string
+
+const (
+	// ReliefMuteLift is a moderator ending a mute before its duration runs out.
+	ReliefMuteLift ReliefType = "mute_lift"
+)
+
+// ModerationRelief records a moderator undoing a restriction.
+//
+// It is deliberately not a ModerationAction. Every ModerationAction carries a
+// severity between 1 and 5, and each of those names a trust penalty that
+// propagates through the vouch graph, so there is no severity meaning "no
+// punishment" — filing a release as one would record mercy as a sanction. This
+// type has no severity at all, which is what makes it safe to show a member.
+type ModerationRelief struct {
+	ID           string     `json:"id"`
+	TargetUserID string     `json:"target_user_id"`
+	ModeratorID  string     `json:"moderator_id"`
+	Type         ReliefType `json:"type"`
+	// PreviousExpiresAt is the muted_until the lift destroyed. Nil when the
+	// target had none, which is not an error: the lift endpoint is idempotent.
+	PreviousExpiresAt *time.Time `json:"previous_expires_at,omitempty"`
+	// WasInForce distinguishes ending a live restriction from a lift against
+	// someone who was not under one. Only the former is worth telling the
+	// member about, so the member-facing view filters on it.
+	WasInForce bool      `json:"was_in_force"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type Report struct {
 	ID         string    `json:"id"`
 	ReporterID string    `json:"reporter_id"`

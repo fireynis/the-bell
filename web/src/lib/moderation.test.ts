@@ -9,13 +9,14 @@ import {
   canRemovePost,
   liftMuteBlockReason,
   needsDuration,
+  ownMuteNotice,
   reportResolutionOutcome,
   severitiesFor,
   validateAction,
   validateRemovalReason,
   type ActionInput,
 } from "./moderation";
-import type { ApiError, Post } from "../api/types";
+import type { ApiError, Post, User } from "../api/types";
 
 const MODERATOR = "moderator-1";
 const TARGET = "target-1";
@@ -419,5 +420,72 @@ describe("liftMuteBlockReason", () => {
     // moderating themselves.
     expect(liftMuteBlockReason("", "")).toBeNull();
     expect(liftMuteBlockReason("", "target-1")).toBeNull();
+  });
+});
+
+describe("ownMuteNotice", () => {
+  const now = new Date("2026-03-01T14:00:00Z");
+
+  it("reports an active mute on the member's own profile", () => {
+    const notice = ownMuteNotice(
+      { muted_until: "2026-03-02T14:00:00Z" } as User,
+      now,
+    );
+    expect(notice.mutedUntil).toEqual(new Date("2026-03-02T14:00:00Z"));
+  });
+
+  it("treats an expired mute as no mute, needing no clock of the caller's own", () => {
+    // The server already omits an expired muted_until, but a page left open
+    // outlives the response that loaded it.
+    const notice = ownMuteNotice(
+      { muted_until: "2026-03-01T13:00:00Z" } as User,
+      now,
+    );
+    expect(notice.mutedUntil).toBeNull();
+  });
+
+  it("surfaces the most recent lift so a released member learns it happened", () => {
+    const notice = ownMuteNotice(
+      {
+        mute_lifts: [
+          { lifted_at: "2026-03-01T12:00:00Z", previous_muted_until: "2026-03-02T14:00:00Z" },
+          { lifted_at: "2026-02-01T12:00:00Z" },
+        ],
+      } as User,
+      now,
+    );
+    expect(notice.latestLift?.lifted_at).toBe("2026-03-01T12:00:00Z");
+  });
+
+  it("reports nothing for a member who has never been muted", () => {
+    const notice = ownMuteNotice({} as User, now);
+    expect(notice.mutedUntil).toBeNull();
+    expect(notice.latestLift).toBeNull();
+    expect(notice.hasAnything).toBe(false);
+  });
+
+  it("keeps showing the lift while a later mute is in force, since they are different facts", () => {
+    // Being muted again does not undo having been released from an earlier one,
+    // and collapsing the two would hide half the member's record.
+    const notice = ownMuteNotice(
+      {
+        muted_until: "2026-03-02T14:00:00Z",
+        mute_lifts: [{ lifted_at: "2026-02-01T12:00:00Z" }],
+      } as User,
+      now,
+    );
+    expect(notice.mutedUntil).not.toBeNull();
+    expect(notice.latestLift).not.toBeNull();
+  });
+
+  it("ignores an unparseable timestamp rather than rendering Invalid Date", () => {
+    const notice = ownMuteNotice({ muted_until: "not a date" } as User, now);
+    expect(notice.mutedUntil).toBeNull();
+  });
+
+  it("reads a profile that is not the caller's own as having nothing to report", () => {
+    // Another member's profile carries neither field, and must never be made to
+    // look like it does.
+    expect(ownMuteNotice(null, now).hasAnything).toBe(false);
   });
 });

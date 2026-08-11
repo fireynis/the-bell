@@ -101,6 +101,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	reportRepo := postgres.NewReportRepo(queries)
 	vouchRepo := postgres.NewVouchRepo(queries)
 	modActionRepo := postgres.NewModerationActionRepo(queries)
+	reliefRepo := postgres.NewModerationReliefRepo(queries)
 	penaltyRepo := postgres.NewPenaltyRepo(queries)
 	reactionRepo := postgres.NewReactionRepo(queries)
 	statsRepo := postgres.NewStatsRepo(queries)
@@ -117,7 +118,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	// Revoking a vouch records a decaying trust penalty against the voucher.
 	vouchSvc.SetPenaltyRepository(penaltyRepo)
 	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)
-	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, nil)
+	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, reliefRepo, nil)
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)
 	votingSvc := service.NewVotingService(voteRepo, nil)
 	statsSvc := service.NewStatsService(statsRepo)

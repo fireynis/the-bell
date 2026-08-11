@@ -387,3 +387,173 @@ func TestMuteStatusTreatsAnExpiredMuteAsNoMute(t *testing.T) {
 		t.Errorf("muted_until = %v, want NULL", *until)
 	}
 }
+
+// readOwnProfile fetches a member's own profile as that member.
+func readOwnProfile(t *testing.T, h http.Handler) map[string]any {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reading own profile: status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding own profile: %v", err)
+	}
+	return body
+}
+
+// The point of the whole record: a member who was muted and then released can
+// see that it happened. Before moderation_reliefs existed a lift left only a log
+// line — not queryable, and invisible to the person it concerned, whose mute
+// simply vanished from their profile with nothing to say why.
+//
+// Every hop is real: the mute and the lift go over the moderation endpoints as a
+// moderator, and the profile is read over HTTP as the member.
+func TestLiftMuteIsVisibleToTheReleasedMember(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftvis-mod"), domain.RoleModerator, 90.0)
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftvis-target"), domain.RoleMember, 80.0)
+
+	modHandler := testServer(t, pool, moderator).Handler()
+	applyMute(t, modHandler, target.ID)
+
+	// While muted, the member sees the mute and no lift.
+	muted := freshUser(t, pool, target.ID)
+	beforeLift := readOwnProfile(t, testServer(t, pool, muted).Handler())
+	if beforeLift["muted_until"] == nil {
+		t.Fatal("the muted member cannot see their own mute, so the lift would prove nothing")
+	}
+	if _, ok := beforeLift["mute_lifts"]; ok {
+		t.Errorf("mute_lifts is present before any lift: %v", beforeLift["mute_lifts"])
+	}
+
+	if rec := liftMute(modHandler, target.ID); rec.Code != http.StatusNoContent {
+		t.Fatalf("lifting mute: status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	released := freshUser(t, pool, target.ID)
+	afterLift := readOwnProfile(t, testServer(t, pool, released).Handler())
+
+	// The mute is gone from the profile — which is exactly why something else
+	// has to say it was lifted.
+	if afterLift["muted_until"] != nil {
+		t.Errorf("muted_until = %v after the lift, want it absent", afterLift["muted_until"])
+	}
+
+	lifts, ok := afterLift["mute_lifts"].([]any)
+	if !ok || len(lifts) != 1 {
+		t.Fatalf("mute_lifts = %v, want exactly one lift", afterLift["mute_lifts"])
+	}
+	lift, ok := lifts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("mute lift is %T, want an object", lifts[0])
+	}
+	if lift["lifted_at"] == nil {
+		t.Error("the lift does not say when it happened")
+	}
+	// The mute the member was released from ran an hour; the record keeps the
+	// expiry that was destroyed, which exists nowhere else once muted_until is
+	// cleared.
+	if lift["previous_muted_until"] == nil {
+		t.Error("the lift does not say what the mute would have run to")
+	}
+	// A member is not shown which moderator acted; that is a policy question of
+	// its own and no member-facing response answers it today.
+	if _, named := lift["moderator_id"]; named {
+		t.Errorf("the member view names the moderator: %v", lift["moderator_id"])
+	}
+}
+
+// The relief is a row, not a log line: it is queryable, and it carries the
+// muted_until that the lift destroyed.
+func TestLiftMuteRecordsAQueryableRelief(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftrow-mod"), domain.RoleModerator, 90.0)
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftrow-target"), domain.RoleMember, 80.0)
+	h := testServer(t, pool, moderator).Handler()
+
+	applyMute(t, h, target.ID)
+	mutedUntil, _ := muteState(t, pool, target.ID)
+	if mutedUntil == nil {
+		t.Fatal("the mute did not land")
+	}
+
+	if rec := liftMute(h, target.ID); rec.Code != http.StatusNoContent {
+		t.Fatalf("lifting mute: status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var (
+		reliefType string
+		previous   *time.Time
+		wasInForce bool
+		modID      string
+	)
+	err := pool.QueryRow(context.Background(),
+		`SELECT relief_type, previous_expires_at, was_in_force, moderator_id
+		   FROM moderation_reliefs WHERE target_user_id = $1`, target.ID,
+	).Scan(&reliefType, &previous, &wasInForce, &modID)
+	if err != nil {
+		t.Fatalf("reading the relief row: %v", err)
+	}
+
+	if reliefType != "mute_lift" {
+		t.Errorf("relief_type = %q, want %q", reliefType, "mute_lift")
+	}
+	if !wasInForce {
+		t.Error("was_in_force is false for a mute that was still running")
+	}
+	if modID != moderator.ID {
+		t.Errorf("moderator_id = %q, want %q", modID, moderator.ID)
+	}
+	if previous == nil {
+		t.Fatal("previous_expires_at is NULL; the destroyed mute expiry was not kept")
+	}
+	if !previous.Equal(*mutedUntil) {
+		t.Errorf("previous_expires_at = %v, want the muted_until that was cleared, %v", *previous, *mutedUntil)
+	}
+
+	// Still no moderation_actions row: the relief is a separate table precisely
+	// so the release does not have to claim a severity.
+	if n := countRows(t, pool,
+		`SELECT COUNT(*) FROM moderation_actions WHERE target_user_id = $1 AND action_type = 'mute'`,
+		target.ID); n != 1 {
+		t.Errorf("%d mute actions, want just the original one", n)
+	}
+}
+
+// An idempotent lift against somebody who was not muted is a real event and is
+// recorded, but flagged — and the member is not told they were released from a
+// mute they never had.
+func TestLiftMuteOnAnUnmutedMemberIsRecordedButNotShown(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	moderator := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftnoop-mod"), domain.RoleModerator, 90.0)
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("liftnoop-target"), domain.RoleMember, 80.0)
+
+	if rec := liftMute(testServer(t, pool, moderator).Handler(), target.ID); rec.Code != http.StatusNoContent {
+		t.Fatalf("lifting a mute nobody had: status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var wasInForce bool
+	err := pool.QueryRow(context.Background(),
+		`SELECT was_in_force FROM moderation_reliefs WHERE target_user_id = $1`, target.ID).Scan(&wasInForce)
+	if err != nil {
+		t.Fatalf("the lift was not recorded at all: %v", err)
+	}
+	if wasInForce {
+		t.Error("was_in_force is true for a member who was never muted")
+	}
+
+	profile := readOwnProfile(t, testServer(t, pool, freshUser(t, pool, target.ID)).Handler())
+	if _, ok := profile["mute_lifts"]; ok {
+		t.Errorf("mute_lifts = %v; a member who was never muted must not be told they were released",
+			profile["mute_lifts"])
+	}
+}

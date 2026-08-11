@@ -21,7 +21,27 @@ type UserHandler struct {
 	users   profileService
 	posts   authorPostLister
 	vouches VouchLister
+	lifts   muteLiftLister
 }
+
+// muteLiftLister abstracts reading the mute lifts a member is entitled to see
+// about themselves.
+type muteLiftLister interface {
+	MuteLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error)
+}
+
+// SetMuteLiftLister supplies the moderation relief reader.
+//
+// A setter rather than a constructor parameter, matching
+// VouchService.SetPenaltyRepository: the handler predates this and every other
+// field is independent of it, so a deployment that never wires one still serves
+// profiles rather than failing to construct.
+func (h *UserHandler) SetMuteLiftLister(l muteLiftLister) { h.lifts = l }
+
+// maxOwnMuteLifts bounds the self view. This is a member's own record of being
+// released, not an audit log — enough to answer "was my mute lifted?" without
+// making the profile read unbounded.
+const maxOwnMuteLifts = 10
 
 // profileService abstracts the user profile reads and writes the handler needs.
 type profileService interface {
@@ -69,6 +89,45 @@ type ownProfileResponse struct {
 	// MutedUntil is omitted entirely when the user is not muted, so the field's
 	// presence is the answer to "am I muted?".
 	MutedUntil string `json:"muted_until,omitempty"`
+	// MuteLifts is the record of moderators ending a mute early. Omitted when
+	// empty, on the same principle as MutedUntil.
+	//
+	// This is the only moderation history a member sees about themselves: the
+	// actions taken against them all sit behind /v1/moderation, which requires
+	// the moderator role. That asymmetry is deliberate for now — showing a
+	// member their own severities, penalties and the moderators who applied
+	// them is a policy question in its own right — but a release had to be
+	// visible to the person released, or it may as well not have happened.
+	MuteLifts []muteLiftResponse `json:"mute_lifts,omitempty"`
+}
+
+// muteLiftResponse is one mute lift as its subject sees it.
+//
+// It names no moderator. Which moderator acted appears on no member-facing
+// response today, and changing that is a policy decision rather than a side
+// effect of adding this field. The member learns that they were released and
+// what the mute would otherwise have run to, which is the whole of what the
+// record is for.
+type muteLiftResponse struct {
+	LiftedAt string `json:"lifted_at"`
+	// PreviousMutedUntil is when the mute would have ended had it run its
+	// course. Omitted when the record has none.
+	PreviousMutedUntil string `json:"previous_muted_until,omitempty"`
+}
+
+func toMuteLiftResponses(reliefs []domain.ModerationRelief) []muteLiftResponse {
+	if len(reliefs) == 0 {
+		return nil
+	}
+	out := make([]muteLiftResponse, 0, len(reliefs))
+	for _, r := range reliefs {
+		lift := muteLiftResponse{LiftedAt: r.CreatedAt.Format(timestampFormat)}
+		if r.PreviousExpiresAt != nil {
+			lift.PreviousMutedUntil = r.PreviousExpiresAt.Format(timestampFormat)
+		}
+		out = append(out, lift)
+	}
+	return out
 }
 
 func toProfileResponse(u *domain.User) userProfileResponse {
@@ -99,6 +158,29 @@ func toOwnProfileResponse(u *domain.User, now time.Time) ownProfileResponse {
 	return resp
 }
 
+// ownProfileWithLifts builds the self view and attaches the member's mute
+// lifts.
+//
+// A failed read is an error rather than an empty list. "No lifts" is a definite
+// answer to "was I ever released?", and returning it when the truth is unknown
+// is the same silent wrong answer that made a log-line-only record inadequate
+// in the first place. The read is one indexed lookup on a small table, so a
+// failure here means the database is unavailable and the rest of the profile is
+// in no better shape.
+func (h *UserHandler) ownProfileWithLifts(ctx context.Context, u *domain.User) (ownProfileResponse, error) {
+	resp := toOwnProfileResponse(u, time.Now())
+	if h.lifts == nil {
+		return resp, nil
+	}
+
+	reliefs, err := h.lifts.MuteLifts(ctx, u.ID, maxOwnMuteLifts)
+	if err != nil {
+		return ownProfileResponse{}, err
+	}
+	resp.MuteLifts = toMuteLiftResponses(reliefs)
+	return resp, nil
+}
+
 // GetMe handles GET /api/v1/users/me.
 func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
@@ -107,7 +189,13 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, toOwnProfileResponse(user, time.Now()))
+	resp, err := h.ownProfileWithLifts(r.Context(), user)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, resp)
 }
 
 // UpdateMe handles PUT /api/v1/users/me.
@@ -131,7 +219,13 @@ func (h *UserHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also a self view, so it carries the same moderation state GetMe does.
-	JSON(w, http.StatusOK, toOwnProfileResponse(updated, time.Now()))
+	resp, err := h.ownProfileWithLifts(r.Context(), updated)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, resp)
 }
 
 // GetByID handles GET /api/v1/users/{id}.

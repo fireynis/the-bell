@@ -46,23 +46,23 @@ func TestEvaluateDemotion(t *testing.T) {
 	// DemotionTrustThreshold is 70, DemotionConsecutiveDays is 30.
 	tests := []struct {
 		name        string
-		user        RoleCheckerUser
+		user        *domain.User
 		wantOutcome demotionOutcome
 		wantRole    domain.Role
 	}{
 		{
 			name:        "healthy trust, never flagged",
-			user:        RoleCheckerUser{Role: domain.RoleMember, TrustScore: 80},
+			user:        &domain.User{Role: domain.RoleMember, TrustScore: 80},
 			wantOutcome: demotionNone,
 		},
 		{
 			name:        "exactly at threshold counts as healthy",
-			user:        RoleCheckerUser{Role: domain.RoleMember, TrustScore: domain.DemotionTrustThreshold},
+			user:        &domain.User{Role: domain.RoleMember, TrustScore: domain.DemotionTrustThreshold},
 			wantOutcome: demotionNone,
 		},
 		{
 			name: "recovered above threshold clears the timer",
-			user: RoleCheckerUser{
+			user: &domain.User{
 				Role: domain.RoleMember, TrustScore: 75,
 				TrustBelowSince: ptrTime(daysAgo(10)),
 			},
@@ -70,12 +70,12 @@ func TestEvaluateDemotion(t *testing.T) {
 		},
 		{
 			name:        "first drop below threshold starts the timer",
-			user:        RoleCheckerUser{Role: domain.RoleMember, TrustScore: 69.9},
+			user:        &domain.User{Role: domain.RoleMember, TrustScore: 69.9},
 			wantOutcome: demotionMark,
 		},
 		{
 			name: "below threshold but not long enough",
-			user: RoleCheckerUser{
+			user: &domain.User{
 				Role: domain.RoleMember, TrustScore: 50,
 				TrustBelowSince: ptrTime(daysAgo(29)),
 			},
@@ -83,7 +83,7 @@ func TestEvaluateDemotion(t *testing.T) {
 		},
 		{
 			name: "member demoted to pending after the full window",
-			user: RoleCheckerUser{
+			user: &domain.User{
 				Role: domain.RoleMember, TrustScore: 50,
 				TrustBelowSince: ptrTime(daysAgo(30)),
 			},
@@ -92,7 +92,7 @@ func TestEvaluateDemotion(t *testing.T) {
 		},
 		{
 			name: "moderator demoted to member after the full window",
-			user: RoleCheckerUser{
+			user: &domain.User{
 				Role: domain.RoleModerator, TrustScore: 12,
 				TrustBelowSince: ptrTime(daysAgo(45)),
 			},
@@ -101,7 +101,7 @@ func TestEvaluateDemotion(t *testing.T) {
 		},
 		{
 			name: "pending user is never demoted further",
-			user: RoleCheckerUser{
+			user: &domain.User{
 				Role: domain.RolePending, TrustScore: 5,
 				TrustBelowSince: ptrTime(daysAgo(365)),
 			},
@@ -130,13 +130,13 @@ func TestEvaluateDemotion(t *testing.T) {
 func TestEvaluateDemotion_RecoveryResetsTheClock(t *testing.T) {
 	longAgo := ptrTime(daysAgo(300))
 
-	recovered := RoleCheckerUser{Role: domain.RoleMember, TrustScore: 90, TrustBelowSince: longAgo}
+	recovered := &domain.User{Role: domain.RoleMember, TrustScore: 90, TrustBelowSince: longAgo}
 	if got := evaluateDemotion(recovered, policyNow); got.Outcome != demotionClear {
 		t.Fatalf("recovered user: Outcome = %v, want demotionClear", got.Outcome)
 	}
 
 	// After the clear, TrustBelowSince is nil; a fresh dip only marks.
-	dippedAgain := RoleCheckerUser{Role: domain.RoleMember, TrustScore: 40}
+	dippedAgain := &domain.User{Role: domain.RoleMember, TrustScore: 40}
 	if got := evaluateDemotion(dippedAgain, policyNow); got.Outcome != demotionMark {
 		t.Fatalf("re-dipped user: Outcome = %v, want demotionMark", got.Outcome)
 	}
@@ -146,52 +146,52 @@ func TestEvaluatePromotionGate(t *testing.T) {
 	// PromotionTrustThreshold is 85, PromotionMinDays is 90.
 	tests := []struct {
 		name         string
-		user         RoleCheckerUser
+		user         *domain.User
 		wantEligible bool
 	}{
 		{
 			name:         "qualified member",
-			user:         RoleCheckerUser{Role: domain.RoleMember, TrustScore: 90, JoinedAt: daysAgo(120)},
+			user:         &domain.User{Role: domain.RoleMember, TrustScore: 90, JoinedAt: daysAgo(120)},
 			wantEligible: true,
 		},
 		{
 			name:         "exactly at both thresholds qualifies",
-			user:         RoleCheckerUser{Role: domain.RoleMember, TrustScore: 85, JoinedAt: daysAgo(90)},
+			user:         &domain.User{Role: domain.RoleMember, TrustScore: 85, JoinedAt: daysAgo(90)},
 			wantEligible: true,
 		},
 		{
 			name:         "trust just below threshold",
-			user:         RoleCheckerUser{Role: domain.RoleMember, TrustScore: 84.9, JoinedAt: daysAgo(120)},
+			user:         &domain.User{Role: domain.RoleMember, TrustScore: 84.9, JoinedAt: daysAgo(120)},
 			wantEligible: false,
 		},
 		{
 			name:         "tenure just below minimum",
-			user:         RoleCheckerUser{Role: domain.RoleMember, TrustScore: 95, JoinedAt: daysAgo(89)},
+			user:         &domain.User{Role: domain.RoleMember, TrustScore: 95, JoinedAt: daysAgo(89)},
 			wantEligible: false,
 		},
 		{
 			name:         "pending users are not promoted to moderator",
-			user:         RoleCheckerUser{Role: domain.RolePending, TrustScore: 99, JoinedAt: daysAgo(500)},
+			user:         &domain.User{Role: domain.RolePending, TrustScore: 99, JoinedAt: daysAgo(500)},
 			wantEligible: false,
 		},
 		{
 			name:         "existing moderator is not re-promoted",
-			user:         RoleCheckerUser{Role: domain.RoleModerator, TrustScore: 99, JoinedAt: daysAgo(500)},
+			user:         &domain.User{Role: domain.RoleModerator, TrustScore: 99, JoinedAt: daysAgo(500)},
 			wantEligible: false,
 		},
 		{
 			name:         "council is not an automatic role",
-			user:         RoleCheckerUser{Role: domain.RoleCouncil, TrustScore: 99, JoinedAt: daysAgo(500)},
+			user:         &domain.User{Role: domain.RoleCouncil, TrustScore: 99, JoinedAt: daysAgo(500)},
 			wantEligible: false,
 		},
 		{
 			name:         "banned user is never eligible",
-			user:         RoleCheckerUser{Role: domain.RoleBanned, TrustScore: 99, JoinedAt: daysAgo(500)},
+			user:         &domain.User{Role: domain.RoleBanned, TrustScore: 99, JoinedAt: daysAgo(500)},
 			wantEligible: false,
 		},
 		{
 			name:         "future join date yields negative tenure",
-			user:         RoleCheckerUser{Role: domain.RoleMember, TrustScore: 99, JoinedAt: policyNow.AddDate(0, 0, 5)},
+			user:         &domain.User{Role: domain.RoleMember, TrustScore: 99, JoinedAt: policyNow.AddDate(0, 0, 5)},
 			wantEligible: false,
 		},
 	}
@@ -206,7 +206,7 @@ func TestEvaluatePromotionGate(t *testing.T) {
 }
 
 func TestEvaluatePromotion(t *testing.T) {
-	qualified := RoleCheckerUser{Role: domain.RoleMember, TrustScore: 90, JoinedAt: daysAgo(120)}
+	qualified := &domain.User{Role: domain.RoleMember, TrustScore: 90, JoinedAt: daysAgo(120)}
 	gate := evaluatePromotionGate(qualified, policyNow)
 	if !gate.Eligible {
 		t.Fatal("test setup: expected the user to pass the gate")

@@ -41,8 +41,12 @@ func TestMigrations_ColumnsLandInPublicSchema(t *testing.T) {
 		// Altered by 00015, which runs after the AGE migrations: if search_path
 		// were left pointing at ag_catalog the ALTER would miss this table.
 		{"trust_penalties", "moderation_action_id"},
-		// Added by 00017, the newest column after the AGE hazard.
 		{"posts", "removed_by"},
+		// Added by 00018, the newest table after the AGE hazard. A whole table
+		// landing in ag_catalog fails differently from a stray column — every
+		// query against it errors rather than one field going missing — so the
+		// newest migration is always worth a row here.
+		{"moderation_reliefs", "relief_type"},
 	}
 
 	for _, tt := range tests {

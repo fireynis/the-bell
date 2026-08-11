@@ -12,6 +12,19 @@ export interface Post {
   user_reactions?: string[];
 }
 
+/**
+ * One entry in a member's own record of being released from a mute early.
+ *
+ * It names no moderator. Which moderator acted appears on no member-facing
+ * response — the moderation audit trail is entirely moderator-only — and
+ * changing that is a policy decision rather than a property of this record.
+ */
+export interface MuteLift {
+  lifted_at: string;
+  /** When the mute would have ended had it run its course; absent if unknown. */
+  previous_muted_until?: string;
+}
+
 export interface User {
   id: string;
   display_name: string;
@@ -21,6 +34,22 @@ export interface User {
   role: string;
   is_active: boolean;
   joined_at: string;
+  /**
+   * Present only on the caller's own profile, and only while a mute is in
+   * force: absent — never null — otherwise, so the field's presence is the
+   * whole answer to "am I muted?". A mute is between the member and the
+   * moderators, so it appears on no other user's profile.
+   */
+  muted_until?: string;
+  /**
+   * Mutes a moderator ended early, newest first, and only on the caller's own
+   * profile. Absent rather than empty when there are none.
+   *
+   * This is the only moderation history a member sees about themselves. It
+   * exists because muted_until vanishes the moment a mute is lifted, so without
+   * it a member released early has no way to learn that it happened.
+   */
+  mute_lifts?: MuteLift[];
 }
 
 export interface FeedResponse {
