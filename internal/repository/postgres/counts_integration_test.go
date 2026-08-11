@@ -219,6 +219,13 @@ func TestVouchRepo_CreateVouch_DuplicateIsValidationError(t *testing.T) {
 // the original timestamp. This test pins that down, because the alternative
 // reading — that a double-tap is an error the caller must handle — would put
 // dead error-mapping code in the adapter.
+//
+// The upsert covers only that unique index, though. AddReaction does map the
+// post_id foreign key (23503), because ON CONFLICT resolves an index conflict
+// while a foreign key is a referential trigger that fires regardless — see
+// TestReactionRepo_AddReaction_MissingPostIsNotFound. The two codes look alike
+// and behave completely differently here, so neither guard should be inferred
+// from the other.
 func TestReactionRepo_AddReaction_DuplicateIsIdempotent(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
@@ -241,25 +248,26 @@ func TestReactionRepo_AddReaction_DuplicateIsIdempotent(t *testing.T) {
 		t.Fatalf("AddReaction on a duplicate = %v, want no error", err)
 	}
 
-	counts, err := repo.CountByPost(ctx, "p-1")
+	counts, err := repo.BatchCountByPosts(ctx, []string{"p-1"})
 	if err != nil {
-		t.Fatalf("CountByPost: %v", err)
+		t.Fatalf("BatchCountByPosts: %v", err)
 	}
-	if counts[domain.ReactionBell] != 1 {
-		t.Errorf("bell reactions = %d, want 1", counts[domain.ReactionBell])
+	if counts["p-1"][domain.ReactionBell] != 1 {
+		t.Errorf("bell reactions = %d, want 1", counts["p-1"][domain.ReactionBell])
 	}
 
 	// DO UPDATE SET created_at = reactions.created_at keeps the original row,
-	// so the second call must not move the timestamp forward.
-	stored, err := repo.GetUserReaction(ctx, user.ID, "p-1", domain.ReactionBell)
-	if err != nil {
-		t.Fatalf("GetUserReaction: %v", err)
+	// so the second call must not move the timestamp forward — and the row that
+	// survived is the first one, under its original id.
+	storedID, storedCreatedAt, found := storedReaction(t, pool, user.ID, "p-1", domain.ReactionBell)
+	if !found {
+		t.Fatal("no reaction row survived the upsert")
 	}
-	if stored == nil {
-		t.Fatal("GetUserReaction returned no reaction")
+	if storedID != "r-first" {
+		t.Errorf("stored id = %q, want the original %q", storedID, "r-first")
 	}
-	if !stored.CreatedAt.Equal(now) {
-		t.Errorf("stored CreatedAt = %v, want the original %v", stored.CreatedAt, now)
+	if !storedCreatedAt.Equal(now) {
+		t.Errorf("stored CreatedAt = %v, want the original %v", storedCreatedAt, now)
 	}
 }
 

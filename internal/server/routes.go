@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -16,6 +18,7 @@ import (
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/handler"
 	"github.com/fireynis/the-bell/internal/middleware"
+	"github.com/fireynis/the-bell/internal/storage"
 )
 
 func (s *Server) routes() http.Handler {
@@ -77,27 +80,19 @@ func (s *Server) routes() http.Handler {
 		}
 	}
 
-	// Static file serving for uploaded images.
+	// Static file serving for uploaded images, read back through the same store
+	// that wrote them.
 	//
-	// This reads ImageStoragePath directly instead of going through
-	// s.imageStore, because storage.Storage can Save an object and build a URL
-	// for it but cannot open one — there is no method to serve through.
-	//
-	// The condition is therefore on the directory actually being served. It
-	// used to be `s.imageStore != nil`, which implied a coupling that does not
-	// exist: the store was never consulted, so a non-local (say S3) store still
-	// produced a live /uploads route reading from whatever ImageStoragePath
-	// happened to be. Gating on the real input makes the route's existence and
-	// its behaviour agree. Serving through the interface needs a read method on
-	// storage.Storage.
-	if s.cfg.ImageStoragePath != "" {
-		fileServer := http.StripPrefix("/uploads/", http.FileServer(fileOnlyFS{http.Dir(s.cfg.ImageStoragePath)}))
-		r.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
-			// Upload filenames are content-derived and never reused, so a hit is
-			// safe to cache for a year. A miss must not be: caching a 404 would
-			// hide an image that is uploaded to that path moments later.
-			fileServer.ServeHTTP(&cacheOnSuccess{ResponseWriter: w}, r)
-		})
+	// This used to be http.FileServer over http.Dir(cfg.ImageStoragePath),
+	// because storage.Storage could Save an object and build a URL for it but
+	// not open one. The route and the store were then decoupled by
+	// construction: the store was never consulted, so a non-local (say S3)
+	// store still produced a live /uploads route reading whatever local
+	// directory ImageStoragePath happened to name — and a misconfigured store
+	// still yielded a live route. storage.Storage.Open closes that, and the
+	// gate goes back to the store, which is now the thing actually serving.
+	if s.imageStore != nil {
+		r.Get("/uploads/*", uploadHandler(s.imageStore, s.logger))
 	}
 
 	// Serve SPA frontend (web/dist).
@@ -385,39 +380,62 @@ func stripSecureAttr(cookie string) string {
 	return strings.Join(kept, ";")
 }
 
-// fileOnlyFS serves regular files and reports directories as missing.
+// uploadHandler serves one stored upload per request, through storage.Storage.
 //
-// http.FileServer renders an index page for any directory without an
-// index.html, so GET /uploads/ would otherwise hand an unauthenticated caller
-// a link to every image ever uploaded. Nothing needs to browse the directory —
-// clients only ever follow a URL built by storage.Storage.URL for one known
-// file — so the listing is pure exposure.
-type fileOnlyFS struct {
-	fs http.FileSystem
-}
+// Every failure to open is one 404 with one body. That is deliberate and it is
+// what replaces fileOnlyFS, which existed because http.FileServer renders an
+// index page for any directory without an index.html — GET /uploads/ would
+// otherwise hand an unauthenticated caller the filename of every image ever
+// uploaded. Here "/uploads/" and "/uploads/." arrive as "" and ".", which
+// Storage.Open refuses as unsafe names before touching the filesystem, so the
+// listing has no code path to come back through.
+//
+// A missing file, a traversal attempt and a name that turns out to be a
+// directory therefore look identical from outside. Distinguishing them would
+// re-offer the same enumeration one request at a time, and there is nothing
+// the caller could do with the difference — clients only ever follow a URL
+// built by storage.Storage.URL for one file they were already given.
+//
+// The reason still has to reach the operator, so anything that is not simply
+// "no such object" is logged. The underlying error names a server-side path,
+// which is another reason it does not go on the wire.
+func uploadHandler(store storage.Storage, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "*")
 
-func (f fileOnlyFS) Open(name string) (http.File, error) {
-	file, err := f.fs.Open(name)
-	if err != nil {
-		return nil, err
+		f, err := store.Open(r.Context(), name)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, storage.ErrUnsafeName) {
+				// A permission or I/O failure is a deployment problem and is
+				// completely invisible in a 404, so the log is the only place
+				// it can surface.
+				logger.Error("upload could not be read", "name", name, "error", err)
+			}
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		defer f.Close()
+
+		// ServeContent rather than io.Copy: it answers Range requests with 206
+		// and conditional ones with 304, neither of which a plain copy can do.
+		// The 304 is what cacheOnSuccess's comment is about — it is how a
+		// browser renews the year-long directive instead of re-downloading.
+		//
+		// The name comes from the URL rather than the filesystem because it is
+		// only used to pick a Content-Type from the extension, and the caller's
+		// own string is the one that has to determine that.
+		http.ServeContent(&cacheOnSuccess{ResponseWriter: w}, r, name, f.ModTime(), f)
 	}
-	info, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, err
-	}
-	if info.IsDir() {
-		file.Close()
-		// ErrNotExist so FileServer answers 404 rather than 403: whether a
-		// directory exists is itself information the caller has no use for.
-		return nil, fs.ErrNotExist
-	}
-	return file, nil
 }
 
 // cacheOnSuccess adds the long-lived Cache-Control header only once the
 // wrapped handler has committed to a cacheable status, so error responses are
 // not cached along with the files that do exist.
+//
+// A year is safe for a hit because upload filenames are generated per upload
+// and never reused, so the bytes behind a URL cannot change. It is not safe for
+// a miss: caching a 404 would pin it in every intermediary and hide an image
+// uploaded to that path moments later.
 type cacheOnSuccess struct {
 	http.ResponseWriter
 	wroteHeader bool

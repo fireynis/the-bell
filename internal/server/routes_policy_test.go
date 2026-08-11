@@ -1,6 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,9 +15,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/fireynis/the-bell/internal/config"
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
+	"github.com/fireynis/the-bell/internal/storage"
 )
 
 // Production runs behind TLS, so the Secure attribute Kratos sets is the only
@@ -374,3 +383,288 @@ func writeFile(t *testing.T, path, content string) {
 		t.Fatalf("failed to write %s: %v", path, err)
 	}
 }
+
+// The route now reads through the image store, so its existence has to follow
+// the store and not a config string. It used to be gated on
+// cfg.ImageStoragePath, which meant an instance with no usable store still
+// answered /uploads by reading whatever directory that string named — a live
+// route with nothing on the other end of it.
+func TestUploadsRouteFollowsTheImageStore(t *testing.T) {
+	tests := []struct {
+		name           string
+		withStore      bool
+		storagePath    string
+		wantRegistered bool
+	}{
+		{
+			name:           "a store registers the route",
+			withStore:      true,
+			storagePath:    "", // deliberately unset: the store decides, not this
+			wantRegistered: true,
+		},
+		{
+			// The case the old gate got wrong.
+			name:           "a storage path with no store does not",
+			withStore:      false,
+			storagePath:    "/some/configured/directory",
+			wantRegistered: false,
+		},
+		{
+			name:           "neither does nothing at all",
+			withStore:      false,
+			storagePath:    "",
+			wantRegistered: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+			opts := []Option{}
+			if tt.withStore {
+				store, err := storage.NewLocalStorage(t.TempDir(), "/uploads/")
+				if err != nil {
+					t.Fatalf("NewLocalStorage: %v", err)
+				}
+				opts = append(opts, WithImageStore(store))
+			}
+
+			srv := New(config.Config{Port: 0, ImageStoragePath: tt.storagePath}, nil, logger, opts...)
+
+			mux, ok := srv.Handler().(*chi.Mux)
+			if !ok {
+				t.Fatalf("server handler is %T, want *chi.Mux", srv.Handler())
+			}
+			pattern := mux.Find(chi.NewRouteContext(), http.MethodGet, "/uploads/photo.jpg")
+
+			if registered := pattern == "/uploads/*"; registered != tt.wantRegistered {
+				t.Errorf("route registered = %v (pattern %q), want %v", registered, pattern, tt.wantRegistered)
+			}
+		})
+	}
+}
+
+// What the store wrote is what the route serves, with no config string
+// agreeing in the middle. This is the coupling the read method exists to
+// create: before it, the route read a directory and the store wrote to one,
+// and nothing made them the same directory.
+func TestUploadsServesWhatTheStoreWrote(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.NewLocalStorage(dir, "/uploads/")
+	if err != nil {
+		t.Fatalf("NewLocalStorage: %v", err)
+	}
+
+	// A deliberately wrong ImageStoragePath: nothing may read it.
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := New(config.Config{Port: 0, ImageStoragePath: filepath.Join(t.TempDir(), "wrong")}, nil, logger,
+		WithImageStore(store))
+
+	saved, err := store.Save(context.Background(), "photo.jpg", strings.NewReader("image bytes"))
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, store.URL(saved), nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != "image bytes" {
+		t.Errorf("body = %q, want the saved bytes", rec.Body.String())
+	}
+}
+
+// The read path refuses traversal for the same reason the write path does, and
+// answers with the same 404 a missing file gets — a distinct status would let a
+// caller map the filesystem one request at a time.
+func TestUploadsRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "secret.txt"), "top secret")
+
+	dir := filepath.Join(root, "images")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "photo.jpg"), "image bytes")
+
+	srv := newWiredServer(t, config.Config{Port: 0, ImageStoragePath: dir})
+
+	for _, path := range []string{
+		"/uploads/../secret.txt",
+		"/uploads/../../etc/passwd",
+		"/uploads/..%2fsecret.txt",
+		"/uploads/subdir/photo.jpg",
+		`/uploads/..\secret.txt`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code == http.StatusOK {
+				t.Fatalf("status = 200, body: %q", rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "top secret") {
+				t.Errorf("response leaked content from outside the storage directory: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+// Conditional and range handling survive the move off http.FileServer. Both
+// come from http.ServeContent, which is why storage.File carries a Seeker and a
+// ModTime rather than being a plain io.ReadCloser — a reader alone can serve
+// the whole file and nothing else.
+//
+// The 304 also has to keep its Cache-Control. That is the case cacheOnSuccess's
+// comment is about: a revalidation is how the browser renews the year-long
+// directive, so dropping it there would put the client back to asking on every
+// load.
+func TestUploadsAnswersConditionalRequests(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "photo.jpg"), "image bytes")
+
+	srv := newWiredServer(t, config.Config{Port: 0, ImageStoragePath: dir})
+
+	// First fetch, to learn the modification time the server reports.
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/uploads/photo.jpg", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	lastModified := rec.Header().Get("Last-Modified")
+	if lastModified == "" {
+		t.Fatal("no Last-Modified header: conditional requests cannot work without one")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/uploads/photo.jpg", nil)
+	req.Header.Set("If-Modified-Since", lastModified)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotModified)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("304 carried a %d-byte body", rec.Body.Len())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000" {
+		t.Errorf("Cache-Control on the revalidation = %q, want the long-lived directive", got)
+	}
+}
+
+func TestUploadsAnswersRangeRequests(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "photo.jpg"), "0123456789")
+
+	srv := newWiredServer(t, config.Config{Port: 0, ImageStoragePath: dir})
+
+	req := httptest.NewRequest(http.MethodGet, "/uploads/photo.jpg", nil)
+	req.Header.Set("Range", "bytes=2-5")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusPartialContent)
+	}
+	if rec.Body.String() != "2345" {
+		t.Errorf("body = %q, want %q", rec.Body.String(), "2345")
+	}
+	if got := rec.Header().Get("Content-Range"); got != "bytes 2-5/10" {
+		t.Errorf("Content-Range = %q, want %q", got, "bytes 2-5/10")
+	}
+}
+
+// The extension still picks the Content-Type. ServeContent takes the name from
+// the URL rather than from the filesystem, so this pins that the right string
+// is being handed over.
+func TestUploadsSetsContentTypeFromTheName(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "photo.png"), "\x89PNG\r\n\x1a\n")
+
+	srv := newWiredServer(t, config.Config{Port: 0, ImageStoragePath: dir})
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/uploads/photo.png", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "image/png") {
+		t.Errorf("Content-Type = %q, want image/png", got)
+	}
+}
+
+// A store that is misconfigured, unreachable or unreadable answers 404 like
+// everything else, because the caller must not be able to tell those apart from
+// a missing file. That makes the log the only place the real cause can appear,
+// and an operator staring at 404s on images they know they uploaded has
+// nothing else to go on.
+func TestUploadsLogsFailuresThatAreNotAMissingFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		openErr   error
+		wantLog   bool
+		wantInLog string
+	}{
+		{
+			name:    "a missing object is routine and stays quiet",
+			openErr: fs.ErrNotExist,
+			wantLog: false,
+		},
+		{
+			name:    "a refused name is the caller's doing, not the server's",
+			openErr: storage.ErrUnsafeName,
+			wantLog: false,
+		},
+		{
+			name:      "a permission failure is a deployment problem",
+			openErr:   fs.ErrPermission,
+			wantLog:   true,
+			wantInLog: "permission",
+		},
+		{
+			name:      "so is an unreachable backend",
+			openErr:   errors.New("connection refused"),
+			wantLog:   true,
+			wantInLog: "connection refused",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			srv := New(config.Config{Port: 0}, nil, logger, WithImageStore(errStorage{err: tt.openErr}))
+
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/uploads/photo.jpg", nil))
+
+			// The status is the same either way; that is the point.
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+			}
+			// And the reason never reaches the client.
+			if tt.wantInLog != "" && strings.Contains(rec.Body.String(), tt.wantInLog) {
+				t.Errorf("response leaked the reason: %q", rec.Body.String())
+			}
+
+			logged := strings.Contains(logs.String(), "upload could not be read")
+			if logged != tt.wantLog {
+				t.Errorf("logged = %v, want %v; log: %s", logged, tt.wantLog, logs.String())
+			}
+			if tt.wantInLog != "" && !strings.Contains(logs.String(), tt.wantInLog) {
+				t.Errorf("log does not name the cause %q: %s", tt.wantInLog, logs.String())
+			}
+		})
+	}
+}
+
+// errStorage fails every Open with a fixed error. Only the read path is
+// exercised through it, so Save and URL are here to satisfy the interface.
+type errStorage struct{ err error }
+
+func (errStorage) Save(context.Context, string, io.Reader) (string, error) { return "", nil }
+func (s errStorage) Open(context.Context, string) (storage.File, error)    { return nil, s.err }
+func (errStorage) URL(path string) string                                  { return "/uploads/" + path }

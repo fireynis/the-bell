@@ -26,6 +26,16 @@ const (
 	maxLimit     = 100
 )
 
+// errServerFault marks a failure inside parseMultipartCreate that the caller
+// did nothing to cause and can do nothing about.
+//
+// Everything else that function returns is a complaint about the request, and
+// Create reports those as 400 with the error text attached. Without a way to
+// say "this one is ours", a server-side failure would be reported to the client
+// as a bad request — with the internal detail in the body — which is why the
+// one such case here used to panic instead.
+var errServerFault = errors.New("server fault")
+
 // ReactionEnricher loads batch reaction data for posts.
 type ReactionEnricher interface {
 	BatchCountByPosts(ctx context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error)
@@ -110,9 +120,15 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		if err := h.parseMultipartCreate(r, &req); err != nil {
-			if errors.Is(err, errUnsupportedType) || errors.Is(err, errFileTooLarge) {
+			switch {
+			case errors.Is(err, errUnsupportedType), errors.Is(err, errFileTooLarge):
 				Error(w, http.StatusBadRequest, err.Error())
-			} else {
+			case errors.Is(err, errServerFault):
+				// The request was well-formed; the server could not carry it
+				// out. The wrapped detail describes the process's own state, so
+				// only the fixed message goes on the wire.
+				Error(w, http.StatusInternalServerError, "internal error")
+			default:
 				Error(w, http.StatusBadRequest, fmt.Sprintf("invalid multipart request: %v", err))
 			}
 			return
@@ -166,7 +182,21 @@ func (h *PostHandler) parseMultipartCreate(r *http.Request, req *createPostReque
 		return fmt.Errorf("image uploads not configured")
 	}
 
-	filename := fmt.Sprintf("%s%s", mustUUIDv7(), ext)
+	id, err := uuid.NewV7()
+	if err != nil {
+		// uuid.NewV7 only fails if the random source is broken, which is the
+		// server's problem and not the caller's — hence errServerFault, so the
+		// funnel above answers 500 rather than folding it in with the malformed
+		// requests.
+		//
+		// This used to panic (mustUUIDv7) and rely on middleware.Recoverer to
+		// turn the unwind into a 500. The status is the same; what changes is
+		// that Recoverer goes back to being a backstop instead of the only
+		// thing standing between a broken CSPRNG and a dropped connection.
+		return fmt.Errorf("%w: generating image id: %w", errServerFault, err)
+	}
+
+	filename := fmt.Sprintf("%s%s", id.String(), ext)
 	path, err := h.store.Save(r.Context(), filename, bytes.NewReader(imgData))
 	if err != nil {
 		return fmt.Errorf("saving image: %w", err)
@@ -174,15 +204,6 @@ func (h *PostHandler) parseMultipartCreate(r *http.Request, req *createPostReque
 
 	req.ImagePath = h.store.URL(path)
 	return nil
-}
-
-func mustUUIDv7() string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		// uuid.NewV7 only fails if the random source is broken.
-		panic(fmt.Sprintf("generating UUIDv7: %v", err))
-	}
-	return id.String()
 }
 
 // canViewPost reports whether viewer may read post.

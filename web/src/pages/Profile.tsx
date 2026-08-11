@@ -239,8 +239,20 @@ export default function Profile() {
 
           {activeTab === "vouches" && vouches && (
             <div className="space-y-6">
-              <VouchList direction="received" vouches={vouches.received} />
-              <VouchList direction="given" vouches={vouches.given} />
+              <VouchList
+                direction="received"
+                vouches={vouches.received}
+                viewer={viewer}
+                ownerName={user.display_name}
+                onRevoked={fetchProfile}
+              />
+              <VouchList
+                direction="given"
+                vouches={vouches.given}
+                viewer={viewer}
+                ownerName={user.display_name}
+                onRevoked={fetchProfile}
+              />
             </div>
           )}
         </div>

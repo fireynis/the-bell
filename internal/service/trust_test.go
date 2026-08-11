@@ -481,11 +481,15 @@ func TestCalcCompositeTrust(t *testing.T) {
 			want: 67.6,
 		},
 		{
-			// A permanent ban penalty (nil DecaysAt) wipes the moderation
-			// component and never decays, even years later.
-			name: "permanently banned user loses the whole moderation component",
+			// A permanent penalty (nil DecaysAt) wipes the moderation
+			// component and never decays, even years later. The user here is
+			// deliberately NOT banned — a ban floors the whole score, see
+			// TestCalcCompositeTrust_BannedUserScoresZero. This is the other
+			// holder of a permanent penalty: someone who vouched for a banned
+			// user, since propagated penalties inherit the nil DecaysAt.
+			name: "permanent penalty costs a voucher the whole moderation component",
 			inputs: &fakeTrustInputs{
-				user:      &domain.User{ID: "banned", JoinedAt: now.AddDate(-2, 0, 0)},
+				user:      &domain.User{ID: "voucher", JoinedAt: now.AddDate(-2, 0, 0), Role: domain.RoleMember},
 				posts:     90,
 				reactions: 270,
 				vouches:   7,
@@ -695,6 +699,59 @@ func TestCalcCompositeTrust_DoesNotSpecialCaseMutedUsers(t *testing.T) {
 	if muted.user.TrustScore < domain.PostingThreshold {
 		t.Errorf("trust = %v: the score is below the posting threshold, so this test would "+
 			"pass even if MutedUntil were broken", muted.user.TrustScore)
+	}
+}
+
+// A ban is the one moderation outcome the four components cannot express. The
+// permanent 100-point penalty only empties the moderation component, which
+// carries 30% of the weight, so an established member recomputes to 70 — the
+// exact score TakeAction had just written to zero. The role is the
+// authoritative record of a ban, so the calculation reads that rather than
+// trying to infer a ban from the shape of the penalties.
+//
+// The displayed score is the visible half of this; the damaging half is that
+// CountActiveVouchesWithAvgTrust averages a voucher's stored trust into their
+// vouchees' voucher component, so a banned account restored to 70 would keep
+// propping up everyone it ever vouched for.
+func TestCalcCompositeTrust_BannedUserScoresZero(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	// Everything a ban writes: the banned role, plus the permanent severity-5
+	// penalty PropagatePenalties records for it.
+	inputs := establishedMember(now, []domain.TrustPenalty{
+		{ID: "penalty-ban", UserID: "member", PenaltyAmount: 100, CreatedAt: now},
+	})
+	inputs.user.Role = domain.RoleBanned
+
+	score, err := CalcCompositeTrust(context.Background(), inputs, "member", now)
+	if err != nil {
+		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
+	}
+	if score != 0 {
+		t.Errorf("score = %v, want 0 — a recalculation handed a banned user back "+
+			"the 70 points TakeAction had just zeroed", score)
+	}
+}
+
+// The floor keys on the role, not on the penalty, because the two are not the
+// same population: propagated penalties from a ban carry the same nil DecaysAt
+// as the direct one, so a voucher two hops from a banned user holds a permanent
+// penalty without being banned themselves. They keep their other components.
+func TestCalcCompositeTrust_PermanentPenaltyAloneIsNotABan(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	inputs := establishedMember(now, []domain.TrustPenalty{
+		{ID: "penalty-propagated", UserID: "member", PenaltyAmount: 75, CreatedAt: now},
+	})
+	inputs.user.Role = domain.RoleMember
+
+	score, err := CalcCompositeTrust(context.Background(), inputs, "member", now)
+	if err != nil {
+		t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
+	}
+	// 70 from the other components, plus (100-75)*0.30 = 7.5.
+	if want := 77.5; !approxEqual(score, want) {
+		t.Errorf("score = %v, want %v — a voucher of a banned user is not banned", score, want)
 	}
 }
 

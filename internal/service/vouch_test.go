@@ -1087,7 +1087,7 @@ func TestVouchService_Revoke_CostsFarLessThanStandingByABadVouch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// The voucher sits one hop from the vouchee, so a moderation action
 			// against the vouchee propagates back to them.
-			specs := planPropagatedPenalties("vouchee-1", tt.severity, map[string]int{"voucher-1": 1})
+			specs := planPropagatedPenalties("vouchee-1", policyFor(t, tt.severity), map[string]int{"voucher-1": 1})
 			if len(specs) != 1 {
 				t.Fatalf("planned %d propagated penalties, want 1", len(specs))
 			}

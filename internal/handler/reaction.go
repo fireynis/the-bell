@@ -13,7 +13,12 @@ import (
 )
 
 // ReactionEventPublisher publishes reaction events for SSE notifications.
-// The sse package doesn't exist yet, so this interface is defined generically.
+//
+// It is declared here, in terms the handler needs, rather than importing
+// *sse.Broker: the handler is the consumer, so the dependency points inward and
+// tests supply a stub without standing up a broker. (The comment this replaces
+// said the sse package did not exist yet. It does — internal/sse — and
+// server.routes wires the real broker in through WithReactionPublisher.)
 type ReactionEventPublisher interface {
 	PublishReactionEvent(ctx context.Context, postID, postAuthorID, reactionType, reactorID string) error
 }

@@ -3,12 +3,14 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/service"
+	"github.com/redis/go-redis/v9"
 )
 
 // fakeTrustInputs is an in-process service.TrustInputs. The score arithmetic
@@ -158,54 +160,6 @@ func TestTrustWorker_Recalculate_WritesCompositeScore(t *testing.T) {
 	}
 }
 
-// Penalties now decay rather than subtracting forever. A severity-3 penalty
-// (25 points over 270 days) that is half elapsed costs 12.5, so moderation is
-// 87.5 and contributes 26.25 on top of the 15 from a full year of tenure.
-func TestTrustWorker_Recalculate_PenaltiesDecay(t *testing.T) {
-	created := workerNow.AddDate(0, 0, -135)
-	decaysAt := created.AddDate(0, 0, 270)
-	inputs := &fakeTrustInputs{
-		user: &domain.User{ID: "user-decay", JoinedAt: workerNow.AddDate(0, 0, -365)},
-		penalties: []domain.TrustPenalty{
-			{PenaltyAmount: 25, CreatedAt: created, DecaysAt: &decaysAt},
-		},
-	}
-	updater := newStubTrustScoreUpdater()
-	w, _ := newTestWorker(t, inputs, updater)
-
-	if err := w.recalculate(context.Background(), "user-decay"); err != nil {
-		t.Fatalf("recalculate() unexpected error: %v", err)
-	}
-
-	const want = 41.25
-	if got := updater.calls[0].score; got != want {
-		t.Errorf("score = %v, want %v", got, want)
-	}
-}
-
-// A permanent penalty (nil DecaysAt) never decays, so a banned user's
-// moderation component stays at zero however long ago the ban was.
-func TestTrustWorker_Recalculate_PermanentPenaltyDoesNotDecay(t *testing.T) {
-	inputs := &fakeTrustInputs{
-		user: &domain.User{ID: "user-banned", JoinedAt: workerNow.AddDate(-2, 0, 0)},
-		penalties: []domain.TrustPenalty{
-			{PenaltyAmount: 100, CreatedAt: workerNow.AddDate(-1, 0, 0)},
-		},
-	}
-	updater := newStubTrustScoreUpdater()
-	w, _ := newTestWorker(t, inputs, updater)
-
-	if err := w.recalculate(context.Background(), "user-banned"); err != nil {
-		t.Fatalf("recalculate() unexpected error: %v", err)
-	}
-
-	// Only tenure survives: 100 * 0.15 = 15.
-	const want = 15.0
-	if got := updater.calls[0].score; got != want {
-		t.Errorf("score = %v, want %v", got, want)
-	}
-}
-
 // A score that cannot be computed must not be written: persisting a partial
 // calculation would silently corrupt the user's standing.
 func TestTrustWorker_Recalculate_CalculationFailureWritesNothing(t *testing.T) {
@@ -240,98 +194,16 @@ func TestTrustWorker_Recalculate_PersistFailureIsNotCached(t *testing.T) {
 	}
 }
 
-// The loop test: everything above calls recalculate directly, so this only has
-// to prove that a queued user reaches it. It stops as soon as the work lands
-// rather than waiting out a fixed timeout.
-func TestTrustWorker_Run_ProcessesQueuedUser(t *testing.T) {
-	inputs := &fakeTrustInputs{
-		user: &domain.User{ID: "user-queued", JoinedAt: workerNow.AddDate(0, 0, -365)},
-	}
-	updater := newStubTrustScoreUpdater()
-	w, tc := newTestWorker(t, inputs, updater)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := tc.EnqueueRecalc(ctx, "user-queued"); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		w.Run(ctx)
-		close(done)
-	}()
-
-	select {
-	case got := <-updater.seen:
-		if got.id != "user-queued" {
-			t.Errorf("updated user = %q, want %q", got.id, "user-queued")
-		}
-		if got.score != 45.0 {
-			t.Errorf("score = %v, want 45", got.score)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not process the queued user")
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not stop after its context was cancelled")
-	}
-}
-
-// An empty queue is the normal steady state, not an error: BLPop returns
-// redis.Nil on timeout and the worker must keep polling. This exercises the
-// idle path, then confirms a job arriving afterwards is still picked up.
-func TestTrustWorker_Run_KeepsPollingWhileIdle(t *testing.T) {
-	inputs := &fakeTrustInputs{
-		user: &domain.User{ID: "user-late", JoinedAt: workerNow.AddDate(0, 0, -365)},
-	}
-	updater := newStubTrustScoreUpdater()
-	w, tc := newTestWorker(t, inputs, updater)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		w.Run(ctx)
-		close(done)
-	}()
-
-	// Let a poll timeout elapse against an empty queue.
-	time.Sleep(1300 * time.Millisecond)
-	if updater.callCount() != 0 {
-		t.Fatalf("update calls = %d, want 0 while the queue is empty", updater.callCount())
-	}
-
-	if err := tc.EnqueueRecalc(ctx, "user-late"); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-
-	select {
-	case got := <-updater.seen:
-		if got.id != "user-late" {
-			t.Errorf("updated user = %q, want %q", got.id, "user-late")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not pick up a job enqueued after idling")
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("worker did not stop after its context was cancelled")
-	}
-}
-
-// One user whose score cannot be computed must not take the worker down: the
-// queue is shared by the whole town, so the loop logs and carries on.
-func TestTrustWorker_Run_SurvivesARecalculationFailure(t *testing.T) {
+// The one loop test: every case above calls recalculate directly, so this only
+// has to prove that a queued user reaches it. It doubles as the resilience
+// case, because a queue shared by the whole town cannot be stopped by one
+// user whose score will not compute — the failing job is enqueued first and the
+// healthy one behind it still lands.
+//
+// It is driven entirely by channel signals rather than sleeps: the worker's
+// poll interval is Redis's one-second floor, and waiting that out on every run
+// is what made the earlier version of this file cost seconds.
+func TestTrustWorker_Run_RecalculatesQueuedUsersDespiteAFailedOne(t *testing.T) {
 	// Both outcomes are configured up front. Flipping the fake's fields once
 	// the worker is running would race it, and the worker could pick up the
 	// relaxed setting while still handling the job meant to fail.
@@ -365,11 +237,15 @@ func TestTrustWorker_Run_SurvivesARecalculationFailure(t *testing.T) {
 		t.Fatal("worker never attempted the recalculation")
 	}
 
-	// The only score that may ever be written is the healthy user's.
+	// The only score that may ever be written is the healthy user's, and it is
+	// the full composite the worker computed, not a placeholder.
 	select {
 	case got := <-updater.seen:
 		if got.id != "user-ok" {
 			t.Errorf("updated user = %q, want only %q — the failing job must write nothing", got.id, "user-ok")
+		}
+		if got.score != 45.0 {
+			t.Errorf("score = %v, want 45", got.score)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("worker stopped consuming after a failed recalculation")
@@ -392,3 +268,34 @@ func TestTrustWorker_Run_SurvivesARecalculationFailure(t *testing.T) {
 // Without a producer calling EnqueueRecalc the worker blocks on an empty list
 // forever, which is exactly the state this work is fixing.
 var _ service.TrustRecalcQueue = (*TrustCache)(nil)
+
+// --- classifyPoll ---
+
+// Three of the errors a dequeue can return are not failures: BLPOP reports an
+// empty queue as redis.Nil, and a cancelled or expired context is how the
+// worker is asked to stop or how a poll simply times out. Classifying any of
+// them as a failure would log a line every poll interval for a town where
+// nothing is happening, which is the normal state.
+func TestClassifyPoll(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want pollOutcome
+	}{
+		{"a dequeued user is dispatched", nil, pollDispatch},
+		{"an empty queue is idle, not an error", redis.Nil, pollIdle},
+		{"a cancelled context is idle", context.Canceled, pollIdle},
+		{"an expired poll is idle", context.DeadlineExceeded, pollIdle},
+		{"a wrapped redis.Nil is still idle", fmt.Errorf("dequeue recalc: %w", redis.Nil), pollIdle},
+		{"a wrapped cancellation is still idle", fmt.Errorf("dequeue recalc: %w", context.Canceled), pollIdle},
+		{"an unreachable Redis is a real failure", errors.New("dial tcp: connection refused"), pollFailed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyPoll(tt.err); got != tt.want {
+				t.Errorf("classifyPoll(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

@@ -273,8 +273,8 @@ describe("describeRevokeCost", () => {
     expect(describeRevokeCost()).toContain(String(DAILY_VOUCH_LIMIT));
   });
 
-  // The server does not apply the design doc's revocation penalty yet, and
-  // promising a cost that is never charged is a lie the UI must not tell.
+  // Promising a cost that is never charged is a lie the UI must not tell, so
+  // the sentence is tied to whether the server actually applies the penalty.
   it("stays silent about a personal trust penalty while none is applied", () => {
     expect(describeRevokeCost("Ada", false)).not.toContain("costs you");
   });
@@ -288,5 +288,52 @@ describe("describeRevokeCost", () => {
   // enforced today, whichever way the flag is set.
   it("defaults to whatever the server currently enforces", () => {
     expect(describeRevokeCost("Ada")).toBe(describeRevokeCost("Ada", REVOKE_PENALTY_ENFORCED));
+  });
+});
+
+/**
+ * VouchService.Revoke charges the revocation penalty only when the revoker is
+ * the voucher — a moderator clearing out a bad endorsement is doing the job and
+ * is not taxed for it. Now that VouchList offers revoke to moderators, the
+ * warning has to tell them that, because the voucher's wording would charge
+ * them for something the server never charges.
+ */
+describe("describeRevokeCost for someone else's vouch", () => {
+  it("does not tell a moderator they will be charged trust", () => {
+    expect(describeRevokeCost("Bob", REVOKE_PENALTY_ENFORCED, "Ada")).not.toContain("costs you");
+  });
+
+  // Even a caller that passes the flag straight through cannot make it lie.
+  it("stays silent about the penalty even when told it is enforced", () => {
+    expect(describeRevokeCost("Bob", true, "Ada")).not.toContain(String(REVOKE_PENALTY));
+  });
+
+  it("says plainly that revoking someone else's vouch is free", () => {
+    expect(describeRevokeCost("Bob", true, "Ada")).toContain("does not cost you any trust");
+  });
+
+  // "Your endorsement" would be wrong: the moderator never vouched for anyone.
+  it("credits the endorsement to the voucher, not to the moderator", () => {
+    const warning = describeRevokeCost("Bob", true, "Ada");
+    expect(warning).toContain("Ada's endorsement of Bob");
+    expect(warning).not.toContain("your endorsement");
+  });
+
+  it("still says the vouchee's score goes down", () => {
+    expect(describeRevokeCost("Bob", true, "Ada")).toContain("lowers their trust score");
+  });
+
+  // The revoker's own daily allowance has nothing to do with someone else's
+  // vouch, so quoting it would just be noise the moderator has to discount.
+  it("leaves the revoker's daily vouch limit out of it", () => {
+    expect(describeRevokeCost("Bob", true, "Ada")).not.toContain(String(DAILY_VOUCH_LIMIT));
+  });
+
+  it.each(["", "   "])("falls back to a neutral phrase for the voucher name %o", (voucherName) => {
+    expect(describeRevokeCost("Bob", true, voucherName)).toContain("another member");
+  });
+
+  it("keeps the voucher's own wording when no other voucher is named", () => {
+    expect(describeRevokeCost("Bob", true)).toContain("your endorsement");
   });
 });

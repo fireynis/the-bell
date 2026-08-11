@@ -43,6 +43,20 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// isForeignKeyViolation reports whether err is a Postgres foreign-key
+// violation (SQLSTATE 23503) — a row referencing something that is not there.
+//
+// This is a separate question from isUniqueViolation, and an ON CONFLICT clause
+// does not answer it: conflict resolution acts on an index conflict, while a
+// foreign key is a referential trigger that fires regardless. AddReaction
+// upserts, so a repeat reaction never raises 23505 — but reacting to a post
+// that does not exist still raises 23503, and callers map that to
+// service.ErrNotFound rather than letting it surface as a server error.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
 func (r *VoteRepo) GetVoteByProposalAndVoter(ctx context.Context, proposalID, voterID string) (*domain.CouncilVote, error) {
 	row, err := r.q.GetVoteByProposalAndVoter(ctx, GetVoteByProposalAndVoterParams{
 		ProposalID: proposalID,

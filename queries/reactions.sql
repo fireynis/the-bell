@@ -7,17 +7,6 @@ RETURNING *;
 -- name: RemoveReaction :exec
 DELETE FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3;
 
--- name: ListReactionsByPost :many
-SELECT * FROM reactions WHERE post_id = $1 ORDER BY created_at;
-
--- name: CountReactionsByPost :many
-SELECT reaction_type, COUNT(*) AS count FROM reactions
-WHERE post_id = $1
-GROUP BY reaction_type;
-
--- name: GetUserReactionOnPost :one
-SELECT * FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3;
-
 -- name: CountReactionsReceivedByAuthorSince :one
 SELECT COUNT(*) FROM reactions r
 JOIN posts p ON p.id = r.post_id

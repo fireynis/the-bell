@@ -113,6 +113,7 @@ export default function Queue() {
         {actionTarget && (
           <ActionDialog
             targetUserId={actionTarget.targetUserId}
+            moderatorId={user?.id ?? ""}
             onClose={() => setActionTarget(null)}
             onActionTaken={handleActionTaken}
           />

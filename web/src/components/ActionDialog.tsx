@@ -25,19 +25,29 @@ const inputStyle: React.CSSProperties = {
 
 interface ActionDialogProps {
   targetUserId: string;
+  /**
+   * The signed-in moderator. Without it the dialog cannot tell that the target
+   * is the moderator themselves, which the server refuses outright — so it
+   * would submit a guaranteed 400 and report it as a server failure.
+   */
+  moderatorId: string;
   onClose: () => void;
   onActionTaken: () => void;
 }
 
 export default function ActionDialog({
   targetUserId,
+  moderatorId,
   onClose,
   onActionTaken,
 }: ActionDialogProps) {
   const [actionType, setActionType] = useState("");
   const [severity, setSeverity] = useState(0);
   const [reason, setReason] = useState("");
-  const [durationHours, setDurationHours] = useState(24);
+  // Held as text, not a number, so an emptied field stays empty. Reading
+  // Number(e.target.value) into number state turned a cleared box into "0",
+  // which the moderator then had to select and overwrite rather than type into.
+  const [durationText, setDurationText] = useState("24");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedField, setFocusedField] = useState<string | null>(null);
@@ -53,7 +63,11 @@ export default function ActionDialog({
   }, [actionType]);
 
   const needsDuration = actionNeedsDuration(actionType);
-  const check = validateAction({ actionType, severity, reason }, durationHours);
+  // An empty box is NaN rather than 0, so validateAction reports it as a
+  // missing duration instead of an out-of-range one.
+  const durationHours = durationText.trim() === "" ? Number.NaN : Number(durationText);
+  const input = { actionType, severity, reason, moderatorId, targetUserId };
+  const check = validateAction(input, durationHours);
   const canSubmit = check.valid && !submitting;
 
   function getFocusedStyle(fieldId: string): React.CSSProperties {
@@ -74,9 +88,7 @@ export default function ActionDialog({
     setError(null);
 
     try {
-      await moderationApi.takeAction(
-        buildActionRequest(targetUserId, { actionType, severity, reason }, durationHours),
-      );
+      await moderationApi.takeAction(buildActionRequest(input, durationHours));
       onActionTaken();
     } catch (err) {
       const apiErr = err as ApiError;
@@ -172,8 +184,8 @@ export default function ActionDialog({
                 type="number"
                 min={1}
                 max={MAX_DURATION_HOURS}
-                value={durationHours}
-                onChange={(e) => setDurationHours(Number(e.target.value))}
+                value={durationText}
+                onChange={(e) => setDurationText(e.target.value)}
                 style={getFocusedStyle("duration")}
                 onFocus={() => setFocusedField("duration")}
                 onBlur={() => setFocusedField(null)}
@@ -208,6 +220,16 @@ export default function ActionDialog({
 
           {error && (
             <ErrorBanner message={error} />
+          )}
+
+          {/* Why the submit button is disabled. It used to say nothing at all,
+              so clearing the duration field left a dead button and no clue —
+              and a moderator who opened this on their own account got no
+              warning until the server answered 400. */}
+          {!check.valid && !error && (
+            <p className="text-sm" style={{ color: "var(--color-text-tertiary)" }} role="status">
+              {check.error}
+            </p>
           )}
 
           <div className="flex justify-end gap-3">

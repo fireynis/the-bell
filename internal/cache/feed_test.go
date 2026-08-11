@@ -15,23 +15,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// stubPostRepo is a minimal in-memory PostRepository for testing the cache.
+// stubPostRepo is a minimal in-memory FeedSource for testing the cache.
+//
+// It holds the two methods the cache and these tests actually exercise:
+// ListPosts, which is the whole of FeedSource, and UpdatePostBody, which one
+// test calls directly to produce an edited post. It used to carry all six
+// methods of service.PostRepository purely to satisfy a parameter type.
 type stubPostRepo struct {
 	posts []*domain.Post
-}
-
-func (s *stubPostRepo) CreatePost(_ context.Context, post *domain.Post) error {
-	s.posts = append(s.posts, post)
-	return nil
-}
-
-func (s *stubPostRepo) GetPostByID(_ context.Context, id string) (*domain.Post, error) {
-	for _, p := range s.posts {
-		if p.ID == id {
-			return p, nil
-		}
-	}
-	return nil, service.ErrNotFound
 }
 
 func (s *stubPostRepo) ListPosts(_ context.Context, cursor string, limit int) ([]*domain.Post, error) {
@@ -56,19 +47,8 @@ func (s *stubPostRepo) ListPosts(_ context.Context, cursor string, limit int) ([
 	return result, nil
 }
 
-func (s *stubPostRepo) ListPostsByAuthor(_ context.Context, authorID string, limit int) ([]*domain.Post, error) {
-	var result []*domain.Post
-	for _, p := range s.posts {
-		if p.AuthorID == authorID {
-			result = append(result, p)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
-}
-
+// UpdatePostBody is not part of FeedSource; it stands in for the edit that
+// TestInvalidateOnUpdate_FeedServesNeitherStaleBodyNorDuplicate invalidates on.
 func (s *stubPostRepo) UpdatePostBody(_ context.Context, id string, body string) (*domain.Post, error) {
 	for _, p := range s.posts {
 		if p.ID == id {
@@ -79,16 +59,10 @@ func (s *stubPostRepo) UpdatePostBody(_ context.Context, id string, body string)
 	return nil, service.ErrNotFound
 }
 
-func (s *stubPostRepo) UpdatePostStatus(_ context.Context, id string, status domain.PostStatus, reason, removedBy string) error {
-	for _, p := range s.posts {
-		if p.ID == id {
-			p.Status = status
-			p.RemovalReason = reason
-			return nil
-		}
-	}
-	return service.ErrNotFound
-}
+// The production wiring hands the cache a *postgres.PostRepo, which satisfies
+// both this and the full service.PostRepository, so narrowing the parameter
+// cannot drift away from what production actually passes.
+var _ FeedSource = (*stubPostRepo)(nil)
 
 // newTestFeedCache builds a FeedCache over a real Redis.
 //
@@ -96,7 +70,7 @@ func (s *stubPostRepo) UpdatePostStatus(_ context.Context, id string, status dom
 // Redis. The behaviour these tests turn on — sorted-set rank trimming, TTL and
 // pipelining — is exactly what a reimplementation is liable to get subtly
 // wrong, so asserting against it proved nothing about production.
-func newTestFeedCache(t *testing.T, repo service.PostRepository) (*FeedCache, *redis.Client) {
+func newTestFeedCache(t *testing.T, repo FeedSource) (*FeedCache, *redis.Client) {
 	t.Helper()
 	rdb := testsupport.TestRedis(t)
 	return NewFeedCache(rdb, repo, testLogger()), rdb

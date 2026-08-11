@@ -114,6 +114,14 @@ const (
 	// enforceBanRole moves the user to the banned role.
 	enforceBanRole
 	// enforceZeroTrust wipes the trust score.
+	//
+	// This is NOT redundant with the ban floor in CalcCompositeTrust, and
+	// deleting it would reintroduce a bug. Recalculation is driven by
+	// ModerationService.SetTrustQueue, which is optional: a deployment without
+	// Redis runs no trust worker and never recalculates, so this write is the
+	// only thing that zeroes a banned user's score there. The floor makes the
+	// two agree rather than making this one unnecessary — before the floor
+	// existed, the next recalculation handed the score straight back.
 	enforceZeroTrust
 )
 

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,13 +17,26 @@ const (
 	feedMaxLen = 100
 )
 
+// FeedSource is the one thing the cache needs from post storage: a page of the
+// feed to fall back to and to rebuild from. It never creates, updates or
+// removes a post.
+//
+// This is declared here, on the consumer side, rather than reusing
+// service.PostRepository — the cache took all six of that interface's methods
+// to call one of them, which said the cache could write posts when it cannot.
+// *postgres.PostRepo satisfies both, so nothing at the wiring site changes.
+// Same principle as TrustScoreUpdater in trust_worker.go.
+type FeedSource interface {
+	ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error)
+}
+
 // FeedCache is a read-through cache for the post feed backed by a Redis
-// sorted set. On miss it falls back to the PostRepository and populates
+// sorted set. On miss it falls back to the FeedSource and populates
 // the cache. Writes (create/delete) keep the sorted set consistent so
 // subsequent reads are served from Redis.
 type FeedCache struct {
 	rdb    redis.Cmdable
-	repo   service.PostRepository
+	repo   FeedSource
 	logger *slog.Logger
 
 	// warming is held for the duration of a background rebuild so that a
@@ -33,7 +45,7 @@ type FeedCache struct {
 }
 
 // NewFeedCache creates a FeedCache.
-func NewFeedCache(rdb redis.Cmdable, repo service.PostRepository, logger *slog.Logger) *FeedCache {
+func NewFeedCache(rdb redis.Cmdable, repo FeedSource, logger *slog.Logger) *FeedCache {
 	return &FeedCache{rdb: rdb, repo: repo, logger: logger}
 }
 

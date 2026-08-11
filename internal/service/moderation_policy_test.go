@@ -1,15 +1,32 @@
 package service
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 )
 
+// policyFor resolves the propagation policy for a severity the domain is
+// expected to know; a failure here is a broken test, not a broken planner.
+func policyFor(t *testing.T, severity int) penaltyPolicy {
+	t.Helper()
+	policy, err := resolvePenaltyPolicy(severity)
+	if err != nil {
+		t.Fatalf("resolvePenaltyPolicy(%d): %v", severity, err)
+	}
+	return policy
+}
+
 func TestPlanDirectPenalty(t *testing.T) {
-	for severity, want := range domain.DirectPenalty {
-		got := planDirectPenalty("offender", severity)
+	for severity := 1; severity <= 5; severity++ {
+		want, ok := domain.DirectPenalty(severity)
+		if !ok {
+			t.Fatalf("severity %d is not a known severity", severity)
+		}
+
+		got := planDirectPenalty("offender", policyFor(t, severity))
 		if got.UserID != "offender" {
 			t.Errorf("severity %d: UserID = %q, want %q", severity, got.UserID, "offender")
 		}
@@ -22,11 +39,49 @@ func TestPlanDirectPenalty(t *testing.T) {
 	}
 }
 
+// A severity outside 1-5 used to index straight off the end of four maps and
+// plan a penalty of zero points travelling zero hops, which persists as a real
+// row that costs the offender nothing. Resolving the policy is the one place
+// that can now refuse, and every planner is downstream of it.
+func TestResolvePenaltyPolicy_RejectsUnknownSeverity(t *testing.T) {
+	for _, severity := range []int{-1, 0, 6, 100} {
+		policy, err := resolvePenaltyPolicy(severity)
+		if !errors.Is(err, ErrValidation) {
+			t.Errorf("resolvePenaltyPolicy(%d) error = %v, want ErrValidation", severity, err)
+		}
+		if policy != (penaltyPolicy{}) {
+			t.Errorf("resolvePenaltyPolicy(%d) = %+v, want the zero policy alongside the error",
+				severity, policy)
+		}
+	}
+}
+
+// The policy has to carry all four parameters, because a planner that reached
+// for a missing one would be back to reading a zero as an answer.
+func TestResolvePenaltyPolicy_CarriesEveryParameter(t *testing.T) {
+	for severity := 1; severity <= 5; severity++ {
+		policy := policyFor(t, severity)
+
+		if want, _ := domain.DirectPenalty(severity); policy.directPenalty != want {
+			t.Errorf("severity %d: directPenalty = %v, want %v", severity, policy.directPenalty, want)
+		}
+		if want, _ := domain.PropagationDecay(severity); policy.decayRate != want {
+			t.Errorf("severity %d: decayRate = %v, want %v", severity, policy.decayRate, want)
+		}
+		if want, _ := domain.PropagationDepth(severity); policy.maxDepth != want {
+			t.Errorf("severity %d: maxDepth = %d, want %d", severity, policy.maxDepth, want)
+		}
+		if want, _ := domain.PenaltyDecayDays(severity); policy.decayDays != want {
+			t.Errorf("severity %d: decayDays = %d, want %d", severity, policy.decayDays, want)
+		}
+	}
+}
+
 func TestPlanPropagatedPenalties_DecaysByDepth(t *testing.T) {
 	// Severity 5: base 100, decay 0.75 per hop.
 	vouchers := map[string]int{"a": 1, "b": 2, "c": 3}
 
-	got := planPropagatedPenalties("offender", 5, vouchers)
+	got := planPropagatedPenalties("offender", policyFor(t, 5), vouchers)
 	if len(got) != 3 {
 		t.Fatalf("got %d specs, want 3", len(got))
 	}
@@ -50,7 +105,7 @@ func TestPlanPropagatedPenalties_DecaysByDepth(t *testing.T) {
 // always hurt less than a direct voucher.
 func TestPlanPropagatedPenalties_MonotonicallyDecreasing(t *testing.T) {
 	for severity := 1; severity <= 5; severity++ {
-		specs := planPropagatedPenalties("offender", severity, map[string]int{"a": 1, "b": 2, "c": 3})
+		specs := planPropagatedPenalties("offender", policyFor(t, severity), map[string]int{"a": 1, "b": 2, "c": 3})
 		for i := 1; i < len(specs); i++ {
 			if specs[i].Amount >= specs[i-1].Amount {
 				t.Errorf("severity %d: depth %d amount %v is not less than depth %d amount %v",
@@ -65,9 +120,11 @@ func TestPlanPropagatedPenalties_MonotonicallyDecreasing(t *testing.T) {
 func TestPlanPropagatedPenalties_DeterministicOrder(t *testing.T) {
 	vouchers := map[string]int{"zeta": 1, "alpha": 1, "mid": 2, "beta": 1, "omega": 2}
 
-	first := planPropagatedPenalties("offender", 3, vouchers)
+	policy := policyFor(t, 3)
+
+	first := planPropagatedPenalties("offender", policy, vouchers)
 	for i := 0; i < 50; i++ {
-		again := planPropagatedPenalties("offender", 3, vouchers)
+		again := planPropagatedPenalties("offender", policy, vouchers)
 		for j := range first {
 			if again[j] != first[j] {
 				t.Fatalf("iteration %d differs at index %d: %+v vs %+v", i, j, again[j], first[j])
@@ -93,7 +150,7 @@ func TestPlanPropagatedPenalties_SkipsTargetAndDepthZero(t *testing.T) {
 		"real":     1,
 	}
 
-	got := planPropagatedPenalties("offender", 4, vouchers)
+	got := planPropagatedPenalties("offender", policyFor(t, 4), vouchers)
 	if len(got) != 1 {
 		t.Fatalf("got %d specs (%+v), want only the genuine voucher", len(got), got)
 	}
@@ -103,10 +160,12 @@ func TestPlanPropagatedPenalties_SkipsTargetAndDepthZero(t *testing.T) {
 }
 
 func TestPlanPropagatedPenalties_NoVouchers(t *testing.T) {
-	if got := planPropagatedPenalties("offender", 3, nil); len(got) != 0 {
+	policy := policyFor(t, 3)
+
+	if got := planPropagatedPenalties("offender", policy, nil); len(got) != 0 {
 		t.Errorf("got %d specs, want none for a user with no vouchers", len(got))
 	}
-	if got := planPropagatedPenalties("offender", 3, map[string]int{}); len(got) != 0 {
+	if got := planPropagatedPenalties("offender", policy, map[string]int{}); len(got) != 0 {
 		t.Errorf("got %d specs, want none for an empty voucher map", len(got))
 	}
 }
@@ -114,8 +173,13 @@ func TestPlanPropagatedPenalties_NoVouchers(t *testing.T) {
 func TestPenaltyDecayTime(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
-	for severity, days := range domain.PenaltyDecayDays {
-		got := penaltyDecayTime(severity, now)
+	for severity := 1; severity <= 5; severity++ {
+		days, known := domain.PenaltyDecayDays(severity)
+		if !known {
+			t.Fatalf("severity %d is not a known severity", severity)
+		}
+
+		got := penaltyDecayTime(policyFor(t, severity), now)
 
 		if days == 0 {
 			if got != nil {
@@ -138,7 +202,8 @@ func TestPenaltyDecayTime(t *testing.T) {
 // restore a banned user's trust score.
 func TestPenaltyDecayTime_BanIsPermanent(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	if got := penaltyDecayTime(5, now); got != nil {
+	got := penaltyDecayTime(policyFor(t, 5), now)
+	if got != nil {
 		t.Errorf("severity 5 (ban) decays at %v, want a permanent penalty (nil)", got)
 	}
 }

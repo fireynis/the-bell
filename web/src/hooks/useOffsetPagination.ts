@@ -25,10 +25,17 @@ export interface OffsetPagination<T> {
  * signal, so a fetcher that changes identity every render would reload the
  * first page forever, and one that never changes when its inputs do would keep
  * showing the previous subject's rows.
+ *
+ * keyOf identifies a row so applyPage can drop one that a later page
+ * re-delivers, which offset paging does whenever a row is inserted ahead of the
+ * window. It must be stable for the same reason the fetcher must: it is part of
+ * the same effect, so an inline arrow would reload the first page forever.
+ * Declare it at module scope.
  */
 export function useOffsetPagination<T>(
   fetcher: PageFetcher<T>,
   errorMessage: string,
+  keyOf: (item: T) => string,
   pageSize: number = DEFAULT_PAGE_SIZE,
 ): OffsetPagination<T> {
   const [state, setState] = useState<PageState<T>>(initialPageState<T>);
@@ -49,7 +56,7 @@ export function useOffsetPagination<T>(
 
       try {
         const items = await fetcher(pageSize, offset);
-        setState((prev) => applyPage(prev, items, pageSize, append));
+        setState((prev) => applyPage(prev, items, pageSize, append, keyOf));
       } catch {
         setError(errorMessage);
       } finally {
@@ -57,7 +64,7 @@ export function useOffsetPagination<T>(
         fetchingRef.current = false;
       }
     },
-    [fetcher, errorMessage, pageSize],
+    [fetcher, errorMessage, keyOf, pageSize],
   );
 
   useEffect(() => {

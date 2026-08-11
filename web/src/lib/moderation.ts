@@ -140,6 +140,10 @@ export interface ActionInput {
   actionType: string;
   severity: number;
   reason: string;
+  /** The signed-in moderator taking the action. */
+  moderatorId: string;
+  /** The member the action lands on. */
+  targetUserId: string;
 }
 
 /**
@@ -149,8 +153,27 @@ export interface ActionInput {
  * durationHours is only consulted for the action types that need one; passing
  * it is optional so callers that have not collected a duration yet can still
  * check the rest of the form.
+ *
+ * The two ids are part of the input rather than extra parameters because
+ * buildActionRequest needs the target too, and one struct means the request
+ * cannot be built for a different person than the one just validated.
  */
 export function validateAction(input: ActionInput, durationHours?: number): ValidationResult {
+  // Checked before every field, and deliberately earlier than the server checks
+  // it — validateActionRequest in internal/service/moderation_action.go
+  // validates type, severity and reason first. Those are all things the
+  // moderator can fix in this form; acting on themselves is not, so reporting a
+  // severity or reason problem first would send them to correct fields that
+  // were never the reason the action could not go through. It is also the more
+  // specific answer, the same reasoning that puts the self-check ahead of the
+  // trust gate in vouchBlockReason.
+  //
+  // Both ids must be present to count as a match: a viewer whose identity has
+  // not loaded yet has two empty strings, and that is unknown, not self.
+  if (input?.moderatorId && input.moderatorId === input?.targetUserId) {
+    return { valid: false, error: "You cannot moderate yourself." };
+  }
+
   if (!input || !isActionType(input.actionType)) {
     return { valid: false, error: "Select an action type." };
   }
@@ -191,17 +214,20 @@ export function validateAction(input: ActionInput, durationHours?: number): Vali
 /**
  * buildActionRequest assembles the request body.
  *
+ * The target is read off the same input validateAction was given rather than
+ * passed separately, so the request cannot be addressed to someone other than
+ * the person the self-moderation check cleared.
+ *
  * The duration is omitted entirely for action types that do not take one: the
  * server rejects a ban that carries a duration, so sending a stale value left
  * in the form field would fail the whole action.
  */
 export function buildActionRequest(
-  targetUserId: string,
   input: ActionInput,
   durationHours?: number,
 ): TakeActionRequest {
   return {
-    target_user_id: targetUserId,
+    target_user_id: input?.targetUserId ?? "",
     action_type: input.actionType,
     severity: input.severity,
     reason: (input.reason ?? "").trim(),

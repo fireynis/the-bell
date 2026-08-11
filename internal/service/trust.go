@@ -87,6 +87,38 @@ func CalcCompositeTrust(ctx context.Context, inputs TrustInputs, userID string, 
 		return 0, fmt.Errorf("looking up user: %w", err)
 	}
 
+	// A ban is the one outcome the four components cannot express. It writes a
+	// permanent 100-point penalty, but that empties only the moderation
+	// component — 30% of the weight — so an established member recomputes to 70
+	// and this job would hand back the score TakeAction had just zeroed. That
+	// score is not merely cosmetic: CountActiveVouchesWithAvgTrust averages a
+	// voucher's stored trust into their vouchees' voucher component, so a
+	// restored banned account keeps propping up everyone it vouched for.
+	//
+	// The floor reads the role, which is what a ban authoritatively sets, rather
+	// than inferring a ban from a permanent penalty. The two are different
+	// populations: propagated penalties inherit the direct penalty's nil
+	// DecaysAt, so a voucher hops away from a banned user holds a permanent
+	// penalty without being banned. It also keeps this function reading one
+	// field instead of the moderation history — the interim mute clamp inferred
+	// its state from actions, which is why TrustInputs briefly grew a listing
+	// method it had no other use for.
+	//
+	// A banned user now contributes 0 to the average voucher trust of everyone
+	// they vouched for, which drags those vouchees down. That is
+	// voucher_health = avg_trust/100 working as specified: being endorsed by
+	// someone who turned out to be bad should cost you something. It is not
+	// double-counting with penalty propagation, which travels the opposite way
+	// along the graph — to the vouchers OF a sanctioned user, not to the people
+	// that user vouched for.
+	//
+	// Nothing in the codebase unbans, so lifting a ban is a manual role change.
+	// After it the floor lifts and the score recomputes normally, with the
+	// permanent 100-point penalty still holding the moderation component at 0.
+	if user.Role == domain.RoleBanned {
+		return 0, nil
+	}
+
 	since := now.AddDate(0, 0, -activityWindowDays)
 
 	recentPosts, err := inputs.CountPostsByAuthorSince(ctx, userID, since)

@@ -45,8 +45,8 @@ func (r *ModerationActionRepo) CreateModerationAction(ctx context.Context, actio
 func (r *ModerationActionRepo) ListActionsByTarget(ctx context.Context, targetUserID string, limit, offset int) ([]*domain.ModerationAction, error) {
 	rows, err := r.q.ListModerationActionsByTarget(ctx, ListModerationActionsByTargetParams{
 		TargetUserID: targetUserID,
-		Limit:        int32(limit),
-		Offset:       int32(offset),
+		Limit:        int32Bound(limit),
+		Offset:       int32Bound(offset),
 	})
 	if err != nil {
 		return nil, err
@@ -62,8 +62,8 @@ func (r *ModerationActionRepo) ListActionsByTarget(ctx context.Context, targetUs
 func (r *ModerationActionRepo) ListActionsByModerator(ctx context.Context, moderatorID string, limit, offset int) ([]*domain.ModerationAction, error) {
 	rows, err := r.q.ListModerationActionsByModerator(ctx, ListModerationActionsByModeratorParams{
 		ModeratorID: moderatorID,
-		Limit:       int32(limit),
-		Offset:      int32(offset),
+		Limit:       int32Bound(limit),
+		Offset:      int32Bound(offset),
 	})
 	if err != nil {
 		return nil, err

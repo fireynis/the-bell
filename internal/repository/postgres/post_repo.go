@@ -46,7 +46,7 @@ func (r *PostRepo) GetPostByID(ctx context.Context, id string) (*domain.Post, er
 
 func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
 	if cursor == "" {
-		rows, err := r.q.ListPostsFeedFirst(ctx, int32(limit))
+		rows, err := r.q.ListPostsFeedFirst(ctx, int32Bound(limit))
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +59,7 @@ func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*
 
 	rows, err := r.q.ListPostsFeed(ctx, ListPostsFeedParams{
 		ID:    cursor,
-		Limit: int32(limit),
+		Limit: int32Bound(limit),
 	})
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func (r *PostRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*
 func (r *PostRepo) ListPostsByAuthor(ctx context.Context, authorID string, limit int) ([]*domain.Post, error) {
 	rows, err := r.q.ListPostsByAuthor(ctx, ListPostsByAuthorParams{
 		AuthorID: authorID,
-		Limit:    int32(limit),
+		Limit:    int32Bound(limit),
 	})
 	if err != nil {
 		return nil, err

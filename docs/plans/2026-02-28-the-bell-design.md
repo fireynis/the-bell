@@ -243,10 +243,17 @@ GET    /api/v1/users/:id/vouched-by   # who vouched for this user
 #### Vouching
 ```
 POST   /api/v1/vouches                # vouch for a user
-DELETE /api/v1/vouches/:vouchee_id    # revoke vouch
+DELETE /api/v1/vouches/:id            # revoke vouch (:id is the VOUCH id)
 GET    /api/v1/vouches/pending        # users awaiting vouches (council/mod)
 POST   /api/v1/vouches/approve/:id    # council approves pending user
 ```
+
+> **The handler is authoritative for route shapes.** This line read
+> `DELETE /api/v1/vouches/:vouchee_id`, which the handler has never served: it
+> has taken the id of the *vouch* since it was introduced (03b663e), passing it
+> to `VouchService.Revoke(ctx, vouchID, actorID)`. Keying on the vouchee would
+> be a different endpoint — it cannot name a specific vouch, and revocation is
+> not restricted to your own, so moderators and council need the vouch itself.
 
 #### Posts
 ```

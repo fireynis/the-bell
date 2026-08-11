@@ -4,6 +4,12 @@ import type { ApiError, Report } from "../api/types";
 import { reportResolutionOutcome, type ResolutionResult } from "../lib/moderation";
 import { DEFAULT_PAGE_SIZE, useOffsetPagination } from "./useOffsetPagination";
 
+/**
+ * A report is identified by its own id. Declared at module scope because
+ * useOffsetPagination treats it as part of its reset signal.
+ */
+const reportKey = (report: Report) => report?.id ?? "";
+
 export function useModerationQueue() {
   const fetcher = useCallback(
     async (limit: number, offset: number) => {
@@ -13,8 +19,12 @@ export function useModerationQueue() {
     [],
   );
 
-  const { items, loading, hasMore, error, loadMore, retry, setItems } =
-    useOffsetPagination<Report>(fetcher, "Failed to load moderation queue.", DEFAULT_PAGE_SIZE);
+  const { items, loading, hasMore, error, loadMore, retry, setItems } = useOffsetPagination<Report>(
+    fetcher,
+    "Failed to load moderation queue.",
+    reportKey,
+    DEFAULT_PAGE_SIZE,
+  );
 
   // Resolving a report drops it from the queue without a refetch, so the
   // moderator keeps their place in the list.

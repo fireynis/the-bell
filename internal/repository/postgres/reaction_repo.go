@@ -2,15 +2,19 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/jackc/pgx/v5"
+	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// ReactionRepo adapts sqlc queries to the service.ReactionRepository interface.
+// ReactionRepo adapts sqlc queries to the service.ReactionRepository interface,
+// plus the batch reads behind handler.ReactionEnricher.
+//
+// There are deliberately no single-post reads here. The feed loads reactions
+// for a whole page in two batch queries, so a per-post count or lookup would
+// only ever be called by a test.
 type ReactionRepo struct {
 	q *Queries
 }
@@ -23,6 +27,12 @@ func NewReactionRepo(q *Queries) *ReactionRepo {
 // double-tap, a retried request — so queries/reactions.sql upserts rather than
 // raising a unique violation. A repeat returns nil and leaves the original
 // created_at intact. Callers must not expect a duplicate to be reported.
+//
+// The upsert does not cover the post_id foreign key, though. ON CONFLICT
+// resolves an index conflict; a foreign key is a referential trigger that fires
+// anyway. So reacting to a post that does not exist — a stale feed card, a
+// post removed between render and tap — raises 23503, which is reported as
+// service.ErrNotFound so the caller gets a 404 rather than a 500.
 func (r *ReactionRepo) AddReaction(ctx context.Context, reaction *domain.Reaction) error {
 	_, err := r.q.AddReaction(ctx, AddReactionParams{
 		ID:           reaction.ID,
@@ -31,6 +41,9 @@ func (r *ReactionRepo) AddReaction(ctx context.Context, reaction *domain.Reactio
 		ReactionType: string(reaction.Type),
 		CreatedAt:    pgtype.Timestamptz{Time: reaction.CreatedAt, Valid: true},
 	})
+	if isForeignKeyViolation(err) {
+		return service.ErrNotFound
+	}
 	return err
 }
 
@@ -47,47 +60,6 @@ func (r *ReactionRepo) CountReactionsReceivedByAuthorSince(ctx context.Context, 
 		AuthorID:  authorID,
 		CreatedAt: pgtype.Timestamptz{Time: since, Valid: true},
 	})
-}
-
-func (r *ReactionRepo) CountByPost(ctx context.Context, postID string) (map[domain.ReactionType]int, error) {
-	rows, err := r.q.CountReactionsByPost(ctx, postID)
-	if err != nil {
-		return nil, err
-	}
-
-	counts := make(map[domain.ReactionType]int, len(rows))
-	for _, row := range rows {
-		counts[domain.ReactionType(row.ReactionType)] = int(row.Count)
-	}
-	return counts, nil
-}
-
-func (r *ReactionRepo) GetUserReaction(ctx context.Context, userID, postID string, reactionType domain.ReactionType) (*domain.Reaction, error) {
-	row, err := r.q.GetUserReactionOnPost(ctx, GetUserReactionOnPostParams{
-		UserID:       userID,
-		PostID:       postID,
-		ReactionType: string(reactionType),
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return reactionFromRow(row), nil
-}
-
-func (r *ReactionRepo) ListByPost(ctx context.Context, postID string) ([]*domain.Reaction, error) {
-	rows, err := r.q.ListReactionsByPost(ctx, postID)
-	if err != nil {
-		return nil, err
-	}
-
-	reactions := make([]*domain.Reaction, len(rows))
-	for i, row := range rows {
-		reactions[i] = reactionFromRow(row)
-	}
-	return reactions, nil
 }
 
 func (r *ReactionRepo) BatchCountByPosts(ctx context.Context, postIDs []string) (map[string]map[domain.ReactionType]int, error) {
@@ -118,14 +90,4 @@ func (r *ReactionRepo) BatchGetUserReactions(ctx context.Context, userID string,
 		result[row.PostID] = append(result[row.PostID], domain.ReactionType(row.ReactionType))
 	}
 	return result, nil
-}
-
-func reactionFromRow(row Reaction) *domain.Reaction {
-	return &domain.Reaction{
-		ID:        row.ID,
-		UserID:    row.UserID,
-		PostID:    row.PostID,
-		Type:      domain.ReactionType(row.ReactionType),
-		CreatedAt: row.CreatedAt.Time,
-	}
 }

@@ -45,37 +45,6 @@ func (q *Queries) AddReaction(ctx context.Context, arg AddReactionParams) (React
 	return i, err
 }
 
-const countReactionsByPost = `-- name: CountReactionsByPost :many
-SELECT reaction_type, COUNT(*) AS count FROM reactions
-WHERE post_id = $1
-GROUP BY reaction_type
-`
-
-type CountReactionsByPostRow struct {
-	ReactionType string `json:"reaction_type"`
-	Count        int64  `json:"count"`
-}
-
-func (q *Queries) CountReactionsByPost(ctx context.Context, postID string) ([]CountReactionsByPostRow, error) {
-	rows, err := q.db.Query(ctx, countReactionsByPost, postID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []CountReactionsByPostRow{}
-	for rows.Next() {
-		var i CountReactionsByPostRow
-		if err := rows.Scan(&i.ReactionType, &i.Count); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const countReactionsReceivedByAuthorSince = `-- name: CountReactionsReceivedByAuthorSince :one
 SELECT COUNT(*) FROM reactions r
 JOIN posts p ON p.id = r.post_id
@@ -92,59 +61,6 @@ func (q *Queries) CountReactionsReceivedByAuthorSince(ctx context.Context, arg C
 	var count int64
 	err := row.Scan(&count)
 	return count, err
-}
-
-const getUserReactionOnPost = `-- name: GetUserReactionOnPost :one
-SELECT id, user_id, post_id, reaction_type, created_at FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3
-`
-
-type GetUserReactionOnPostParams struct {
-	UserID       string `json:"user_id"`
-	PostID       string `json:"post_id"`
-	ReactionType string `json:"reaction_type"`
-}
-
-func (q *Queries) GetUserReactionOnPost(ctx context.Context, arg GetUserReactionOnPostParams) (Reaction, error) {
-	row := q.db.QueryRow(ctx, getUserReactionOnPost, arg.UserID, arg.PostID, arg.ReactionType)
-	var i Reaction
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.PostID,
-		&i.ReactionType,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const listReactionsByPost = `-- name: ListReactionsByPost :many
-SELECT id, user_id, post_id, reaction_type, created_at FROM reactions WHERE post_id = $1 ORDER BY created_at
-`
-
-func (q *Queries) ListReactionsByPost(ctx context.Context, postID string) ([]Reaction, error) {
-	rows, err := q.db.Query(ctx, listReactionsByPost, postID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Reaction{}
-	for rows.Next() {
-		var i Reaction
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.PostID,
-			&i.ReactionType,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const removeReaction = `-- name: RemoveReaction :exec

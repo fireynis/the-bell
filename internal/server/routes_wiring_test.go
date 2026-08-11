@@ -20,6 +20,7 @@ import (
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/sse"
+	"github.com/fireynis/the-bell/internal/storage"
 )
 
 // Stub repositories for the read paths that are reachable without a session.
@@ -88,11 +89,6 @@ func (stubConfigRepo) ListTownConfig(context.Context) (map[string]string, error)
 	return map[string]string{"town_name": "Stubville"}, nil
 }
 
-type stubStorage struct{}
-
-func (stubStorage) Save(context.Context, string, io.Reader) (string, error) { return "", nil }
-func (stubStorage) URL(path string) string                                  { return "/uploads/" + path }
-
 type stubReactionEnricher struct{}
 
 func (stubReactionEnricher) BatchCountByPosts(context.Context, []string) (map[string]map[domain.ReactionType]int, error) {
@@ -106,9 +102,20 @@ func (stubReactionEnricher) BatchGetUserReactions(context.Context, string, []str
 // all of its registration branches. The auth middleware is a pass-through that
 // injects no user, which is what an unauthenticated request looks like once it
 // reaches the guards.
+//
+// The image store is a real LocalStorage rooted at cfg.ImageStoragePath rather
+// than a stub, because /uploads now serves through it: a stub that answered
+// nothing would make every upload test assert against the stub instead of
+// against the route. Docker is not needed for a directory, so there is no
+// reason to fake one.
 func newWiredServer(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	imageStore, err := storage.NewLocalStorage(cfg.ImageStoragePath, "/uploads/")
+	if err != nil {
+		t.Fatalf("NewLocalStorage(%q): %v", cfg.ImageStoragePath, err)
+	}
 
 	return New(cfg, nil, logger,
 		WithPostService(service.NewPostService(stubPostRepo{}, nil)),
@@ -123,7 +130,7 @@ func newWiredServer(t *testing.T, cfg config.Config) *Server {
 		WithConfigRepo(stubConfigRepo{}),
 		WithReactionRepo(stubReactionEnricher{}),
 		WithSSEBroker(sse.NewBroker(nil, logger)),
-		WithImageStore(stubStorage{}),
+		WithImageStore(imageStore),
 		WithRateLimiter(middleware.NewRateLimiter(nil, logger)),
 		WithAuth(func(next http.Handler) http.Handler { return next }),
 	)

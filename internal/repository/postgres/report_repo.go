@@ -55,8 +55,8 @@ func (r *ReportRepo) CountReportsByReporterSince(ctx context.Context, reporterID
 
 func (r *ReportRepo) ListPendingReports(ctx context.Context, limit, offset int) ([]*domain.Report, error) {
 	rows, err := r.q.ListPendingReports(ctx, ListPendingReportsParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  int32Bound(limit),
+		Offset: int32Bound(offset),
 	})
 	if err != nil {
 		return nil, err

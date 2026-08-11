@@ -16,9 +16,10 @@ export const DAILY_VOUCH_LIMIT = 3;
  * penalty — telling someone they will lose trust they will not actually lose is
  * a lie the UI must not tell. It is now true: Revoke writes a trust_penalty row
  * of REVOKE_PENALTY for REVOKE_PENALTY_DAYS, but only when the revoker is the
- * voucher. A moderator revoking someone else's vouch is not penalised, so the
- * warning is shown from the voucher's own view, which is the only place the
- * revoke control appears.
+ * voucher. A moderator revoking someone else's vouch is not penalised, and the
+ * revoke control now appears in VouchList as well as on the voucher's own
+ * profile, so the flag alone no longer says whether the person clicking will be
+ * charged — describeRevokeCost decides that from whose vouch it is.
  *
  * Note REVOKE_PENALTY is the raw penalty, not the score drop. The moderation
  * component carries 30% of the composite weight, so -3 moves a composite score
@@ -154,6 +155,11 @@ export function canRevokeVouch(
   return actor.role === "moderator" || actor.role === "council";
 }
 
+/** Falls back to a neutral phrase when a display name is missing or blank. */
+function nameOr(displayName: string | undefined, fallback: string): string {
+  return displayName?.trim() ? displayName.trim() : fallback;
+}
+
 /**
  * describeRevokeCost is the warning shown before a revocation is confirmed.
  *
@@ -166,12 +172,31 @@ export function canRevokeVouch(
  * the wording of that dormant sentence is tested now, while it is being
  * written, rather than first being read by a user on the day someone flips the
  * flag.
+ *
+ * voucherName names the member who gave the vouch, and is passed only when that
+ * is somebody other than the person revoking it — a moderator clearing out a
+ * bad endorsement. That case is a different warning, not a variant of this one:
+ * it is not the moderator's endorsement being withdrawn, they are not charged
+ * the penalty (VouchService.Revoke applies it only when the revoker is the
+ * voucher), and their own daily vouch limit is not involved. The penalty
+ * sentence is suppressed outright when voucherName is present rather than being
+ * left to the caller to switch off, so a caller that passes the flag through
+ * unthinkingly still cannot promise a moderator a cost they will never pay.
  */
 export function describeRevokeCost(
   displayName?: string,
   penaltyEnforced: boolean = REVOKE_PENALTY_ENFORCED,
+  voucherName?: string,
 ): string {
-  const who = displayName?.trim() ? displayName.trim() : "this member";
+  const who = nameOr(displayName, "this member");
+
+  if (voucherName !== undefined) {
+    const voucher = nameOr(voucherName, "another member");
+    return [
+      `Revoking removes ${voucher}'s endorsement of ${who} and lowers their trust score.`,
+      "Revoking someone else's vouch does not cost you any trust.",
+    ].join(" ");
+  }
 
   const consequences = [
     `Revoking removes your endorsement of ${who} and lowers their trust score.`,

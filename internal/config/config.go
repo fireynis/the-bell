@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -65,11 +66,12 @@ var systemDirs = map[string]bool{
 // validateImageStoragePath rejects values that would put something other than
 // uploads behind /uploads/*.
 //
-// That route serves this directory with http.FileServer, so every regular file
-// underneath it is readable by anyone who can name it — fileOnlyFS suppresses
-// the directory listing, not the reads. The checks are structural on purpose:
+// storage.LocalStorage is rooted here and that route serves through it, so
+// every regular file directly underneath is readable by anyone who can name it.
+// Refusing a listing does not change that — it withholds the names, not the
+// reads. The checks are structural on purpose:
 //
-//   - Empty would leave http.Dir("") resolving against the process working
+//   - Empty would leave the storage root resolving against the process working
 //     directory, which is not the same place in a container as it is locally.
 //   - A relative path is wrong for the same reason.
 //   - The exact-match list catches the handful of cases where the mistake is
@@ -108,36 +110,51 @@ func validateImageStoragePath(path string) error {
 // DATABASE_URL and REDIS_URL are handed to the very parsers that will consume
 // them later (pgxpool.ParseConfig, redis.ParseURL) so this check cannot drift
 // from what actually happens at connect time.
+//
+// Every check runs and the failures are joined, rather than returning at the
+// first one. A .env copied from the wrong environment is usually wrong in
+// several places at once, and one-error-per-restart makes the operator
+// discover them one deploy at a time — each fix revealing the next problem.
+// errors.Join renders them one per line, and each message still names its
+// variable, so the aggregate reads as a list of things to fix.
 func (c Config) validate() error {
+	var errs []error
+
 	// Port 0 is legal at the syscall layer — it asks the kernel for any free
 	// port — which makes it a bad default for a server nobody could then find.
 	if c.Port < 1 || c.Port > 65535 {
-		return fmt.Errorf("PORT must be between 1 and 65535, got %d", c.Port)
+		errs = append(errs, fmt.Errorf("PORT must be between 1 and 65535, got %d", c.Port))
 	}
-	if err := absoluteURL("KRATOS_PUBLIC_URL", c.KratosPublicURL); err != nil {
-		return err
-	}
-	if err := absoluteURL("KRATOS_ADMIN_URL", c.KratosAdminURL); err != nil {
-		return err
-	}
+	errs = append(errs, absoluteURL("KRATOS_PUBLIC_URL", c.KratosPublicURL))
+	errs = append(errs, absoluteURL("KRATOS_ADMIN_URL", c.KratosAdminURL))
+
 	// Checked before parsing because pgxpool.ParseConfig("") succeeds: an empty
 	// DSN means "fall back to libpq defaults and the PG* environment", so an
 	// unset DATABASE_URL would quietly aim the pool at a local socket as the
 	// current user instead of failing.
+	//
+	// The two DATABASE_URL checks stay mutually exclusive: an empty value has
+	// one thing wrong with it, and saying so twice would be noise rather than
+	// the extra information joining is for.
 	if strings.TrimSpace(c.DatabaseURL) == "" {
-		return fmt.Errorf("DATABASE_URL must not be empty")
+		errs = append(errs, fmt.Errorf("DATABASE_URL must not be empty"))
+	} else if _, err := pgxpool.ParseConfig(c.DatabaseURL); err != nil {
+		errs = append(errs, fmt.Errorf("DATABASE_URL is not a usable postgres DSN: %w", err))
 	}
-	if _, err := pgxpool.ParseConfig(c.DatabaseURL); err != nil {
-		return fmt.Errorf("DATABASE_URL is not a usable postgres DSN: %w", err)
-	}
+
 	// Redis is optional: running without it is a documented degraded mode, so
 	// unset must stay valid. Only a value that was actually supplied is checked.
 	if c.RedisURL != "" {
 		if _, err := redis.ParseURL(c.RedisURL); err != nil {
-			return fmt.Errorf("REDIS_URL is not a usable redis URL: %w", err)
+			errs = append(errs, fmt.Errorf("REDIS_URL is not a usable redis URL: %w", err))
 		}
 	}
-	return validateImageStoragePath(c.ImageStoragePath)
+
+	errs = append(errs, validateImageStoragePath(c.ImageStoragePath))
+
+	// errors.Join drops nils and returns nil when every entry is nil, so the
+	// unconditional appends above cost nothing on a valid config.
+	return errors.Join(errs...)
 }
 
 func Load() (Config, error) {

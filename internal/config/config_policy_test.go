@@ -178,6 +178,87 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+// A deployment with three bad variables must learn about all three at once.
+// Returning on the first failure turns one misconfigured .env into one restart
+// per mistake, and the operator only ever sees the next problem after fixing
+// the last one.
+func TestConfigValidate_ReportsEveryFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*Config)
+		wantVars []string
+	}{
+		{
+			name: "every variable is wrong at once",
+			mutate: func(c *Config) {
+				c.Port = 0
+				c.KratosPublicURL = "kratos:4433"
+				c.KratosAdminURL = "/kratos"
+				c.DatabaseURL = "not a dsn"
+				c.RedisURL = "http://cache:6379"
+				c.ImageStoragePath = "/etc"
+			},
+			wantVars: []string{
+				"PORT", "KRATOS_PUBLIC_URL", "KRATOS_ADMIN_URL",
+				"DATABASE_URL", "REDIS_URL", "IMAGE_STORAGE_PATH",
+			},
+		},
+		{
+			// The realistic case: a couple of variables copied from the wrong
+			// environment. Both have to be named, in one message.
+			name: "the two kratos urls together",
+			mutate: func(c *Config) {
+				c.KratosPublicURL = "kratos:4433"
+				c.KratosAdminURL = "kratos:4434"
+			},
+			wantVars: []string{"KRATOS_PUBLIC_URL", "KRATOS_ADMIN_URL"},
+		},
+		{
+			// PORT is checked first and IMAGE_STORAGE_PATH last, so this pair
+			// fails if the aggregation stops anywhere in between.
+			name: "the first check and the last one",
+			mutate: func(c *Config) {
+				c.Port = 70000
+				c.ImageStoragePath = "storage/images"
+			},
+			wantVars: []string{"PORT", "IMAGE_STORAGE_PATH"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(&cfg)
+
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("validate() accepted a config with %d bad values", len(tt.wantVars))
+			}
+			for _, name := range tt.wantVars {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("error does not name %s:\n%v", name, err)
+				}
+			}
+		})
+	}
+}
+
+// An empty DATABASE_URL must produce the one message that says so, not that
+// plus a second complaint from the DSN parser — pgxpool.ParseConfig("")
+// succeeds, but even if it did not, two errors about one variable is noise.
+func TestConfigValidate_EmptyDatabaseURLReportedOnce(t *testing.T) {
+	cfg := validConfig()
+	cfg.DatabaseURL = ""
+
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("validate() accepted an empty DATABASE_URL")
+	}
+	if got := strings.Count(err.Error(), "DATABASE_URL"); got != 1 {
+		t.Errorf("DATABASE_URL named %d times, want 1:\n%v", got, err)
+	}
+}
+
 // The exact-match rule is what keeps the system-directory check from breaking
 // real deployments: the hazard is serving a whole system tree, not living
 // anywhere underneath one. /var/lib/bell/images is an ordinary place to put

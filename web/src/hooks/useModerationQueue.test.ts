@@ -1,5 +1,6 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_PAGE_SIZE } from "./useOffsetPagination";
 import { useModerationQueue } from "./useModerationQueue";
 
 /**
@@ -101,5 +102,70 @@ describe("useModerationQueue.resolveReport", () => {
 
     expect(outcome.resolved).toBe(true);
     await waitFor(() => expect(result.current.reports).toHaveLength(0));
+  });
+});
+
+/**
+ * Offset paging is not stable: a report filed while a moderator is scrolling
+ * shifts every row down one, so the next page re-delivers the last row of the
+ * previous one. applyPage drops the repeat, but only if the queue hands it a
+ * key to recognise rows by — this asserts that wiring, not applyPage itself.
+ */
+describe("useModerationQueue paging over a moving queue", () => {
+  /**
+   * stubPagedApi serves reports from a window that gains one row at the front
+   * after the first page has been read, which is exactly what a report filed
+   * mid-scroll does to the offsets.
+   */
+  function stubPagedApi(total: number) {
+    let rows = Array.from({ length: total }, (_, i) => ({ id: `report-${i}`, post_id: `post-${i}` }));
+    let served = 0;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const offset = Number(new URL(url, "http://test").searchParams.get("offset") ?? 0);
+        const limit = Number(new URL(url, "http://test").searchParams.get("limit") ?? 0);
+        const reports = rows.slice(offset, offset + limit);
+        if (served === 0) rows = [{ id: "report-new", post_id: "post-new" }, ...rows];
+        served += 1;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ reports }),
+        } as unknown as Response);
+      }),
+    );
+  }
+
+  it("does not show a report twice when the second page overlaps the first", async () => {
+    stubPagedApi(DEFAULT_PAGE_SIZE + 5);
+
+    const { result } = renderHook(() => useModerationQueue());
+    await waitFor(() => expect(result.current.reports).toHaveLength(DEFAULT_PAGE_SIZE));
+
+    await act(async () => {
+      result.current.loadMore();
+    });
+
+    await waitFor(() => expect(result.current.reports.length).toBeGreaterThan(DEFAULT_PAGE_SIZE));
+
+    const ids = result.current.reports.map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("still adds the rows of the overlapping page that are new", async () => {
+    stubPagedApi(DEFAULT_PAGE_SIZE + 5);
+
+    const { result } = renderHook(() => useModerationQueue());
+    await waitFor(() => expect(result.current.reports).toHaveLength(DEFAULT_PAGE_SIZE));
+
+    await act(async () => {
+      result.current.loadMore();
+    });
+
+    // Six rows came back — the shifted-down last row of page one, then the
+    // five that follow it. Only the repeat is dropped.
+    await waitFor(() => expect(result.current.reports).toHaveLength(DEFAULT_PAGE_SIZE + 5));
   });
 });

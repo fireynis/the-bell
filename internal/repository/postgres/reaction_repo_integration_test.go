@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
+	"github.com/fireynis/the-bell/internal/service"
 	"github.com/fireynis/the-bell/internal/testsupport"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -116,6 +119,16 @@ func TestReactionRepo_BatchCountByPosts_AttributesCountsToTheRightPost(t *testin
 	}
 	if len(got) != 2 {
 		t.Errorf("result has %d posts, want only the 2 with reactions", len(got))
+	}
+
+	// Totals as well as the per-type breakdown: a GROUP BY that split or merged
+	// rows wrongly could still land the individual numbers while changing how
+	// many types a post reports.
+	wantTypes := map[string]int{f.postA: 2, f.postB: 1}
+	for postID, n := range wantTypes {
+		if len(got[postID]) != n {
+			t.Errorf("post %s reports %d reaction types, want %d", postID, len(got[postID]), n)
+		}
 	}
 }
 
@@ -241,126 +254,30 @@ func sortedTypes(types []domain.ReactionType) []string {
 	return out
 }
 
-// --- single-post reads ---
-
-func TestReactionRepo_CountByPost(t *testing.T) {
-	f := newReactionFixture(t)
-	ctx := context.Background()
-
-	counts, err := f.repo.CountByPost(ctx, f.postA)
-	if err != nil {
-		t.Fatalf("CountByPost: %v", err)
-	}
-	if counts[domain.ReactionBell] != 3 || counts[domain.ReactionHeart] != 1 {
-		t.Errorf("postA counts = %v, want bell:3 heart:1", counts)
-	}
-	if len(counts) != 2 {
-		t.Errorf("postA has %d reaction types, want 2", len(counts))
-	}
-
-	// The single-post and batch paths are separate SQL; they must agree.
-	batch, err := f.repo.BatchCountByPosts(ctx, []string{f.postA})
-	if err != nil {
-		t.Fatalf("BatchCountByPosts: %v", err)
-	}
-	for rt, n := range counts {
-		if batch[f.postA][rt] != n {
-			t.Errorf("%s: CountByPost says %d, BatchCountByPosts says %d", rt, n, batch[f.postA][rt])
-		}
-	}
-}
-
-func TestReactionRepo_CountByPost_NoReactions(t *testing.T) {
-	f := newReactionFixture(t)
-
-	counts, err := f.repo.CountByPost(context.Background(), f.postC)
-	if err != nil {
-		t.Fatalf("CountByPost: %v", err)
-	}
-	if len(counts) != 0 {
-		t.Errorf("counts = %v, want empty", counts)
-	}
-}
-
-func TestReactionRepo_ListByPost(t *testing.T) {
-	f := newReactionFixture(t)
-	ctx := context.Background()
-
-	reactions, err := f.repo.ListByPost(ctx, f.postA)
-	if err != nil {
-		t.Fatalf("ListByPost: %v", err)
-	}
-	if len(reactions) != 4 {
-		t.Fatalf("got %d reactions for postA, want 4", len(reactions))
-	}
-	for _, r := range reactions {
-		if r.PostID != f.postA {
-			t.Errorf("reaction %s belongs to post %s, want %s", r.ID, r.PostID, f.postA)
-		}
-		if r.ID == "" || r.UserID == "" || r.Type == "" {
-			t.Errorf("reaction came back incompletely populated: %+v", r)
-		}
-		if r.CreatedAt.IsZero() {
-			t.Errorf("reaction %s has a zero CreatedAt", r.ID)
-		}
-	}
-
-	empty, err := f.repo.ListByPost(ctx, f.postC)
-	if err != nil {
-		t.Fatalf("ListByPost: %v", err)
-	}
-	if len(empty) != 0 {
-		t.Errorf("postC has %d reactions, want none", len(empty))
-	}
-}
-
-func TestReactionRepo_GetUserReaction(t *testing.T) {
-	f := newReactionFixture(t)
-	ctx := context.Background()
-
-	got, err := f.repo.GetUserReaction(ctx, f.u1.ID, f.postA, domain.ReactionBell)
-	if err != nil {
-		t.Fatalf("GetUserReaction: %v", err)
-	}
-	if got == nil {
-		t.Fatal("got nil, want u1's bell on postA")
-	}
-	if got.UserID != f.u1.ID || got.PostID != f.postA || got.Type != domain.ReactionBell {
-		t.Errorf("got %+v, want u1/postA/bell", got)
-	}
-}
-
-// A reaction that was never made is reported as (nil, nil) rather than an
-// error — "has this user reacted?" is a question, not a failure.
-func TestReactionRepo_GetUserReaction_Missing(t *testing.T) {
-	f := newReactionFixture(t)
-	ctx := context.Background()
-
-	tests := []struct {
-		name           string
-		userID, postID string
-		rt             domain.ReactionType
-	}{
-		{"right user, wrong type", f.u1.ID, f.postA, domain.ReactionCelebrate},
-		{"right user, post they skipped", f.u1.ID, f.postB, domain.ReactionBell},
-		{"a user who reacted to nothing", f.author.ID, f.postA, domain.ReactionBell},
-		{"unknown post", f.u1.ID, "no-such-post", domain.ReactionBell},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := f.repo.GetUserReaction(ctx, tt.userID, tt.postID, tt.rt)
-			if err != nil {
-				t.Fatalf("GetUserReaction: %v", err)
-			}
-			if got != nil {
-				t.Errorf("got %+v, want nil", got)
-			}
-		})
-	}
-}
-
 // --- writes ---
+
+// storedReaction reads a single reaction straight out of the table.
+//
+// The repository has no single-post read — the feed only ever loads reactions
+// in batches, so one was never wired — and the batch queries return neither the
+// id nor created_at. A write test still has to see what actually landed, so it
+// asks the database directly rather than growing a production method that only
+// tests would call.
+func storedReaction(t *testing.T, pool *pgxpool.Pool, userID, postID string, rt domain.ReactionType) (id string, createdAt time.Time, found bool) {
+	t.Helper()
+
+	err := pool.QueryRow(context.Background(),
+		`SELECT id, created_at FROM reactions WHERE user_id = $1 AND post_id = $2 AND reaction_type = $3`,
+		userID, postID, string(rt),
+	).Scan(&id, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, false
+	}
+	if err != nil {
+		t.Fatalf("reading reaction %s/%s/%s: %v", userID, postID, rt, err)
+	}
+	return id, createdAt, true
+}
 
 func TestReactionRepo_RemoveReaction(t *testing.T) {
 	f := newReactionFixture(t)
@@ -370,21 +287,26 @@ func TestReactionRepo_RemoveReaction(t *testing.T) {
 		t.Fatalf("RemoveReaction: %v", err)
 	}
 
-	gone, err := f.repo.GetUserReaction(ctx, f.u1.ID, f.postA, domain.ReactionBell)
-	if err != nil {
-		t.Fatalf("GetUserReaction: %v", err)
-	}
-	if gone != nil {
+	if _, _, found := storedReaction(t, f.pool, f.u1.ID, f.postA, domain.ReactionBell); found {
 		t.Error("reaction survived RemoveReaction")
 	}
 
 	// Only that one reaction went: u1's heart and the other users' bells stay.
-	counts, err := f.repo.CountByPost(ctx, f.postA)
+	counts, err := f.repo.BatchCountByPosts(ctx, []string{f.postA})
 	if err != nil {
-		t.Fatalf("CountByPost: %v", err)
+		t.Fatalf("BatchCountByPosts: %v", err)
 	}
-	if counts[domain.ReactionBell] != 2 || counts[domain.ReactionHeart] != 1 {
-		t.Errorf("postA counts = %v, want bell:2 heart:1", counts)
+	if counts[f.postA][domain.ReactionBell] != 2 || counts[f.postA][domain.ReactionHeart] != 1 {
+		t.Errorf("postA counts = %v, want bell:2 heart:1", counts[f.postA])
+	}
+
+	// And u1 keeps the heart they did not remove.
+	mine, err := f.repo.BatchGetUserReactions(ctx, f.u1.ID, []string{f.postA})
+	if err != nil {
+		t.Fatalf("BatchGetUserReactions: %v", err)
+	}
+	if types := sortedTypes(mine[f.postA]); len(types) != 1 || types[0] != string(domain.ReactionHeart) {
+		t.Errorf("u1 postA = %v, want [heart]", types)
 	}
 }
 
@@ -402,24 +324,51 @@ func TestReactionRepo_RemoveReaction_NotPresentIsNotAnError(t *testing.T) {
 	}
 }
 
+// Reacting to a post that does not exist trips the reactions_post_id_fkey
+// foreign key. The ON CONFLICT clause on AddReaction resolves an index
+// conflict, so it swallows a repeat reaction — but a foreign key is a
+// referential trigger it cannot reach, and the raw pgx error surfaced as a 500.
+// The caller sent a well-formed request naming a post that is not there, which
+// is a 404, so the adapter maps it to service.ErrNotFound.
+func TestReactionRepo_AddReaction_MissingPostIsNotFound(t *testing.T) {
+	f := newReactionFixture(t)
+
+	err := f.repo.AddReaction(context.Background(), &domain.Reaction{
+		ID:        "reaction-missing-post",
+		UserID:    f.u1.ID,
+		PostID:    "no-such-post",
+		Type:      domain.ReactionBell,
+		CreatedAt: time.Now(),
+	})
+	if !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("err = %v, want service.ErrNotFound", err)
+	}
+}
+
 func TestReactionRepo_AddReaction_RoundTrips(t *testing.T) {
 	f := newReactionFixture(t)
 	ctx := context.Background()
 
 	added := newReaction(t, f.pool, f.u3.ID, f.postC, domain.ReactionCelebrate)
 
-	got, err := f.repo.GetUserReaction(ctx, f.u3.ID, f.postC, domain.ReactionCelebrate)
-	if err != nil {
-		t.Fatalf("GetUserReaction: %v", err)
-	}
-	if got == nil {
+	gotID, gotCreatedAt, found := storedReaction(t, f.pool, f.u3.ID, f.postC, domain.ReactionCelebrate)
+	if !found {
 		t.Fatal("reaction not found after AddReaction")
 	}
-	if got.ID != added.ID {
-		t.Errorf("id = %q, want %q", got.ID, added.ID)
+	if gotID != added.ID {
+		t.Errorf("id = %q, want %q", gotID, added.ID)
 	}
-	if !got.CreatedAt.Equal(added.CreatedAt.UTC().Truncate(time.Microsecond)) &&
-		got.CreatedAt.Sub(added.CreatedAt).Abs() > time.Millisecond {
-		t.Errorf("created_at = %v, want ~%v", got.CreatedAt, added.CreatedAt)
+	if !gotCreatedAt.Equal(added.CreatedAt.UTC().Truncate(time.Microsecond)) &&
+		gotCreatedAt.Sub(added.CreatedAt).Abs() > time.Millisecond {
+		t.Errorf("created_at = %v, want ~%v", gotCreatedAt, added.CreatedAt)
+	}
+
+	// It also reaches the batch reads the feed actually uses.
+	mine, err := f.repo.BatchGetUserReactions(ctx, f.u3.ID, []string{f.postC})
+	if err != nil {
+		t.Fatalf("BatchGetUserReactions: %v", err)
+	}
+	if len(mine[f.postC]) != 1 || mine[f.postC][0] != domain.ReactionCelebrate {
+		t.Errorf("u3 postC = %v, want [celebrate]", mine[f.postC])
 	}
 }

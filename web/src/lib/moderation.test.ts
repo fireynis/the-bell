@@ -15,8 +15,18 @@ import {
 } from "./moderation";
 import type { ApiError, Post } from "../api/types";
 
+const MODERATOR = "moderator-1";
+const TARGET = "target-1";
+
 function input(overrides: Partial<ActionInput> = {}): ActionInput {
-  return { actionType: "warn", severity: 1, reason: "Repeated spam", ...overrides };
+  return {
+    actionType: "warn",
+    severity: 1,
+    reason: "Repeated spam",
+    moderatorId: MODERATOR,
+    targetUserId: TARGET,
+    ...overrides,
+  };
 }
 
 describe("severitiesFor", () => {
@@ -181,31 +191,73 @@ describe("validateAction", () => {
   });
 });
 
+/**
+ * validateActionRequest in internal/service/moderation_action.go refuses an
+ * action whose moderator and target are the same person. The dialog knew only
+ * the target, so it happily submitted one and took a guaranteed 400 for it.
+ */
+describe("validateAction on yourself", () => {
+  const onSelf = (overrides: Partial<ActionInput> = {}) =>
+    validateAction(input({ targetUserId: MODERATOR, ...overrides }));
+
+  it("refuses an action a moderator aims at themselves", () => {
+    const result = onSelf();
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe("You cannot moderate yourself.");
+  });
+
+  it("allows the same action against somebody else", () => {
+    expect(validateAction(input()).valid).toBe(true);
+  });
+
+  // The form is not what is wrong. Reporting a severity or reason problem first
+  // would send the moderator off to fix fields that were never the reason the
+  // action could not go through.
+  it.each([
+    ["a severity the action type does not allow", { severity: 5 }],
+    ["an empty reason", { reason: "" }],
+    ["no action type at all", { actionType: "" }],
+  ])("says so ahead of %s", (_label, overrides) => {
+    expect(onSelf(overrides).error).toBe("You cannot moderate yourself.");
+  });
+
+  // Two empty ids are what a viewer whose identity has not loaded looks like.
+  // Reading that as self-moderation would block every action on the page.
+  it("does not read an unknown viewer as the target", () => {
+    expect(validateAction(input({ moderatorId: "", targetUserId: "" })).valid).toBe(true);
+  });
+
+  it("does not read a missing moderator as the target", () => {
+    const missing = { ...input(), moderatorId: undefined } as unknown as ActionInput;
+    expect(validateAction(missing).valid).toBe(true);
+  });
+});
+
 describe("buildActionRequest", () => {
   it("converts the duration from hours to seconds", () => {
-    const req = buildActionRequest("target-1", input({ actionType: "mute", severity: 3 }), 24);
+    const req = buildActionRequest(input({ actionType: "mute", severity: 3 }), 24);
     expect(req.duration_seconds).toBe(86_400);
   });
 
   it("rounds a fractional hour to whole seconds", () => {
-    const req = buildActionRequest("target-1", input({ actionType: "mute", severity: 3 }), 1.5);
+    const req = buildActionRequest(input({ actionType: "mute", severity: 3 }), 1.5);
     expect(req.duration_seconds).toBe(5400);
   });
 
   // The server rejects a ban that carries a duration outright, so a value left
   // in the form field must not reach it.
   it.each(["warn", "ban"])("omits the duration for a %s", (actionType) => {
-    const req = buildActionRequest("target-1", input({ actionType, severity: 1 }), 24);
+    const req = buildActionRequest(input({ actionType, severity: 1 }), 24);
     expect(req.duration_seconds).toBeUndefined();
   });
 
   it("trims the reason the way the server will", () => {
-    const req = buildActionRequest("target-1", input({ reason: "  spam  " }));
+    const req = buildActionRequest(input({ reason: "  spam  " }));
     expect(req.reason).toBe("spam");
   });
 
   it("sends an empty reason rather than throwing when one is missing", () => {
-    const req = buildActionRequest("target-1", {
+    const req = buildActionRequest({
       actionType: "warn",
       severity: 1,
     } as unknown as ActionInput);
@@ -213,7 +265,7 @@ describe("buildActionRequest", () => {
   });
 
   it("carries the target and the action through unchanged", () => {
-    const req = buildActionRequest("target-1", input({ actionType: "ban", severity: 5 }));
+    const req = buildActionRequest(input({ actionType: "ban", severity: 5 }));
     expect(req).toMatchObject({
       target_user_id: "target-1",
       action_type: "ban",

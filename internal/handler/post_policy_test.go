@@ -128,3 +128,66 @@ func TestCanViewPost_NilsAreSafe(t *testing.T) {
 		t.Error("a visible post was hidden from an anonymous reader")
 	}
 }
+
+// Both parsers take a raw query-string value straight off the wire, so every
+// row here is a request someone can actually send. The pair is tabled together
+// because their contracts differ in one deliberate way: an out-of-range limit
+// is clamped to maxLimit, while an out-of-range offset falls back to 0 rather
+// than being clamped — there is no maximum offset, only a floor.
+func TestParseLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"absent", "", defaultLimit},
+		{"ordinary value", "50", 50},
+		{"at the cap", "100", maxLimit},
+		{"above the cap is clamped, not rejected", "1000", maxLimit},
+		{"zero", "0", defaultLimit},
+		{"negative", "-5", defaultLimit},
+		{"not a number", "abc", defaultLimit},
+		{"number with trailing junk", "20x", defaultLimit},
+		{"overflows int64", "99999999999999999999", defaultLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseLimit(tt.raw); got != tt.want {
+				t.Errorf("parseLimit(%q) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// A negative offset is the case that matters: it reaches the repository as a
+// SQL OFFSET, where Postgres rejects a negative value with an error — so an
+// unguarded "?offset=-1" would turn a typo into a 500 for the whole listing.
+// Falling back to 0 answers the first page instead.
+func TestParseOffset(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"absent", "", 0},
+		{"ordinary value", "40", 40},
+		{"explicit zero", "0", 0},
+		{"negative", "-1", 0},
+		{"large negative", "-1000000", 0},
+		{"not a number", "abc", 0},
+		{"number with trailing junk", "40x", 0},
+		{"overflows int64", "99999999999999999999", 0},
+		// No ceiling on purpose: a large offset is a legitimate deep page, and
+		// the query answers it with an empty result rather than an error.
+		{"very large offset is passed through", "1000000", 1000000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseOffset(tt.raw); got != tt.want {
+				t.Errorf("parseOffset(%q) = %d, want %d", tt.raw, got, tt.want)
+			}
+		})
+	}
+}

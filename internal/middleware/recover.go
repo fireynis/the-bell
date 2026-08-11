@@ -12,8 +12,14 @@ import (
 //
 // Without it a panic unwinds into net/http, which closes the connection with no
 // response at all: the client sees a transport error rather than a status, and
-// the stack goes to stderr unstructured. Handlers do panic by design in places
-// (handler.mustUUIDv7), so this is a live path, not just defence in depth.
+// the stack goes to stderr unstructured.
+//
+// No handler panics by design any more — handler.mustUUIDv7 was the last one,
+// and it now returns an error — so this is defence in depth against a nil
+// dereference or an out-of-range index in code nobody expected to fail. That is
+// the state to keep it in: a handler that reaches for Recoverer deliberately is
+// putting its error handling in the outermost frame, where nothing specific to
+// the request can be said about it.
 //
 // http.ErrAbortHandler is the one panic value net/http defines as intentional —
 // it is re-panicked so the server can drop the connection as the caller asked.

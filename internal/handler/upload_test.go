@@ -5,15 +5,20 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/handler"
@@ -39,9 +44,31 @@ func (m *mockStorage) Save(_ context.Context, filename string, data io.Reader) (
 	return filename, nil
 }
 
+// Open reads back what Save wrote, so the double round-trips like the real
+// thing rather than being write-only. No handler in this package reads uploads
+// — /uploads is served by the server package — but a store that cannot be read
+// would let a Save that quietly stored nothing pass as success.
+func (m *mockStorage) Open(_ context.Context, path string) (storage.File, error) {
+	data, ok := m.saved[path]
+	if !ok {
+		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+	}
+	return &mockFile{Reader: bytes.NewReader(data)}, nil
+}
+
 func (m *mockStorage) URL(path string) string {
 	return "/uploads/" + path
 }
+
+// mockFile is bytes over a fixed modification time. The zero time is what a
+// backend with no notion of one would report, and http.ServeContent treats it
+// as "no Last-Modified", which is the honest answer for an in-memory double.
+type mockFile struct {
+	*bytes.Reader
+}
+
+func (*mockFile) Close() error       { return nil }
+func (*mockFile) ModTime() time.Time { return time.Time{} }
 
 // Ensure mockStorage implements storage.Storage at compile time.
 var _ storage.Storage = (*mockStorage)(nil)
@@ -256,6 +283,10 @@ func (*failingStorage) Save(context.Context, string, io.Reader) (string, error) 
 	return "", errors.New("no space left on device")
 }
 
+func (*failingStorage) Open(context.Context, string) (storage.File, error) {
+	return nil, errors.New("storage backend unreachable")
+}
+
 func (*failingStorage) URL(path string) string { return "/uploads/" + path }
 
 // An image upload against a handler with no storage configured is a
@@ -330,3 +361,47 @@ func TestPostHandler_Create_JSONStillWorks(t *testing.T) {
 		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
+
+// A broken random source used to panic out of the handler, relying on
+// middleware.Recoverer to turn the unwind into a 500. That made Recoverer a
+// load-bearing part of the request path rather than a backstop, and it meant
+// the failure could only ever be handled by the outermost frame — nothing
+// closer to the upload could log it or clean up.
+//
+// The status is unchanged on purpose: a server that cannot generate an id is
+// broken, so 500 was and remains right. What changes is that it arrives as a
+// returned error.
+func TestPostHandler_Create_UUIDGenerationFailure(t *testing.T) {
+	// uuid's random source is package-global; restore it before the next test.
+	uuid.SetRand(&failingReader{})
+	t.Cleanup(func() { uuid.SetRand(nil) })
+
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	req := buildMultipartRequest(t, "Hello with image", makeJPEG(t), "photo.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	// The wrapped detail describes the process's own broken state, not
+	// anything the caller can act on or should learn.
+	if body := rec.Body.String(); strings.Contains(body, "random") || strings.Contains(body, "UUID") {
+		t.Errorf("response leaked the underlying failure: %s", body)
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("%d files were written despite the id failing", len(store.saved))
+	}
+	if len(repo.posts) != 0 {
+		t.Errorf("%d posts were created despite the id failing", len(repo.posts))
+	}
+}
+
+type failingReader struct{}
+
+func (*failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy source unavailable") }

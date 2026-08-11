@@ -41,6 +41,38 @@ func NewTrustWorker(cache *TrustCache, inputs service.TrustInputs, users TrustSc
 	}
 }
 
+// pollOutcome is what one dequeue attempt means for the loop.
+type pollOutcome int
+
+const (
+	// pollDispatch: a user ID came back and should be recalculated.
+	pollDispatch pollOutcome = iota
+	// pollIdle: nothing to do. The loop polls again without complaining.
+	pollIdle
+	// pollFailed: the dequeue itself went wrong and is worth logging.
+	pollFailed
+)
+
+// classifyPoll interprets the error from one DequeueRecalc call.
+//
+// Three of the errors it can return are not failures. BLPOP reports an empty
+// queue as redis.Nil, and a cancelled or expired context is either the worker
+// being asked to stop or a poll simply reaching its timeout. A town where
+// nothing is happening is the normal state, so logging any of these would emit
+// a line every pollTimeout forever and bury the errors that matter.
+func classifyPoll(err error) pollOutcome {
+	switch {
+	case err == nil:
+		return pollDispatch
+	case errors.Is(err, redis.Nil),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded):
+		return pollIdle
+	default:
+		return pollFailed
+	}
+}
+
 // Run blocks, polling the recalculation queue until ctx is cancelled.
 func (w *TrustWorker) Run(ctx context.Context) {
 	w.logger.Info("trust worker started")
@@ -53,14 +85,10 @@ func (w *TrustWorker) Run(ctx context.Context) {
 		}
 
 		userID, err := w.cache.DequeueRecalc(ctx, w.pollTimeout)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				continue
-			}
-			// BLPop returns redis.Nil on timeout; ignore it.
-			if errors.Is(err, redis.Nil) {
-				continue
-			}
+		switch classifyPoll(err) {
+		case pollIdle:
+			continue
+		case pollFailed:
 			w.logger.Warn("trust worker dequeue error", "error", err)
 			continue
 		}
