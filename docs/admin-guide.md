@@ -84,9 +84,11 @@ that is present but unusable. The messages name the variable:
 |---------|-------|
 | `PORT must be between 1 and 65535, got 0` | `PORT` outside the valid range. Port 0 is legal to the kernel — it asks for any free port — which is why it is rejected explicitly |
 | `KRATOS_PUBLIC_URL must be an absolute URL with a scheme and host, got "kratos:4433"` | A URL without a scheme. Use `http://kratos:4433` |
+| `KRATOS_ADMIN_URL must be an absolute URL with a scheme and host, got "kratos:4434"` | The same check on the admin URL. Use `http://kratos:4434` |
 | `DATABASE_URL must not be empty` | Unset or blank. Checked before parsing, because an empty DSN would otherwise silently fall back to libpq defaults and connect to a local socket as the current user |
 | `DATABASE_URL is not a usable postgres DSN: ...` | Rejected by the same parser the connection pool uses, so this cannot disagree with what happens at connect time |
 | `REDIS_URL is not a usable redis URL: ...` | Only checked when set — Redis is optional, and running without it is a supported degraded mode |
+| `IMAGE_STORAGE_PATH must not be empty` | Blank. The storage root would otherwise resolve against the process working directory |
 | `IMAGE_STORAGE_PATH must be an absolute path, got "images"` | A relative path resolves against the process working directory, which differs between a container and a local run |
 | `IMAGE_STORAGE_PATH must not be a system directory, got "/etc"` | `/uploads/*` serves this directory, so pointing it at a system tree would publish that tree |
 
@@ -94,6 +96,26 @@ Failing at startup is deliberate. `KRATOS_PUBLIC_URL` is the clearest case: it
 is the browser's only route to Kratos, so a bad value would produce an instance
 that serves the SPA and answers `/healthz` while nobody can log in — a green
 health check on an unusable product.
+
+#### Every problem is reported at once
+
+Validation does not stop at the first failure. Every check runs and the failures
+are joined into one error, printed one per line, each still naming its variable:
+
+```
+PORT must be between 1 and 65535, got 0
+KRATOS_PUBLIC_URL must be an absolute URL with a scheme and host, got "kratos:4433"
+IMAGE_STORAGE_PATH must be an absolute path, got "images"
+```
+
+A `.env` copied from the wrong environment is usually wrong in several places at
+once. Reporting one problem per restart would make you discover them one deploy
+at a time, each fix revealing the next. Read the whole list as the set of things
+to fix before trying again.
+
+The one deliberate exception is `DATABASE_URL`, whose two checks are mutually
+exclusive: an empty value has one thing wrong with it, and saying so twice would
+be noise rather than information.
 
 ## CLI Commands
 

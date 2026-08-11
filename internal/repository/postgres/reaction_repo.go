@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -32,7 +31,7 @@ func NewReactionRepo(q *Queries) *ReactionRepo {
 // resolves an index conflict; a foreign key is a referential trigger that fires
 // anyway. So reacting to a post that does not exist — a stale feed card, a
 // post removed between render and tap — raises 23503, which is reported as
-// service.ErrNotFound so the caller gets a 404 rather than a 500.
+// domain.ErrNotFound so the caller gets a 404 rather than a 500.
 func (r *ReactionRepo) AddReaction(ctx context.Context, reaction *domain.Reaction) error {
 	_, err := r.q.AddReaction(ctx, AddReactionParams{
 		ID:           reaction.ID,
@@ -42,7 +41,7 @@ func (r *ReactionRepo) AddReaction(ctx context.Context, reaction *domain.Reactio
 		CreatedAt:    pgtype.Timestamptz{Time: reaction.CreatedAt, Valid: true},
 	})
 	if isForeignKeyViolation(err) {
-		return service.ErrNotFound
+		return domain.ErrNotFound
 	}
 	return err
 }

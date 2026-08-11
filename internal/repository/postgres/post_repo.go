@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -36,7 +35,7 @@ func (r *PostRepo) CreatePost(ctx context.Context, post *domain.Post) error {
 func (r *PostRepo) GetPostByID(ctx context.Context, id string) (*domain.Post, error) {
 	row, err := r.q.GetPostByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -100,7 +99,7 @@ func (r *PostRepo) UpdatePostBody(ctx context.Context, id string, body string) (
 		Body: body,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err

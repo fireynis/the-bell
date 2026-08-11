@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -42,8 +43,8 @@ type actionRequest struct {
 //   - a reason is mandatory and bounded, because actions are shown in the
 //     public audit trail
 //   - nobody may moderate themselves
-//   - mutes and suspensions are temporary and need a duration; bans are
-//     permanent and must not have one
+//   - mutes and suspensions are temporary and need a duration; warnings and
+//     bans do not end and must not carry one
 func validateActionRequest(
 	moderatorID, targetUserID string,
 	actionType domain.ActionType,
@@ -73,6 +74,16 @@ func validateActionRequest(
 
 	if actionType == domain.ActionBan && durationSeconds != nil {
 		return actionRequest{}, fmt.Errorf("%w: bans cannot have a duration", ErrValidation)
+	}
+	// The same rule for the other action that does not end. A warning is a
+	// permanent note on the record — planEnforcement emits no step for one, so
+	// there is nothing a duration could switch off — and a warn carrying one was
+	// accepted silently, writing expires_at on an action nothing ever expires.
+	// Anything later deciding "is this still in force" from that column reads
+	// such a warning as temporary, which is why this is refused at the door
+	// rather than tolerated as inert.
+	if actionType == domain.ActionWarn && durationSeconds != nil {
+		return actionRequest{}, fmt.Errorf("%w: warnings cannot have a duration", ErrValidation)
 	}
 	// An indefinite mute is a suspension, and we have one of those. Naming the
 	// right tool beats refusing and leaving the moderator to guess.
@@ -211,6 +222,7 @@ type ModerationActionService struct {
 	enforcer   UserEnforcer
 	history    *ModerationHistoryService
 	now        func() time.Time
+	logger     *slog.Logger
 }
 
 func NewModerationActionService(
@@ -231,6 +243,11 @@ func NewModerationActionService(
 		enforcer:   enforcer,
 		history:    NewModerationHistoryService(actions, penalties),
 		now:        clock,
+		// Defaulted rather than taken as a parameter, matching
+		// ModerationService and VouchService: every existing caller keeps
+		// compiling, and a deployment that configures the default handler gets
+		// these records without wiring anything.
+		logger: slog.Default(),
 	}
 }
 
@@ -301,6 +318,140 @@ func (s *ModerationActionService) TakeAction(
 	// caller does not retry and duplicate it.
 	result := &TakeActionResult{Action: action, Penalties: penalties}
 	return result, errors.Join(enforceErr, propagateErr)
+}
+
+// canLiftMute reports whether moderator may lift targetUserID's mute.
+//
+// The route group carrying this already requires the moderator role, and this
+// deliberately re-checks it: a single line in routes.go is otherwise all that
+// stands between a member and releasing themselves. Same reasoning as
+// PostService.RemoveByModerator.
+//
+// Self-lifting is refused ahead of the role check, and it is the case no route
+// guard can catch: a muted moderator satisfies every middleware in the chain
+// (a mute does not deactivate an account, so RequireActive passes) and would
+// otherwise be able to overturn a colleague's decision about themselves.
+// validateActionRequest refuses self-moderation for the same reason, and
+// checking it first gives the caller the specific answer rather than sending
+// them off to acquire a role that still would not permit it.
+func canLiftMute(moderator *domain.User, targetUserID string) error {
+	if moderator == nil {
+		return fmt.Errorf("%w: moderator role required", ErrForbidden)
+	}
+	if moderator.ID == targetUserID {
+		return fmt.Errorf("%w: cannot moderate yourself", ErrValidation)
+	}
+	if targetUserID == "" {
+		return fmt.Errorf("%w: target user id must not be empty", ErrValidation)
+	}
+	return requireModerator(moderator)
+}
+
+// requireModerator is the role floor both mute operations re-check for
+// themselves, so neither depends on the route group alone.
+func requireModerator(moderator *domain.User) error {
+	if moderator == nil || !moderator.CanModerate() {
+		return fmt.Errorf("%w: moderator role required", ErrForbidden)
+	}
+	return nil
+}
+
+// MuteStatus reports when a user's mute expires, or nil when they are not
+// muted.
+//
+// It exists because muted_until is on no other response a moderator can see:
+// domain.User leaves it untagged and only the caller's own profile opts in, so
+// without this a moderator's view cannot tell a muted member from any other and
+// could only offer to lift a mute blind — or, worse, infer one from a past mute
+// action, which stays in the audit trail unchanged after the mute is lifted and
+// would go on claiming a mute that no longer exists.
+//
+// It is registered under the moderation route group rather than on the public
+// profile, which is what keeps the original rule intact: a mute is between the
+// user and the moderators, and moderators are the other party to it.
+//
+// An expired mute is reported as no mute, matching the self view: the client
+// then needs no clock of its own to interpret the answer.
+func (s *ModerationActionService) MuteStatus(ctx context.Context, moderator *domain.User, targetUserID string) (*time.Time, error) {
+	if err := requireModerator(moderator); err != nil {
+		return nil, err
+	}
+
+	target, err := s.users.GetUserByID(ctx, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	if !target.IsMuted(s.now()) {
+		return nil, nil
+	}
+	return target.MutedUntil, nil
+}
+
+// LiftMute ends a mute before its duration runs out, for a mute applied in
+// error or one a moderator agrees to shorten after an appeal.
+//
+// Clearing muted_until is the whole operation, because muted_until is the whole
+// mechanism: domain.User.IsMuted compares it against the clock, so a nil value
+// is "not muted" with nothing left to sweep up. Nothing on the trust path is
+// touched — no penalty is propagated, no score is written, no recalculation is
+// queued. A mute has not moved trust since that bug was fixed, so releasing one
+// must not either; it is mercy, not a reward.
+//
+// There is deliberately NO moderation_actions row, and a future contributor
+// should not "fix" it. That table's severity column is CHECK (severity BETWEEN
+// 1 AND 5) and every one of those five values names a trust penalty that
+// PropagatePenalties then walks the vouch graph with. There is no severity
+// meaning "no punishment", so an un-mute row would have to claim one — filing a
+// release as a punishment of the person released, and of everyone who vouched
+// for them. Nor is that only an internal accounting problem: the audit trail is
+// rendered to the member as a badge and the words "Severity: N", so an act of
+// mercy would be shown to them as a sanction. This is the same wall post
+// removal hit from the other side: it had no severity meaning "against content
+// rather than a person".
+//
+// What is left of the record is this log line and the original mute action,
+// which stays exactly as the moderator wrote it. Rewriting that row's expires_at
+// to match would falsify the one thing the audit trail exists to preserve: what
+// was actually decided at the time. A durable, member-visible record of the
+// lift needs a column or table of its own.
+//
+// A user who is not muted is not an error: the caller asked for a state and the
+// state already holds, the same reasoning that answers 204 for removing a
+// reaction that was never left. A user who does not exist IS an error — a
+// mistyped id must not report that somebody was released.
+func (s *ModerationActionService) LiftMute(ctx context.Context, moderator *domain.User, targetUserID string) error {
+	if err := canLiftMute(moderator, targetUserID); err != nil {
+		return err
+	}
+	// Checked before the lookup: without an enforcer nothing can clear
+	// muted_until, so there is no request this service could honour. TakeAction
+	// tolerates a nil one because it still has an action row to write; here the
+	// write is the entire operation, and answering nil would report a wiring
+	// fault as a released user.
+	if s.enforcer == nil {
+		return fmt.Errorf("lifting mute: service has no user enforcer")
+	}
+
+	target, err := s.users.GetUserByID(ctx, targetUserID)
+	if err != nil {
+		return err
+	}
+
+	// Captured before the write so the log can say what was cut short.
+	previous := target.MutedUntil
+	wasMuted := target.IsMuted(s.now())
+
+	if err := s.enforcer.SetUserMutedUntil(ctx, target.ID, nil); err != nil {
+		return fmt.Errorf("lifting mute: %w", err)
+	}
+
+	s.logger.Info("mute lifted by moderator",
+		"moderator_id", moderator.ID,
+		"target_user_id", target.ID,
+		"previous_muted_until", previous,
+		"was_muted", wasMuted,
+	)
+	return nil
 }
 
 // GetActionHistory delegates to ModerationHistoryService.

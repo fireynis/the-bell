@@ -62,18 +62,23 @@ func (m *mockConfigRepo) ListTownConfig(_ context.Context) (map[string]string, e
 	return result, nil
 }
 
-// mockTransactor implements Transactor by passing through to the provided repos.
+// mockTransactor implements Transactor by passing through to the provided
+// repos. It is its own RepoSet: the fake has no transaction to scope them to,
+// so the two roles collapse into one struct.
 type mockTransactor struct {
 	users  UserRepository
 	config ConfigRepository
 	txErr  error
 }
 
-func (m *mockTransactor) InTx(_ context.Context, fn func(UserRepository, ConfigRepository) error) error {
+func (m *mockTransactor) Users() UserRepository    { return m.users }
+func (m *mockTransactor) Config() ConfigRepository { return m.config }
+
+func (m *mockTransactor) InTx(_ context.Context, fn func(RepoSet) error) error {
 	if m.txErr != nil {
 		return m.txErr
 	}
-	return fn(m.users, m.config)
+	return fn(m)
 }
 
 func newBootstrapTestHarness(clock func() time.Time) (*mockUserRepo, *mockKratosAdmin, *mockConfigRepo, *mockTransactor, *BootstrapService) {

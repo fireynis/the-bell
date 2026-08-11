@@ -470,3 +470,253 @@ func TestModerationHandler_TakeAction_PenaltyFailureStillReports201(t *testing.T
 		t.Errorf("penalties = %d, want the direct penalty to be reported", len(result.Penalties))
 	}
 }
+
+// --- LiftMute ---
+
+// mockLiftEnforcer records the muted_until writes the handler drives, so a test
+// can tell a nil write (the lift) from no write at all.
+type mockLiftEnforcer struct {
+	mutes map[string]*time.Time
+	err   error
+}
+
+func newMockLiftEnforcer() *mockLiftEnforcer {
+	return &mockLiftEnforcer{mutes: make(map[string]*time.Time)}
+}
+
+func (m *mockLiftEnforcer) SetUserMutedUntil(_ context.Context, id string, until *time.Time) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.mutes[id] = until
+	return nil
+}
+
+func (m *mockLiftEnforcer) DeactivateUser(_ context.Context, _ string) error { return nil }
+
+func (m *mockLiftEnforcer) UpdateUserRole(_ context.Context, _ string, _ domain.Role) error {
+	return nil
+}
+
+func (m *mockLiftEnforcer) UpdateUserTrustScore(_ context.Context, _ string, _ float64) error {
+	return nil
+}
+
+func newTestModerationActionServiceWithEnforcer(
+	users service.ActionUserLookup,
+	enforcer service.UserEnforcer,
+) *service.ModerationActionService {
+	modSvc := service.NewModerationService(newMockPenaltyRepoH(), newMockPenaltyGraphH(), func() time.Time { return fixedNow })
+	return service.NewModerationActionService(
+		newMockActionRepoH(), users, modSvc, enforcer, nil, func() time.Time { return fixedNow })
+}
+
+func liftMuteRequest(userID string, caller *domain.User) *http.Request {
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/moderation/users/"+userID+"/mute", nil)
+	if caller != nil {
+		req = withUser(req, caller)
+	}
+	return withChiURLParam(req, "user_id", userID)
+}
+
+func TestModerationHandler_LiftMute_ClearsTheMuteAndAnswers204(t *testing.T) {
+	until := fixedNow.Add(24 * time.Hour)
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+	enforcer := newMockLiftEnforcer()
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftMute(rec, liftMuteRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+	if got, ok := enforcer.mutes["target-1"]; !ok || got != nil {
+		t.Errorf("muted_until = %v (written %v), want a nil write", got, ok)
+	}
+}
+
+// The same answer for a user who was never muted, matching the reaction DELETE:
+// the caller asked for a state and the state holds. A 404 or 400 here would
+// have the moderation queue report a failure for work that is done.
+func TestModerationHandler_LiftMute_AnswersTheSameForAnUnmutedUser(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.LiftMute(rec, liftMuteRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+}
+
+func TestModerationHandler_LiftMute_RejectsUnauthenticated(t *testing.T) {
+	until := fixedNow.Add(24 * time.Hour)
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+	enforcer := newMockLiftEnforcer()
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftMute(rec, liftMuteRequest("target-1", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if len(enforcer.mutes) != 0 {
+		t.Error("an unauthenticated caller lifted a mute")
+	}
+}
+
+// The route group guards this, but the handler must not depend on that alone —
+// the same reason RemoveByModerator re-checks. A member reaching it must not be
+// able to release anyone, themselves least of all.
+func TestModerationHandler_LiftMute_RejectsCallersWhoCannotModerate(t *testing.T) {
+	tests := []struct {
+		name       string
+		caller     *domain.User
+		targetID   string
+		wantStatus int
+	}{
+		{"a member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}, "target-1", http.StatusForbidden},
+		{"a member on themselves", &domain.User{ID: "target-1", Role: domain.RoleMember, IsActive: true}, "target-1", http.StatusBadRequest},
+		{"a moderator on themselves", &domain.User{ID: "target-1", Role: domain.RoleModerator, IsActive: true}, "target-1", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			until := fixedNow.Add(24 * time.Hour)
+			users := newMockActionUserLookup()
+			users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+			enforcer := newMockLiftEnforcer()
+			h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+			rec := httptest.NewRecorder()
+			h.LiftMute(rec, liftMuteRequest(tt.targetID, tt.caller))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if len(enforcer.mutes) != 0 {
+				t.Error("the mute was lifted anyway")
+			}
+		})
+	}
+}
+
+func TestModerationHandler_LiftMute_UnknownUserIs404(t *testing.T) {
+	h := handler.NewModerationHandler(
+		newTestModerationActionServiceWithEnforcer(newMockActionUserLookup(), newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.LiftMute(rec, liftMuteRequest("nobody", testModerator()))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (body %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// A failed write is a mute still in force, so it must not answer 204.
+func TestModerationHandler_LiftMute_WriteFailureIs500(t *testing.T) {
+	until := fixedNow.Add(24 * time.Hour)
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+	enforcer := newMockLiftEnforcer()
+	enforcer.err = errors.New("db unavailable")
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftMute(rec, liftMuteRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- MuteStatus ---
+
+func muteStatusRequest(userID string, caller *domain.User) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/users/"+userID+"/mute", nil)
+	if caller != nil {
+		req = withUser(req, caller)
+	}
+	return withChiURLParam(req, "user_id", userID)
+}
+
+func TestModerationHandler_MuteStatus_ReportsALiveMute(t *testing.T) {
+	until := fixedNow.Add(24 * time.Hour)
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.MuteStatus(rec, muteStatusRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		MutedUntil string `json:"muted_until"`
+	}
+	decodeBody(t, rec, &resp)
+	if resp.MutedUntil != until.Format(time.RFC3339) {
+		t.Errorf("muted_until = %q, want %q", resp.MutedUntil, until.Format(time.RFC3339))
+	}
+}
+
+// The field's presence is the answer, exactly as on the caller's own profile:
+// an unmuted user yields an object with no muted_until rather than a null, so
+// one rule reads both shapes.
+func TestModerationHandler_MuteStatus_OmitsTheFieldWhenNotMuted(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.MuteStatus(rec, muteStatusRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "muted_until") {
+		t.Errorf("body = %s, want no muted_until key", rec.Body.String())
+	}
+}
+
+func TestModerationHandler_MuteStatus_RejectsUnauthenticated(t *testing.T) {
+	h := handler.NewModerationHandler(
+		newTestModerationActionServiceWithEnforcer(newMockActionUserLookup(), newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.MuteStatus(rec, muteStatusRequest("target-1", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// muted_until is the one field kept off every other user-facing response, so
+// the read that exposes it has to refuse anyone without the role that acts on
+// it — not merely rely on the route group.
+func TestModerationHandler_MuteStatus_RefusesAMember(t *testing.T) {
+	until := fixedNow.Add(24 * time.Hour)
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, MutedUntil: &until}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.MuteStatus(rec, muteStatusRequest("target-1", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if strings.Contains(rec.Body.String(), until.Format(time.RFC3339)[:10]) {
+		t.Errorf("the refusal leaked the mute expiry: %s", rec.Body.String())
+	}
+}

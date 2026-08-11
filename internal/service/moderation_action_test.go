@@ -372,7 +372,36 @@ func TestModerationActionService_TakeAction_RepoError(t *testing.T) {
 
 // --- Warn with duration is allowed (duration ignored, no expires_at) ---
 
-func TestModerationActionService_TakeAction_WarnWithDuration(t *testing.T) {
+// This used to assert the opposite — that a warn carrying a duration was
+// accepted and had its expires_at written — with no reason recorded for why.
+// Nothing expires a warning: planEnforcement emits no step for one, so the
+// column was inert at best, and anything later asking "is this action still in
+// force" from expires_at would read a permanent warning as temporary. The ban
+// rule one line above already refuses exactly this, for exactly this reason.
+func TestModerationActionService_TakeAction_WarnWithDurationIsRejected(t *testing.T) {
+	actions := newMockActionRepo()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+
+	svc := newTestModerationActionService(
+		actions, users,
+		newMockPenaltyRepo(), newMockPenaltyGraph(),
+		nil,
+	)
+
+	_, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "warning", int64Ptr(3600))
+
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("error = %v, want %v", err, ErrValidation)
+	}
+	if len(actions.actions) != 0 {
+		t.Errorf("%d actions were written despite the request being rejected", len(actions.actions))
+	}
+}
+
+// A warn with no duration is the ordinary case and must stay accepted, with
+// nothing to expire.
+func TestModerationActionService_TakeAction_WarnCarriesNoExpiry(t *testing.T) {
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
 
@@ -382,15 +411,15 @@ func TestModerationActionService_TakeAction_WarnWithDuration(t *testing.T) {
 		nil,
 	)
 
-	dur := int64Ptr(3600)
-	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "warning", dur)
+	result, err := svc.TakeAction(context.Background(), "mod-1", "target-1", domain.ActionWarn, 1, "warning", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// Warn with duration: duration/expires_at are set (we don't reject it)
-	if result.Action.ExpiresAt == nil {
-		t.Error("expected expires_at to be set when duration provided")
+	if result.Action.ExpiresAt != nil {
+		t.Errorf("expires_at = %v, want nil; a warning does not expire", *result.Action.ExpiresAt)
+	}
+	if result.Action.Duration != nil {
+		t.Errorf("duration = %v, want nil", *result.Action.Duration)
 	}
 }
 
@@ -744,5 +773,279 @@ func TestModerationActionService_TakeAction_EnforcementError(t *testing.T) {
 	// Action should still be created and returned (partial success)
 	if result == nil || result.Action == nil {
 		t.Fatal("expected action to be returned despite enforcement failure")
+	}
+}
+
+// --- LiftMute ---
+
+func testLiftingModerator() *domain.User {
+	return &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}
+}
+
+// mutedTestUser is a user carrying a mute that still has a day to run at
+// fixedNow, which is the only state LiftMute exists to change.
+func mutedTestUser(id string) *domain.User {
+	until := fixedNow.Add(24 * time.Hour)
+	return &domain.User{ID: id, IsActive: true, TrustScore: 50.0, MutedUntil: &until}
+}
+
+// The mechanism has always been there — SetUserMutedUntil(ctx, id, nil) lifts a
+// mute — and nothing called it, so a mute applied in error had to run its full
+// course.
+func TestModerationActionService_LiftMute_ClearsTheMute(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	until, called := enforcer.mutes["target-1"]
+	if !called {
+		t.Fatal("the mute was never touched")
+	}
+	if until != nil {
+		t.Errorf("muted_until = %v, want nil", *until)
+	}
+}
+
+// Same reasoning as the reaction DELETE, which answers for a reaction that was
+// never left: the caller asked for a state, and the state already holds. Making
+// this an error would have the queue report a failure for work that is done.
+func TestModerationActionService_LiftMute_IsIdempotent(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(&domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0})
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	mod := testLiftingModerator()
+	for i := range 2 {
+		if err := svc.LiftMute(context.Background(), mod, "target-1"); err != nil {
+			t.Fatalf("call %d on a user who is not muted: %v", i+1, err)
+		}
+	}
+
+	if until, called := enforcer.mutes["target-1"]; !called || until != nil {
+		t.Errorf("muted_until = %v (called %v), want a nil write", until, called)
+	}
+}
+
+// A mute has not touched trust since the trust-drop bug was fixed —
+// muted_until is the whole mechanism — so lifting one cannot touch it either.
+// It is not a reward any more than the mute was a second punishment on top of
+// the action's own penalty.
+func TestModerationActionService_LiftMute_LeavesTrustAlone(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	penalties := newMockPenaltyRepo()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, penalties, newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(enforcer.trustUpdates) != 0 {
+		t.Errorf("trust was written: %v", enforcer.trustUpdates)
+	}
+	if len(penalties.penalties) != 0 {
+		t.Errorf("%d trust penalties were created by lifting a mute", len(penalties.penalties))
+	}
+	if users.users["target-1"].TrustScore != 50.0 {
+		t.Errorf("trust score = %v, want it unchanged at 50", users.users["target-1"].TrustScore)
+	}
+	if len(enforcer.roleUpdates) != 0 || len(enforcer.deactivatedIDs) != 0 {
+		t.Error("lifting a mute changed the role or activation state")
+	}
+}
+
+// No moderation_actions row, deliberately. Every row in that table carries a
+// severity between 1 and 5, and every one of those severities means a trust
+// penalty that PropagatePenalties walks the vouch graph with. There is no
+// severity that means "this was mercy", so recording a lift there would file it
+// as a punishment of the person it released.
+func TestModerationActionService_LiftMute_WritesNoModerationAction(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	actions := newMockActionRepo()
+	svc := newTestModerationActionService(
+		actions, users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(actions.actions) != 0 {
+		t.Errorf("%d moderation actions were written; lifting a mute carries no severity", len(actions.actions))
+	}
+}
+
+// The route guard is the early rejection, not the only one — the same reason
+// PostService.RemoveByModerator re-checks the role it was routed behind.
+func TestModerationActionService_LiftMute_RefusesCallersWhoCannotModerate(t *testing.T) {
+	tests := []struct {
+		name    string
+		caller  *domain.User
+		target  string
+		wantErr error
+	}{
+		{"a member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}, "target-1", ErrForbidden},
+		{"nobody", nil, "target-1", ErrForbidden},
+		{"a moderator on themselves", &domain.User{ID: "target-1", Role: domain.RoleModerator, IsActive: true}, "target-1", ErrValidation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(mutedTestUser("target-1"))
+			enforcer := newMockUserEnforcer()
+			svc := newTestModerationActionService(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+			err := svc.LiftMute(context.Background(), tt.caller, tt.target)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if len(enforcer.mutes) != 0 {
+				t.Errorf("the mute was lifted anyway: %v", enforcer.mutes)
+			}
+		})
+	}
+}
+
+// A mistyped id must not answer "done". Idempotence covers a user who is not
+// muted; it does not cover a user who does not exist, and reporting success
+// there would tell a moderator someone had been released who never existed.
+func TestModerationActionService_LiftMute_TargetNotFound(t *testing.T) {
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), newFakeUserStore(), newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	err := svc.LiftMute(context.Background(), testLiftingModerator(), "nobody")
+
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want %v", err, ErrNotFound)
+	}
+	if len(enforcer.mutes) != 0 {
+		t.Errorf("a mute was written for a user who does not exist: %v", enforcer.mutes)
+	}
+}
+
+// A failed write must be reported. The mute is still in force, and a moderator
+// told otherwise would stop chasing it.
+func TestModerationActionService_LiftMute_ReportsAFailedWrite(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	enforcer.muteErr = errors.New("db unavailable")
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err == nil {
+		t.Fatal("a failed write was reported as a lifted mute")
+	}
+}
+
+// Without an enforcer there is nothing that can clear muted_until, so answering
+// nil would be a deployment misconfiguration reported as success. TakeAction
+// tolerates a nil enforcer because it has an action row to write regardless;
+// here the write is the entire operation.
+func TestModerationActionService_LiftMute_WithoutAnEnforcerIsAnError(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), nil)
+
+	if err := svc.LiftMute(context.Background(), testLiftingModerator(), "target-1"); err == nil {
+		t.Fatal("a service with no enforcer reported the mute lifted")
+	}
+}
+
+// --- MuteStatus ---
+
+// A moderator cannot see muted_until anywhere else: it is deliberately absent
+// from every response but the caller's own profile, so without this read a
+// moderator has no way to know whether the person they are looking at is muted
+// — and no honest way to offer to lift it.
+func TestModerationActionService_MuteStatus_ReportsALiveMute(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	until, err := svc.MuteStatus(context.Background(), testLiftingModerator(), "target-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if until == nil {
+		t.Fatal("muted_until = nil, want the live mute")
+	}
+	if !until.Equal(fixedNow.Add(24 * time.Hour)) {
+		t.Errorf("muted_until = %v, want %v", *until, fixedNow.Add(24*time.Hour))
+	}
+}
+
+// An expired mute reads as no mute at all, matching the self view: the
+// comparison against the clock is the whole mechanism, so the caller needs no
+// clock of its own to interpret the answer.
+func TestModerationActionService_MuteStatus_ExpiredAndAbsentBothReadAsUnmuted(t *testing.T) {
+	expired := fixedNow.Add(-time.Minute)
+	tests := []struct {
+		name string
+		user *domain.User
+	}{
+		{"never muted", &domain.User{ID: "target-1", IsActive: true}},
+		{"mute already expired", &domain.User{ID: "target-1", IsActive: true, MutedUntil: &expired}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(tt.user)
+			svc := newTestModerationActionService(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+			until, err := svc.MuteStatus(context.Background(), testLiftingModerator(), "target-1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if until != nil {
+				t.Errorf("muted_until = %v, want nil", *until)
+			}
+		})
+	}
+}
+
+// muted_until is moderation state, so reading it needs the role that acts on
+// it — the route guard is the early rejection, not the only one.
+func TestModerationActionService_MuteStatus_RefusesCallersWhoCannotModerate(t *testing.T) {
+	for _, caller := range []*domain.User{
+		nil,
+		{ID: "u-1", Role: domain.RoleMember, IsActive: true},
+		{ID: "u-1", Role: domain.RoleModerator, IsActive: false},
+	} {
+		users := newFakeUserStore()
+		users.add(mutedTestUser("target-1"))
+		svc := newTestModerationActionService(
+			newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+		if _, err := svc.MuteStatus(context.Background(), caller, "target-1"); !errors.Is(err, ErrForbidden) {
+			t.Errorf("caller %+v: error = %v, want %v", caller, err, ErrForbidden)
+		}
+	}
+}
+
+func TestModerationActionService_MuteStatus_TargetNotFound(t *testing.T) {
+	svc := newTestModerationActionService(
+		newMockActionRepo(), newFakeUserStore(), newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	if _, err := svc.MuteStatus(context.Background(), testLiftingModerator(), "nobody"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want %v", err, ErrNotFound)
 	}
 }

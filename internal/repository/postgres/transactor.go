@@ -16,18 +16,24 @@ func NewTransactor(pool *pgxpool.Pool) *Transactor {
 	return &Transactor{pool: pool}
 }
 
-func (t *Transactor) InTx(ctx context.Context, fn func(users service.UserRepository, config service.ConfigRepository) error) error {
+// txRepos is the service.RepoSet handed to an InTx callback. Every repository
+// it returns is built over the same *Queries, and therefore the same pgx.Tx, so
+// a callback cannot accidentally mix a transactional write with a pooled one.
+type txRepos struct {
+	q *Queries
+}
+
+func (r txRepos) Users() service.UserRepository    { return NewUserRepo(r.q) }
+func (r txRepos) Config() service.ConfigRepository { return NewConfigRepo(r.q) }
+
+func (t *Transactor) InTx(ctx context.Context, fn func(repos service.RepoSet) error) error {
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	q := New(tx)
-	users := NewUserRepo(q)
-	config := NewConfigRepo(q)
-
-	if err := fn(users, config); err != nil {
+	if err := fn(txRepos{q: New(tx)}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

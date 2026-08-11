@@ -148,6 +148,18 @@ export interface ActionHistoryResponse {
   actions: ActionHistoryEntry[];
 }
 
+/**
+ * What GET /api/v1/moderation/users/{id}/mute answers with.
+ *
+ * muted_until is absent — never null — for a user who is not muted, and for one
+ * whose mute has expired: the field's presence is the answer. That mirrors the
+ * caller's own profile, the only other response that carries it. Read it
+ * through activeMuteExpiry rather than testing the field directly.
+ */
+export interface MuteStatus {
+  muted_until?: string;
+}
+
 export interface TakeActionRequest {
   target_user_id: string;
   action_type: string;

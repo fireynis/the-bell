@@ -271,6 +271,13 @@ func (s *Server) apiRoutes(r chi.Router) {
 				mh := handler.NewModerationHandler(s.moderationActionService)
 				r.Post("/actions", mh.TakeAction)
 				r.Get("/actions/{user_id}", mh.ListActions)
+				// Lifting a mute is a DELETE of the mute itself, not another
+				// action taken against the person: it writes no
+				// moderation_actions row, so it does not belong under
+				// /actions. The group's moderator guard covers it, and the
+				// service re-checks the role regardless.
+				r.Get("/users/{user_id}/mute", mh.MuteStatus)
+				r.Delete("/users/{user_id}/mute", mh.LiftMute)
 			}
 		})
 	}

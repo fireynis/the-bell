@@ -66,7 +66,10 @@ func TestTransactor_InTx_CommitsOnSuccess(t *testing.T) {
 	kratosID := testsupport.UniqueKratosID("commit")
 	user := txUser(kratosID)
 
-	err := tx.InTx(ctx, func(users service.UserRepository, config service.ConfigRepository) error {
+	err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		users := repos.Users()
+		config := repos.Config()
+
 		if err := users.CreateUser(ctx, user); err != nil {
 			return err
 		}
@@ -94,7 +97,10 @@ func TestTransactor_InTx_RollsBackEveryWriteOnError(t *testing.T) {
 	wantErr := errors.New("second council member is not a valid email")
 	user := txUser(testsupport.UniqueKratosID("rollback"))
 
-	err := tx.InTx(ctx, func(users service.UserRepository, config service.ConfigRepository) error {
+	err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		users := repos.Users()
+		config := repos.Config()
+
 		// Three successful writes, then a failure.
 		if err := users.CreateUser(ctx, user); err != nil {
 			return err
@@ -140,7 +146,9 @@ func TestTransactor_InTx_PanicRollsBackAndReleasesTheConnection(t *testing.T) {
 			}
 		}()
 
-		_ = tx.InTx(ctx, func(users service.UserRepository, config service.ConfigRepository) error {
+		_ = tx.InTx(ctx, func(repos service.RepoSet) error {
+			users := repos.Users()
+
 			if err := users.CreateUser(ctx, user); err != nil {
 				return err
 			}
@@ -155,7 +163,9 @@ func TestTransactor_InTx_PanicRollsBackAndReleasesTheConnection(t *testing.T) {
 	// The database is still usable: had the transaction been left open, the
 	// row it inserted would still hold a lock and this write would block.
 	after := txUser(testsupport.UniqueKratosID("after-panic"))
-	if err := tx.InTx(ctx, func(users service.UserRepository, _ service.ConfigRepository) error {
+	if err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		users := repos.Users()
+
 		return users.CreateUser(ctx, after)
 	}); err != nil {
 		t.Fatalf("transactor unusable after a panic: %v", err)
@@ -174,7 +184,9 @@ func TestTransactor_InTx_RollsBackOnConstraintViolation(t *testing.T) {
 
 	kratosID := testsupport.UniqueKratosID("dup")
 	first := txUser(kratosID)
-	if err := tx.InTx(ctx, func(users service.UserRepository, _ service.ConfigRepository) error {
+	if err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		users := repos.Users()
+
 		return users.CreateUser(ctx, first)
 	}); err != nil {
 		t.Fatalf("seeding first user: %v", err)
@@ -184,7 +196,10 @@ func TestTransactor_InTx_RollsBackOnConstraintViolation(t *testing.T) {
 	duplicate := txUser(kratosID)
 	duplicate.ID = first.ID + "-second"
 
-	err := tx.InTx(ctx, func(users service.UserRepository, config service.ConfigRepository) error {
+	err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		users := repos.Users()
+		config := repos.Config()
+
 		if err := config.SetTownConfig(ctx, "half_written", "yes"); err != nil {
 			return err
 		}
@@ -212,7 +227,9 @@ func TestTransactor_InTx_ReadsSeeUncommittedWrites(t *testing.T) {
 	ctx := context.Background()
 	tx := postgres.NewTransactor(pool)
 
-	err := tx.InTx(ctx, func(_ service.UserRepository, config service.ConfigRepository) error {
+	err := tx.InTx(ctx, func(repos service.RepoSet) error {
+		config := repos.Config()
+
 		if err := config.SetTownConfig(ctx, "town_name", "Bellwether"); err != nil {
 			return err
 		}

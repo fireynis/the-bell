@@ -49,9 +49,23 @@ Rate limiting requires Redis (`REDIS_URL` must be set). Limits are per-user, per
 | `POST /api/v1/posts` | 10 requests | 1 hour |
 | `POST /api/v1/posts/{postId}/reactions` | 60 requests | 1 minute |
 | `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour |
-| Approval endpoints (`/api/v1/vouches/*`) | 3 requests | 24 hours |
+| `POST /api/v1/vouches` and `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours |
 
-Reports also have a server-side hourly limit of 5 per reporter (enforced regardless of Redis).
+The council approval endpoints (`GET /api/v1/vouches/pending`,
+`POST /api/v1/vouches/approve/{id}`) are **not** rate limited, even though they
+share the `/api/v1/vouches` prefix with the member vouching endpoints above.
+They once carried this limiter by accident of that shared prefix, which capped
+council approvals at 3 per day — and since bootstrap mode does not end until 20
+active members exist, standing up a town could not finish in under a week. The
+budget belongs to members vouching, not to council members approving.
+
+Two endpoints carry a second limit enforced in the service layer, independently
+of Redis:
+
+- **Reports**: 5 per hour per reporter.
+- **Vouches**: 3 per calendar day per voucher, counted from local midnight
+  rather than over a rolling window. This is a separate ceiling from the
+  sliding-window limiter above, so a member can meet either one first.
 
 If Redis is unavailable, rate limiting fails open (requests are allowed through).
 
@@ -270,7 +284,7 @@ Returns vouches given and received by a user.
 
 Returns the public post feed (visible posts in reverse chronological order).
 
-**Auth**: None
+**Auth**: None, but honoured when present (see below)
 **Role**: None
 
 **Query Parameters**:
@@ -292,7 +306,11 @@ Returns the public post feed (visible posts in reverse chronological order).
       "image_path": "",
       "status": "visible",
       "created_at": "2025-07-01T14:30:00Z",
-      "edited_at": null
+      "edited_at": null,
+      "author_display_name": "Alice",
+      "author_avatar_url": "https://example.com/alice.jpg",
+      "reaction_counts": {"bell": 3, "heart": 1},
+      "user_reactions": ["bell"]
     }
   ],
   "next_cursor": "0193a7b2-..."
@@ -307,26 +325,61 @@ curl https://bell.example.com/api/v1/posts?limit=20
 curl https://bell.example.com/api/v1/posts?cursor=0193a7b2-...&limit=20
 ```
 
+##### Sending a session cookie changes the response
+
+This endpoint stays fully public — an anonymous request is served normally — but
+a Kratos session cookie, if you send one, is read rather than ignored:
+
+| Field | Anonymous caller | Authenticated caller |
+|-------|------------------|----------------------|
+| `reaction_counts` | Present | Present |
+| `user_reactions` | **Always absent** | The caller's own reactions on that post |
+
+`user_reactions` is the caller's own reactions and nobody else's, so without an
+identity there is no answer to give. Both fields are omitted entirely when
+empty, so a post with no reactions carries neither, and neither does a post the
+caller has not reacted to.
+
+Enrichment is best-effort: if the reaction lookup fails, the posts are still
+returned without these fields rather than the request failing.
+
 ---
 
 #### `GET /api/v1/posts/{id}`
 
 Returns a single post by ID.
 
-**Auth**: None
+**Auth**: None, but honoured when present — it decides whether a removed post is
+visible to you, and populates `user_reactions` exactly as on `GET /api/v1/posts`
 **Role**: None
 
 **Response** `200 OK`: Post object.
-**Response** `404 Not Found`: No post with that ID.
+**Response** `404 Not Found`: No post with that ID, **or** a removed post you are
+not entitled to see.
 
-Unlike the feed and the profile listing, this endpoint has **no `visible`
-filter**: a removed post is still returned by ID, with its `status` set to
-`removed_by_author` or `removed_by_mod`. That is deliberate — it is how an
-author or a moderator can still retrieve a post that has been taken down.
+##### Who can see a removed post
 
-A moderator's `removal_reason` is **never serialized on any response**. It is a
-private note and is not part of the post object on the wire, on this endpoint or
-any other.
+A post whose `status` is `removed_by_author` or `removed_by_mod` is returned
+only to:
+
+- the **author** of the post, or
+- an **active** `moderator` or `council` member.
+
+Everyone else — including anonymous callers, and including a *suspended*
+moderator, who gets the ordinary reader's view — receives `404`.
+
+That `404` is **byte-identical** to the one for an id that never existed, so the
+two cases cannot be told apart from outside. This is deliberate: post ids are
+public while a post is live, so the people holding one are exactly the people
+who saw it before it was taken down, and a distinguishable response would
+confirm to them that the post was removed rather than deleted.
+
+An entitled caller gets the post with its `status` set to `removed_by_author` or
+`removed_by_mod`, which is how an author or moderator can still retrieve one.
+
+A moderator's `removal_reason` and the `removed_by` moderator's id are **never
+serialized on any response**. They are moderation metadata, not part of the post
+object on the wire, on this endpoint or any other.
 
 ---
 
@@ -375,8 +428,13 @@ it, and **no post is written** in any case:
 
 The check runs twice: once in the handler, so a rejected request is turned away
 before its upload is parsed, and once inside the post service, which is the
-authoritative one. A client cannot tell the two apart — both return the same
-`403`.
+authoritative one.
+
+Both return `403`, but the bodies differ: the handler's early rejection sends
+`{"error": "posting not allowed"}`, while the service's sends the generic
+`{"error": "forbidden"}`. Neither says which gate you failed. Treat any `403`
+here as "you may not post right now" and check `muted_until`, `role`,
+`is_active` and `trust_score` on `GET /api/v1/me` to find out why.
 
 ---
 
@@ -443,11 +501,21 @@ Adds a reaction to a post.
 ```
 
 **Response** `200 OK`: The reaction object.
+**Response** `404 Not Found`: No post with that ID.
 
 Adding a reaction you already have is **idempotent**, not an error: the request
 succeeds and the original reaction — including its original timestamp — is left
 in place. The underlying insert is an upsert, so a double-tap or a retried
 request needs no special handling from clients.
+
+Reacting to a post that does not exist returns `404 not found`. It is worth
+expecting: a feed card can outlive the post behind it, so a reaction can arrive
+for a post deleted between render and tap. This case previously returned `500`.
+
+Note the deliberate asymmetry with `DELETE` below — adding a reaction to a
+missing post is a `404`, removing one is a `204`. Adding names a post that must
+exist; removing only asserts that a reaction is not there afterwards, which is
+true either way.
 
 ```bash
 curl -X POST https://bell.example.com/api/v1/posts/0193a7b2-.../reactions \
@@ -622,6 +690,57 @@ Updates a report's status.
 
 ---
 
+#### `POST /api/v1/moderation/posts/{id}/remove`
+
+Takes a post down. The post's `status` becomes `removed_by_mod`, and the
+moderator's id is recorded in `removed_by` alongside the `reason`.
+
+**Auth**: Required
+**Role**: `moderator` or higher
+
+**Request**:
+
+```json
+{
+  "reason": "Repeated misinformation about the water supply"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `reason` | string | Yes | Why the post was removed |
+
+**Response** `204 No Content`
+**Response** `400 Bad Request`: `validation error: reason must not be empty`,
+`validation error: reason exceeds 1000 characters`, or
+`validation error: post is already removed` — only a `visible` post can be
+removed, so re-removing one rewrites nothing.
+**Response** `403 Forbidden`: not an active moderator or council member.
+**Response** `404 Not Found`: No post with that ID.
+
+The `reason` and the recording moderator are stored but **never returned by any
+endpoint** — see `GET /api/v1/posts/{id}`. They exist for the audit trail, not
+for the author.
+
+Removal writes **no `moderation_actions` row** and therefore costs the author no
+trust. That is deliberate: every moderation action propagates a trust penalty
+through the vouch graph, so making removal an action would dock the author and
+everyone who ever vouched for them each time a post came down. Removal acts on
+the content; warn, mute, suspend and ban act on the person.
+
+This is distinct from `DELETE /api/v1/posts/{id}`, which is the author removing
+their own post and sets `removed_by_author` with no moderator recorded. Both
+take the post out of the feed and out of profile listings.
+
+```bash
+curl -X POST https://bell.example.com/api/v1/moderation/posts/0193a7b2-.../remove \
+  -H "Content-Type: application/json" \
+  -H "Cookie: ory_kratos_session=..." \
+  -d '{"reason":"Repeated misinformation"}'
+```
+
+---
+
 #### `POST /api/v1/moderation/actions`
 
 Takes a moderation action against a user. Creates the action record and propagates trust penalties through the vouch graph.
@@ -647,7 +766,7 @@ Takes a moderation action against a user. Creates the action record and propagat
 | `action_type` | string | Yes | `warn`, `mute`, `suspend`, or `ban` |
 | `severity` | int | Yes | Must match action type (see below) |
 | `reason` | string | Yes | Non-empty, max 1,000 characters |
-| `duration_seconds` | int/null | Depends | Required for `mute` and `suspend`. Must be null for `warn` and `ban` |
+| `duration_seconds` | int/null | Depends | Required for `mute` and `suspend`; rejected for `ban`. Must be positive when given |
 
 Action type to severity mapping:
 
@@ -661,8 +780,15 @@ Action type to severity mapping:
 Validation rules:
 - Cannot moderate yourself
 - Target user must exist
+- Reason is required, max 1,000 characters
 - Bans cannot have a duration
 - Mutes and suspends require a duration
+- A duration, where allowed, must be greater than zero
+
+A `warn` is the one action with no rule either way: it neither requires
+`duration_seconds` nor rejects it. A duration sent with a warn is stored on the
+action's `expires_at` and has no effect on the user, since a warn imposes no
+restriction to expire. Send `null`.
 
 A mute sent without `duration_seconds` is rejected with
 `mute requires a duration; use suspend for an indefinite restriction` — an
@@ -779,6 +905,108 @@ Returns moderation action history for a user, including associated trust penalti
 
 ---
 
+### Vouching
+
+Vouching is how a member endorses another resident. These endpoints are open to
+any active member; the council approval endpoints below are a separate,
+bootstrap-only path to the same outcome.
+
+#### `POST /api/v1/vouches`
+
+Vouches for another user.
+
+**Auth**: Required
+**Role**: `member` or higher
+**Rate Limit**: 3/24 hours (plus a separate 3-per-calendar-day service limit)
+**Trust**: >= 60
+
+**Request**:
+
+```json
+{
+  "vouchee_id": "0193a7b2-1234-7000-8000-000000000002"
+}
+```
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `vouchee_id` | string | Yes | Non-empty after trimming |
+
+**Response** `201 Created`:
+
+```json
+{
+  "id": "0193a7b2-...",
+  "voucher_id": "0193a7b2-...",
+  "vouchee_id": "0193a7b2-...",
+  "status": "active",
+  "created_at": "2025-07-01T12:00:00Z"
+}
+```
+
+**Response** `400 Bad Request`. Validation failures name the reason, prefixed
+with `validation error:` — the body is `{"error": "validation error: cannot
+vouch for yourself"}` and so on for:
+
+- `cannot vouch for yourself`
+- `vouch already exists for this pair`
+- `daily vouch limit (3) reached`
+- `vouch would create a cycle in the trust graph`
+
+A missing or blank `vouchee_id` is rejected before the service sees it, and is
+the one 400 with no prefix: `{"error": "vouchee_id is required"}`.
+
+**Response** `403 Forbidden`: you are below trust 60, inactive, or
+`pending`/`banned`. The body is the fixed `{"error": "forbidden"}` — the
+underlying reason is deliberately not disclosed.
+**Response** `404 Not Found`: no user with that `vouchee_id`. Body:
+`{"error": "not found"}`.
+
+If the vouchee is `pending`, a successful vouch **promotes them to `member`**.
+The promotion is best-effort: the vouch is still created and still returned
+`201` if the promotion itself fails.
+
+---
+
+#### `DELETE /api/v1/vouches/{id}`
+
+Revokes a vouch. `{id}` is the id of the **vouch**, not of the vouchee — take it
+from `GET /api/v1/users/{id}/vouches`.
+
+**Auth**: Required
+**Role**: `member` or higher
+**Rate Limit**: 3/24 hours
+
+**Response** `204 No Content`
+**Response** `400 Bad Request`: `validation error: vouch is already revoked`, or
+`vouch id is required` when the segment is blank.
+**Response** `403 Forbidden`: you are neither the original voucher nor an active
+moderator or council member. Body: `{"error": "forbidden"}`.
+**Response** `404 Not Found`: no vouch with that id.
+
+##### Revoking costs the voucher trust — but only the voucher
+
+A successful revocation removes the trust graph edge, and if **the caller is the
+original voucher**, records a **-3 trust penalty on them that decays after 30
+days**.
+
+A moderator or council member revoking somebody else's vouch is **not** charged.
+The penalty exists to make vouch-and-revoke gaming cost something, and the
+gamer is the voucher; a moderator doing cleanup should not be taxed for it.
+Their instrument against a bad voucher is a moderation action, which carries its
+own penalty.
+
+The penalty stays at hop depth 0 — unlike a moderation penalty, it does **not**
+propagate to the voucher's own vouchers, because revoking is a self-inflicted
+cost on one person.
+
+```bash
+curl -X DELETE https://bell.example.com/api/v1/vouches/0193a7b2-... \
+  -H "Cookie: ory_kratos_session=..."
+```
+
+---
+
 ### Approvals (Bootstrap Mode Only)
 
 These endpoints are only available while bootstrap mode is active. They return `403 Forbidden` after bootstrap mode ends.
@@ -789,7 +1017,7 @@ Returns all pending users awaiting council approval.
 
 **Auth**: Required
 **Role**: `council`
-**Rate Limit**: 3/24 hours
+**Rate Limit**: None — see the note under [Rate Limiting](#rate-limiting)
 
 **Response** `200 OK`:
 
@@ -821,7 +1049,8 @@ Approves a pending user, promoting them to `member`. When the active member coun
 
 **Auth**: Required
 **Role**: `council`
-**Rate Limit**: 3/24 hours
+**Rate Limit**: None — bootstrap needs 20 approvals, so a daily cap would stall
+it for a week. See the note under [Rate Limiting](#rate-limiting)
 
 **Response** `200 OK`: The approved user object with `role` set to `member`.
 

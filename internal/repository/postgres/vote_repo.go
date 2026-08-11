@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -28,7 +27,7 @@ func (r *VoteRepo) CreateVote(ctx context.Context, vote *domain.CouncilVote) err
 		CreatedAt:  pgtype.Timestamptz{Time: vote.CreatedAt, Valid: true},
 	})
 	if isUniqueViolation(err) {
-		return service.ErrValidation
+		return domain.ErrValidation
 	}
 	return err
 }
@@ -36,7 +35,7 @@ func (r *VoteRepo) CreateVote(ctx context.Context, vote *domain.CouncilVote) err
 // isUniqueViolation reports whether err is a Postgres unique-constraint
 // violation (SQLSTATE 23505). Repeating an action the schema only allows once —
 // voting twice, vouching twice, reacting twice — is ordinary user behaviour, so
-// callers map it to service.ErrValidation rather than letting it surface as a
+// callers map it to domain.ErrValidation rather than letting it surface as a
 // server error.
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
@@ -51,7 +50,7 @@ func isUniqueViolation(err error) bool {
 // foreign key is a referential trigger that fires regardless. AddReaction
 // upserts, so a repeat reaction never raises 23505 — but reacting to a post
 // that does not exist still raises 23503, and callers map that to
-// service.ErrNotFound rather than letting it surface as a server error.
+// domain.ErrNotFound rather than letting it surface as a server error.
 func isForeignKeyViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
@@ -63,7 +62,7 @@ func (r *VoteRepo) GetVoteByProposalAndVoter(ctx context.Context, proposalID, vo
 		VoterID:    voterID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err

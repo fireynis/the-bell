@@ -5,6 +5,7 @@ import type {
   CreatePostRequest,
   CreateVouchRequest,
   ModerationQueueResponse,
+  MuteStatus,
   Post,
   Report,
   TakeActionRequest,
@@ -136,6 +137,25 @@ export const moderationApi = {
    */
   removePost: (postId: string, reason: string) =>
     api.post<void>(`/moderation/posts/${postId}/remove`, { reason }),
+
+  /**
+   * When a user's mute expires, for a moderator looking at someone else.
+   *
+   * This is the only response outside the caller's own profile that carries
+   * muted_until, which is why it sits under /moderation rather than on the
+   * user's public profile. Without it a moderator's view cannot tell a muted
+   * member from any other.
+   */
+  getMuteStatus: (userId: string) => api.get<MuteStatus>(`/moderation/users/${userId}/mute`),
+
+  /**
+   * Lifts a mute before its duration runs out.
+   *
+   * Answers 204 with no body, including for a user who was not muted: the
+   * caller asked for a state and the state holds, the same contract the
+   * reaction DELETE has for a reaction that was never left.
+   */
+  liftMute: (userId: string) => api.delete(`/moderation/users/${userId}/mute`),
 };
 
 export const configApi = {

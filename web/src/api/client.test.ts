@@ -275,3 +275,58 @@ describe("moderationApi.updateReportStatus", () => {
     expect(err).toEqual({ error: "internal error", status: 500 });
   });
 });
+
+/**
+ * The un-mute endpoint is a DELETE of the mute itself, and answers 204 with no
+ * body — including for a user who was not muted. The no-body half is what these
+ * pin: json() is made to throw, as the real Response does on an empty body, so
+ * a client that tried to parse one would fail here rather than in a moderator's
+ * browser.
+ */
+describe("moderationApi.liftMute", () => {
+  it("deletes the mute and does not parse the empty body", async () => {
+    const fetchMock = stubFetch(noContent());
+
+    await expect(moderationApi.liftMute("user-1")).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/users/user-1/mute");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("surfaces the server's refusal", async () => {
+    stubFetch({
+      ok: false,
+      status: 403,
+      json: () => Promise.resolve({ error: "forbidden" }),
+    });
+
+    const err = await moderationApi.liftMute("user-1").catch((e: ApiError) => e);
+
+    expect(err).toEqual({ error: "forbidden", status: 403 });
+  });
+});
+
+describe("moderationApi.getMuteStatus", () => {
+  it("reads the mute of the user named in the path", async () => {
+    const fetchMock = stubFetch({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ muted_until: "2026-08-12T12:00:00Z" }),
+    });
+
+    await expect(moderationApi.getMuteStatus("user-1")).resolves.toEqual({
+      muted_until: "2026-08-12T12:00:00Z",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/users/user-1/mute");
+    expect(init.method ?? "GET").toBe("GET");
+  });
+
+  it("reads an unmuted user as an object with no expiry at all, not a null", async () => {
+    stubFetch({ ok: true, status: 200, json: () => Promise.resolve({}) });
+
+    await expect(moderationApi.getMuteStatus("user-1")).resolves.toEqual({});
+  });
+});

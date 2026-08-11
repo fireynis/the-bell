@@ -95,7 +95,8 @@ func (h *ConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.tx.InTx(r.Context(), func(_ service.UserRepository, config service.ConfigRepository) error {
+	err := h.tx.InTx(r.Context(), func(repos service.RepoSet) error {
+		config := repos.Config()
 		for k, v := range req {
 			if err := config.SetTownConfig(r.Context(), k, v); err != nil {
 				return err

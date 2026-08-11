@@ -1,4 +1,4 @@
-import type { ApiError, Post, TakeActionRequest } from "../api/types";
+import type { ApiError, MuteStatus, Post, TakeActionRequest } from "../api/types";
 import type { ValidationResult } from "./post";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
@@ -235,4 +235,50 @@ export function buildActionRequest(
       ? Math.round((durationHours as number) * SECONDS_PER_HOUR)
       : undefined,
   };
+}
+
+/**
+ * activeMuteExpiry reads GET /api/v1/moderation/users/{id}/mute and reports
+ * when the mute ends, or null when there is no mute in force.
+ *
+ * The server already omits muted_until for a user who is not muted and for one
+ * whose mute has expired, so an absent field is the answer to "is this person
+ * muted?" — the same rule the caller's own profile uses. The expiry is
+ * re-checked against `now` anyway, because a page left open outlives the
+ * response that loaded it and would otherwise keep offering to lift a mute that
+ * has since run out on its own.
+ *
+ * A timestamp that cannot be parsed reads as no mute rather than an Invalid
+ * Date, matching formatDateTime's contract: the moderator sees the plain view
+ * instead of a control claiming to lift something unnamed.
+ */
+export function activeMuteExpiry(
+  status: MuteStatus | null | undefined,
+  now: Date,
+): Date | null {
+  const raw = status?.muted_until;
+  if (!raw) return null;
+
+  const expiry = new Date(raw);
+  if (Number.isNaN(expiry.getTime())) return null;
+
+  return expiry.getTime() > now.getTime() ? expiry : null;
+}
+
+/**
+ * liftMuteBlockReason mirrors canLiftMute in
+ * internal/service/moderation_action.go so the page can explain itself instead
+ * of round-tripping to a guaranteed 400.
+ *
+ * A moderator may not lift a mute placed on themselves: that is the one case no
+ * route guard can catch, since a muted moderator satisfies every middleware in
+ * the chain. Both ids must be present to count as a match — a viewer whose
+ * identity has not loaded yet has two empty strings, and that is unknown, not
+ * self, exactly as validateAction treats it.
+ */
+export function liftMuteBlockReason(viewerId: string, targetId: string): string | null {
+  if (viewerId && viewerId === targetId) {
+    return "You cannot moderate yourself.";
+  }
+  return null;
 }

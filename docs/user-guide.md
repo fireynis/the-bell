@@ -96,7 +96,23 @@ Vouches can be revoked by:
 - The original voucher (the person who gave the vouch)
 - A moderator or council member
 
-Revoking a vouch removes the trust graph edge and may affect the vouchee's trust score.
+Revoking a vouch removes the trust graph edge and may affect the vouchee's trust
+score.
+
+**Revoking your own vouch costs you 3 trust points for 30 days.** Withdrawing an
+endorsement is meant to cost something — otherwise vouching and revoking in a
+loop would be a free way to game the graph. The size is deliberate: 3 points
+against a 100-point scale leaves a voucher who was at the threshold still above
+it, so removing a vouch you have come to regret never costs you the ability to
+vouch at all.
+
+**A moderator or council member revoking somebody else's vouch pays nothing.**
+They are doing the job, and charging them would discourage exactly the cleanup
+the trust graph depends on. If a voucher's judgement is the actual problem, the
+remedy is a moderation action against them, which carries its own penalty.
+
+Unlike a moderation penalty, the revocation penalty does not propagate: it stops
+with the voucher and never reaches the people who vouched for *them*.
 
 ## Roles
 
@@ -156,6 +172,20 @@ Limits:
 Moderators and council members can access the moderation queue, which shows all pending reports. From there they can:
 
 **Review Reports**: Mark reports as `reviewed` or `dismissed`.
+
+**Remove a Post**: Take a single post down with a reason. The post stops
+appearing in the feed and on its author's profile, exactly as an author's own
+deletion does. The difference is what is recorded: a moderator removal stores
+both the reason and which moderator acted. Neither is ever shown to the author
+or to anyone else — they are for the audit trail.
+
+A removed post is not merely hidden from lists. Requesting it directly returns
+"not found" to everyone except its author and active moderators, and that
+response is indistinguishable from a post that never existed.
+
+Removing a post is separate from actioning its author. Taking a post down
+carries no trust penalty on its own; if the author's behaviour warrants one,
+that is a moderation action.
 
 **Take Moderation Actions** against users:
 

@@ -10,6 +10,7 @@ New users start as "pending" and must be vouched for by trusted members before t
 - **Vouch graph**: Powered by Apache AGE (graph extension for PostgreSQL), vouches form a directed graph that enables trust propagation
 - **Automatic role management**: Members are promoted to moderators based on trust score, tenure, and community endorsement; demoted if trust falls
 - **Graduated moderation**: Warn, mute, suspend, and ban actions with proportional trust penalties that propagate through the vouch network
+- **Post removal**: Moderators can take a single post down with a recorded reason, separately from actioning its author
 - **Council governance**: Founding council members bootstrap the community and vote on proposals using simple majority
 - **Bootstrap mode**: Council-driven user approval during the early growth phase (first 20 members)
 - **Image uploads**: JPEG, PNG, and WebP support with magic-byte validation (max 5 MB)

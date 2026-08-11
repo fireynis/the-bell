@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -29,7 +28,7 @@ func (r *VouchRepo) CreateVouch(ctx context.Context, vouch *domain.Vouch) error 
 		CreatedAt: pgtype.Timestamptz{Time: vouch.CreatedAt, Valid: true},
 	})
 	if isUniqueViolation(err) {
-		return service.ErrValidation
+		return domain.ErrValidation
 	}
 	return err
 }
@@ -37,7 +36,7 @@ func (r *VouchRepo) CreateVouch(ctx context.Context, vouch *domain.Vouch) error 
 func (r *VouchRepo) GetVouchByID(ctx context.Context, id string) (*domain.Vouch, error) {
 	row, err := r.q.GetVouchByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -51,7 +50,7 @@ func (r *VouchRepo) GetVouchByPair(ctx context.Context, voucherID, voucheeID str
 		VoucheeID: voucheeID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -106,7 +105,7 @@ func (r *VouchRepo) ListActiveVouchesByVoucher(ctx context.Context, voucherID st
 func (r *VouchRepo) RevokeVouch(ctx context.Context, id string) error {
 	_, err := r.q.RevokeVouch(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return service.ErrNotFound
+		return domain.ErrNotFound
 	}
 	return err
 }

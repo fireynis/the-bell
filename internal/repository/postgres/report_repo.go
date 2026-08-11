@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -38,7 +37,7 @@ func (r *ReportRepo) GetReportByReporterAndPost(ctx context.Context, reporterID,
 		PostID:     postID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -75,7 +74,7 @@ func (r *ReportRepo) UpdateReportStatus(ctx context.Context, id, status string) 
 		Status: status,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/fireynis/the-bell/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -40,7 +39,7 @@ func (r *UserRepo) CreateUser(ctx context.Context, user *domain.User) error {
 func (r *UserRepo) GetUserByID(ctx context.Context, id string) (*domain.User, error) {
 	row, err := r.q.GetUserByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -51,7 +50,7 @@ func (r *UserRepo) GetUserByID(ctx context.Context, id string) (*domain.User, er
 func (r *UserRepo) GetUserByKratosID(ctx context.Context, kratosID string) (*domain.User, error) {
 	row, err := r.q.GetUserByKratosID(ctx, kratosID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -67,7 +66,7 @@ func (r *UserRepo) UpdateUserProfile(ctx context.Context, id, displayName, bio, 
 		AvatarUrl:   avatarURL,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, service.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, err

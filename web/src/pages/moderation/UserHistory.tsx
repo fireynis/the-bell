@@ -1,13 +1,16 @@
 import { useRef } from "react";
 import { useParams } from "react-router";
+import { useAuth } from "../../context/AuthContext.tsx";
 import { useActionHistory } from "../../hooks/useActionHistory.ts";
 import { useIntersectionObserver } from "../../hooks/useIntersectionObserver.ts";
 import ActionHistoryCard from "../../components/ActionHistoryCard.tsx";
+import MuteBanner from "../../components/MuteBanner.tsx";
 import ErrorBanner from "../../components/ErrorBanner.tsx";
 import Spinner from "../../components/Spinner.tsx";
 
 export default function UserHistory() {
   const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
   const { entries, loading, hasMore, error, loadMore, retry } =
     useActionHistory(id!);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -28,6 +31,12 @@ export default function UserHistory() {
             User: {id?.slice(0, 8)}...
           </p>
         </div>
+
+        {/* Whether this user is muted right now, which the history below
+            cannot answer: a mute action stays in the trail unchanged after the
+            mute is lifted. This is also the only place a mute can be ended
+            early. */}
+        <MuteBanner userId={id!} viewerId={user?.id ?? ""} />
 
         {error && (
           <div className="mb-4">

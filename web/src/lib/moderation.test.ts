@@ -4,8 +4,10 @@ import {
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
   MAX_REMOVAL_REASON_LENGTH,
+  activeMuteExpiry,
   buildActionRequest,
   canRemovePost,
+  liftMuteBlockReason,
   needsDuration,
   reportResolutionOutcome,
   severitiesFor,
@@ -244,8 +246,9 @@ describe("buildActionRequest", () => {
     expect(req.duration_seconds).toBe(5400);
   });
 
-  // The server rejects a ban that carries a duration outright, so a value left
-  // in the form field must not reach it.
+  // The server rejects either of these carrying a duration outright — neither
+  // a warning nor a ban ends — so a value left in the form field must not reach
+  // it.
   it.each(["warn", "ban"])("omits the duration for a %s", (actionType) => {
     const req = buildActionRequest(input({ actionType, severity: 1 }), 24);
     expect(req.duration_seconds).toBeUndefined();
@@ -372,5 +375,49 @@ describe("reportResolutionOutcome", () => {
     const outcome = reportResolutionOutcome({ status: 0 } as ApiError);
     expect(outcome.resolved).toBe(false);
     expect(outcome.error).toBeTruthy();
+  });
+});
+
+describe("activeMuteExpiry", () => {
+  const now = new Date("2026-08-11T12:00:00Z");
+
+  it("reports the expiry of a mute that is still running", () => {
+    const expiry = activeMuteExpiry({ muted_until: "2026-08-12T12:00:00Z" }, now);
+    expect(expiry?.toISOString()).toBe("2026-08-12T12:00:00.000Z");
+  });
+
+  it("reports no mute when the field is absent, which is how the server says not muted", () => {
+    expect(activeMuteExpiry({}, now)).toBeNull();
+  });
+
+  it("reports no mute before the status has loaded", () => {
+    expect(activeMuteExpiry(null, now)).toBeNull();
+    expect(activeMuteExpiry(undefined, now)).toBeNull();
+  });
+
+  it("reports no mute for an expiry that has passed while the page was open", () => {
+    expect(activeMuteExpiry({ muted_until: "2026-08-11T11:59:00Z" }, now)).toBeNull();
+  });
+
+  it("reports no mute for a timestamp it cannot parse, rather than an Invalid Date", () => {
+    expect(activeMuteExpiry({ muted_until: "not a date" }, now)).toBeNull();
+  });
+});
+
+describe("liftMuteBlockReason", () => {
+  it("allows a moderator to lift someone else's mute", () => {
+    expect(liftMuteBlockReason("mod-1", "target-1")).toBeNull();
+  });
+
+  it("refuses a moderator lifting their own mute, which the server rejects outright", () => {
+    expect(liftMuteBlockReason("mod-1", "mod-1")).toBe("You cannot moderate yourself.");
+  });
+
+  it("allows the action while the viewer's identity is still unknown", () => {
+    // Two empty strings are unknown, not self — the same rule validateAction
+    // applies, so a viewer whose identity has not loaded is not told they are
+    // moderating themselves.
+    expect(liftMuteBlockReason("", "")).toBeNull();
+    expect(liftMuteBlockReason("", "target-1")).toBeNull();
   });
 });

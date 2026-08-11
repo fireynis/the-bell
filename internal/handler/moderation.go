@@ -92,6 +92,77 @@ func (h *ModerationHandler) TakeAction(w http.ResponseWriter, r *http.Request) {
 	JSON(w, status, result)
 }
 
+// muteStatusResponse is what a moderator may learn about someone else's mute:
+// when it ends, and nothing more.
+//
+// MutedUntil is omitted entirely when the user is not muted, so the field's
+// presence is the answer — the same rule ownProfileResponse uses, so a client
+// reads both shapes the same way. It is also why this is an object rather than
+// a bare timestamp.
+type muteStatusResponse struct {
+	MutedUntil string `json:"muted_until,omitempty"`
+}
+
+// MuteStatus handles GET /api/v1/moderation/users/{user_id}/mute.
+//
+// This is the only response outside a caller's own profile that carries
+// muted_until, and it lives behind the moderator guard for the reason the
+// public profile does not carry it at all: a mute is between the user and the
+// moderators, and this is the moderators' side of that. Putting it on
+// GET /users/{id} would publish it to everyone, that route not even being
+// authenticated.
+//
+// Without it a moderator's only clue would be a past mute action in the audit
+// trail, which stays exactly as written after the mute is lifted and would go
+// on reporting a mute that no longer exists.
+func (h *ModerationHandler) MuteStatus(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	until, err := h.actions.MuteStatus(r.Context(), user, chi.URLParam(r, "user_id"))
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	var resp muteStatusResponse
+	if until != nil {
+		resp.MutedUntil = until.Format(timestampFormat)
+	}
+	JSON(w, http.StatusOK, resp)
+}
+
+// LiftMute handles DELETE /api/v1/moderation/users/{user_id}/mute.
+//
+// A DELETE on the mute rather than a POST of an "unmute" action, because that
+// is what it is: the mute is a value on the user (muted_until), and this
+// removes it. Modelling it as an action would imply a moderation_actions row,
+// which LiftMute deliberately does not write — see its doc comment.
+//
+// It answers 204 with no body, including for a user who was not muted. The
+// service treats that as done rather than as an error, the same as removing a
+// reaction that was never left, and the status has to say the same thing or the
+// endpoint is lying about what it did.
+func (h *ModerationHandler) LiftMute(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	if err := h.actions.LiftMute(r.Context(), user, chi.URLParam(r, "user_id")); err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type listActionsResponse struct {
 	Actions []service.ActionHistoryEntry `json:"actions"`
 }

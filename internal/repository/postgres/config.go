@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fireynis/the-bell/internal/service"
+	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,7 +24,7 @@ func (r *ConfigRepo) SetTownConfig(ctx context.Context, key, value string) error
 func (r *ConfigRepo) GetTownConfig(ctx context.Context, key string) (string, error) {
 	val, err := r.q.GetTownConfig(ctx, key)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", service.ErrNotFound
+		return "", domain.ErrNotFound
 	}
 	return val, err
 }

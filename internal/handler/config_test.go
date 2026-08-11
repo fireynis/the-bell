@@ -64,7 +64,14 @@ type mockTransactor struct {
 	txErr  error // a failure to begin or commit, as opposed to fn failing
 }
 
-func (m *mockTransactor) InTx(_ context.Context, fn func(service.UserRepository, service.ConfigRepository) error) error {
+// Users is part of service.RepoSet but nothing in the config handler asks for
+// it. Returning nil rather than a stub keeps that explicit: an unexpected call
+// panics visibly instead of reading as an empty user repository.
+func (m *mockTransactor) Users() service.UserRepository { return nil }
+
+func (m *mockTransactor) Config() service.ConfigRepository { return m.config }
+
+func (m *mockTransactor) InTx(_ context.Context, fn func(service.RepoSet) error) error {
 	if m.txErr != nil {
 		return m.txErr
 	}
@@ -75,7 +82,7 @@ func (m *mockTransactor) InTx(_ context.Context, fn func(service.UserRepository,
 	}
 	writesBefore := len(m.config.sets)
 
-	if err := fn(nil, m.config); err != nil {
+	if err := fn(m); err != nil {
 		m.config.values = snapshot
 		m.config.sets = m.config.sets[:writesBefore]
 		return err

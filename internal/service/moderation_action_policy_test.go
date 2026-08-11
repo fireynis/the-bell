@@ -114,6 +114,11 @@ func TestValidateActionRequest_Rejects(t *testing.T) {
 			wantMsg: "bans cannot have a duration",
 		},
 		{
+			name: "warn with a duration", moderator: "mod", target: "t",
+			actionType: domain.ActionWarn, severity: 1, reason: "x", duration: secs(60),
+			wantMsg: "warnings cannot have a duration",
+		},
+		{
 			name: "mute without a duration", moderator: "mod", target: "t",
 			actionType: domain.ActionMute, severity: 3, reason: "x",
 			wantMsg: "requires a duration",
@@ -255,5 +260,62 @@ func TestPlanEnforcement_BanIsBothRoleAndTrust(t *testing.T) {
 	}
 	if !sawRole || !sawTrust {
 		t.Errorf("ban plan = %v, want both the banned role and a zeroed trust score", steps)
+	}
+}
+
+// --- Lifting a mute ---
+
+// The route group already carries a moderator guard, so these cases are the
+// ones that reach the service anyway: a caller who arrived by another route, a
+// moderator whose role changed mid-session, and — the one no route guard can
+// see — a moderator lifting the mute a colleague placed on them.
+func TestCanLiftMute(t *testing.T) {
+	tests := []struct {
+		name      string
+		moderator *domain.User
+		target    string
+		wantErr   error
+	}{
+		{"moderator lifts another user's mute", &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}, "target-1", nil},
+		{"council lifts another user's mute", &domain.User{ID: "c-1", Role: domain.RoleCouncil, IsActive: true}, "target-1", nil},
+		{"no caller at all", nil, "target-1", ErrForbidden},
+		{"member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}, "target-1", ErrForbidden},
+		{"pending", &domain.User{ID: "u-1", Role: domain.RolePending, IsActive: true}, "target-1", ErrForbidden},
+		{"banned", &domain.User{ID: "u-1", Role: domain.RoleBanned, IsActive: true}, "target-1", ErrForbidden},
+		{"moderator lifting their own mute", &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}, "mod-1", ErrValidation},
+		{"council lifting their own mute", &domain.User{ID: "c-1", Role: domain.RoleCouncil, IsActive: true}, "c-1", ErrValidation},
+		{"empty target", &domain.User{ID: "mod-1", Role: domain.RoleModerator, IsActive: true}, "", ErrValidation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := canLiftMute(tt.moderator, tt.target)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Self-moderation is refused before the role is considered, matching
+// validateActionRequest's ordering: a muted member who somehow reaches this is
+// told the specific thing that is wrong rather than being sent to acquire a
+// role that still would not let them do it.
+func TestCanLiftMute_SelfIsRefusedEvenWithoutTheRole(t *testing.T) {
+	member := &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}
+
+	err := canLiftMute(member, member.ID)
+
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("error = %v, want %v", err, ErrValidation)
+	}
+	if !strings.Contains(err.Error(), "yourself") {
+		t.Errorf("error = %q, want it to name self-moderation", err)
 	}
 }

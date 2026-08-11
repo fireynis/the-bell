@@ -22,10 +22,26 @@ type ConfigRepository interface {
 	ListTownConfig(ctx context.Context) (map[string]string, error)
 }
 
+// RepoSet is the set of transaction-scoped repositories an InTx callback works
+// through. Every repository it hands out is bound to the same transaction.
+//
+// It is an interface of accessors rather than a positional parameter list
+// because that makes adding a repository additive: a new method leaves every
+// existing caller and every test double compiling untouched. The previous
+// shape — fn(users UserRepository, config ConfigRepository) — made each caller
+// name both even when it wanted one, which the config handler advertised with a
+// blank identifier. Widening a positional tuple costs every caller and every
+// fake a parameter they ignore, and that cost compounds with each repository
+// added, so it is paid once here instead.
+type RepoSet interface {
+	Users() UserRepository
+	Config() ConfigRepository
+}
+
 // Transactor wraps a function in a database transaction, providing
 // transaction-scoped repository instances.
 type Transactor interface {
-	InTx(ctx context.Context, fn func(users UserRepository, config ConfigRepository) error) error
+	InTx(ctx context.Context, fn func(repos RepoSet) error) error
 }
 
 // newCouncilUser builds the local user record for one council member created by
@@ -111,7 +127,9 @@ func (s *BootstrapService) Setup(ctx context.Context, emails []string, townName 
 	}
 
 	// Phase 2: Create local users + set config atomically in a transaction.
-	err = s.tx.InTx(ctx, func(users UserRepository, config ConfigRepository) error {
+	err = s.tx.InTx(ctx, func(repos RepoSet) error {
+		users, config := repos.Users(), repos.Config()
+
 		for _, ident := range identities {
 			id, err := uuid.NewV7()
 			if err != nil {
