@@ -4,9 +4,12 @@ import {
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
   MAX_REMOVAL_REASON_LENGTH,
+  actionConsequence,
   activeMuteExpiry,
   buildActionRequest,
   canRemovePost,
+  severityChoiceLabel,
+  severityConsequence,
   liftMuteBlockReason,
   needsDuration,
   ownMuteNotice,
@@ -62,6 +65,166 @@ describe("severitiesFor", () => {
     for (const actionType of ACTION_TYPES) {
       expect(severitiesFor(actionType).length).toBeGreaterThan(0);
     }
+  });
+});
+
+// These numbers are the ones internal/domain/moderation.go applies. A dialog
+// that quotes them wrongly is worse than one that says nothing, so they are
+// pinned against the Go source rather than against each other.
+describe("severityConsequence", () => {
+  it.each([
+    [1, 5, 90, 1, 0.5],
+    [2, 10, 180, 1, 0.7],
+    [3, 25, 270, 2, 0.6],
+    [4, 40, 365, 2, 0.7],
+  ])(
+    "mirrors severity %i: %i points, %i days, %i hops, %f per hop",
+    (severity, penalty, decayDays, depth, hopSurvival) => {
+      expect(severityConsequence(severity)).toEqual({ penalty, decayDays, depth, hopSurvival });
+    },
+  );
+
+  // PenaltyDecayDays returns 0 for a ban and relies on its second return value
+  // to say that means permanent. Null carries that here, because 0 days would
+  // read as "gone immediately" — the opposite of what it means.
+  it("records a ban's penalty as never decaying", () => {
+    expect(severityConsequence(5)).toEqual({
+      penalty: 100,
+      decayDays: null,
+      depth: 3,
+      hopSurvival: 0.75,
+    });
+  });
+
+  it.each([0, 6, -1, 1.5, Number.NaN])(
+    "refuses the unrecognized severity %o rather than answering with zeros",
+    (severity) => {
+      expect(severityConsequence(severity)).toBeNull();
+    },
+  );
+
+  it("covers every severity the dialog can offer", () => {
+    for (const actionType of ACTION_TYPES) {
+      for (const severity of severitiesFor(actionType)) {
+        expect(severityConsequence(severity)).not.toBeNull();
+      }
+    }
+  });
+});
+
+describe("actionConsequence", () => {
+  it("describes every action the dialog offers", () => {
+    for (const actionType of ACTION_TYPES) {
+      for (const severity of severitiesFor(actionType)) {
+        const c = actionConsequence(actionType, severity);
+        expect(c).not.toBeNull();
+        expect(c?.effect.length).toBeGreaterThan(0);
+        expect(c?.penalty).toContain("trust points");
+        expect(c?.propagation).toContain("vouched");
+      }
+    }
+  });
+
+  // The pairing rules are the server's, so a combination it would reject gets
+  // no description at all — describing an outcome that cannot happen is the
+  // one thing worse than describing none.
+  it.each([
+    ["warn", 5],
+    ["ban", 1],
+    ["mute", 4],
+    ["shadowban", 3],
+    ["", 1],
+  ])("says nothing about %s at severity %i, which the server refuses", (actionType, severity) => {
+    expect(actionConsequence(actionType, severity)).toBeNull();
+  });
+
+  it("names a warning by its severity, since that is the choice being made", () => {
+    expect(actionConsequence("warn", 1)?.noun).toBe("a minor warning");
+    expect(actionConsequence("warn", 2)?.noun).toBe("a moderate warning");
+  });
+
+  it.each([
+    ["mute", 3, "a mute"],
+    ["suspend", 4, "a suspension"],
+    ["ban", 5, "a ban"],
+  ])("names %s plainly, since its severity is not a choice", (actionType, severity, noun) => {
+    expect(actionConsequence(actionType, severity)?.noun).toBe(noun);
+  });
+
+  it("says a warning blocks nothing", () => {
+    expect(actionConsequence("warn", 1)?.effect).toContain("Nothing is blocked");
+  });
+
+  // A mute is checked by domain.User.CanPost alone; a suspension is folded into
+  // is_active and so meets RequireActive on every guarded route. Telling a
+  // moderator the two are the same would have them reach for the wrong one.
+  it("distinguishes what a mute blocks from what a suspension blocks", () => {
+    expect(actionConsequence("mute", 3)?.effect).toContain("vouching are unaffected");
+    expect(actionConsequence("suspend", 4)?.effect).toContain("vouch");
+    expect(actionConsequence("suspend", 4)?.effect).toContain("until the suspension expires");
+  });
+
+  it("says a ban zeroes their trust and does not expire", () => {
+    const effect = actionConsequence("ban", 5)?.effect ?? "";
+    expect(effect).toContain("zero");
+    expect(effect).toContain("does not expire");
+  });
+
+  it("gives the decay window for a penalty that fades", () => {
+    expect(actionConsequence("mute", 3)?.penalty).toContain("270 days");
+  });
+
+  it("says outright that a ban's penalty never decays", () => {
+    expect(actionConsequence("ban", 5)?.penalty).toContain("never decay");
+  });
+
+  // The whole reason this data exists: nothing in the dialog said that acting
+  // on somebody also costs the people who vouched for them.
+  it("tells a moderator how far a ban reaches through the vouch graph", () => {
+    const propagation = actionConsequence("ban", 5)?.propagation ?? "";
+    expect(propagation).toContain("everyone who vouched for them");
+    expect(propagation).toContain("3 steps out");
+  });
+
+  it("says where a one-hop penalty stops rather than implying it keeps going", () => {
+    const propagation = actionConsequence("warn", 1)?.propagation ?? "";
+    expect(propagation).toContain("one step out");
+    expect(propagation).toContain("no further");
+  });
+
+  // penalty * decayRate^depth, per planPropagatedPenalties. The first hop is
+  // the number a moderator can check against a real voucher's score.
+  it.each([
+    ["warn", 1, "2.5"],
+    ["warn", 2, "7"],
+    ["mute", 3, "15"],
+    ["suspend", 4, "28"],
+    ["ban", 5, "75"],
+  ])("quotes the first-hop cost of %s at severity %i as %s", (actionType, severity, points) => {
+    expect(actionConsequence(actionType, severity)?.propagation).toContain(`${points} points`);
+  });
+
+  // 40 * 0.7 is 28.000000000000004 in binary floating point, and a dialog that
+  // says so reads as broken.
+  it("never shows a floating-point tail", () => {
+    for (const actionType of ACTION_TYPES) {
+      for (const severity of severitiesFor(actionType)) {
+        const c = actionConsequence(actionType, severity);
+        expect(`${c?.penalty} ${c?.propagation}`).not.toMatch(/\d\.\d{2,}/);
+      }
+    }
+  });
+});
+
+describe("severityChoiceLabel", () => {
+  // "Level 1" and "Level 2" gave a moderator nothing to choose between.
+  it("names the severity and what it costs", () => {
+    expect(severityChoiceLabel(1)).toBe("Minor — 5 trust points");
+    expect(severityChoiceLabel(2)).toBe("Moderate — 10 trust points");
+  });
+
+  it("falls back to the bare level for a severity it does not know", () => {
+    expect(severityChoiceLabel(9)).toBe("Level 9");
   });
 });
 

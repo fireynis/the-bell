@@ -26,6 +26,170 @@ const ALLOWED_SEVERITY: Record<ActionType, readonly number[]> = {
  */
 const NEEDS_DURATION: readonly ActionType[] = ["mute", "suspend"];
 
+/**
+ * Everything a severity decides, mirroring the four functions over severity in
+ * internal/domain/moderation.go: DirectPenalty, PenaltyDecayDays,
+ * PropagationDepth and PropagationDecay.
+ *
+ * They are one record here rather than four lookups because the dialog needs
+ * all four to describe a single action, and because a severity the server does
+ * not recognize should fail once — the Go side went to some trouble to stop an
+ * unknown severity being answered with a zero from each map in turn.
+ */
+export interface SeverityConsequence {
+  /** Trust points the person acted on loses. Mirrors DirectPenalty. */
+  penalty: number;
+  /**
+   * Days until the penalty has decayed away, or null when it never does.
+   * Mirrors PenaltyDecayDays, where a recognized 0 means permanent.
+   */
+  decayDays: number | null;
+  /** How many hops out through the vouch graph it reaches. Mirrors PropagationDepth. */
+  depth: number;
+  /** The fraction of the penalty surviving each hop. Mirrors PropagationDecay. */
+  hopSurvival: number;
+}
+
+const SEVERITY_CONSEQUENCES: Record<number, SeverityConsequence> = {
+  1: { penalty: 5, decayDays: 90, depth: 1, hopSurvival: 0.5 },
+  2: { penalty: 10, decayDays: 180, depth: 1, hopSurvival: 0.7 },
+  3: { penalty: 25, decayDays: 270, depth: 2, hopSurvival: 0.6 },
+  4: { penalty: 40, decayDays: 365, depth: 2, hopSurvival: 0.7 },
+  5: { penalty: 100, decayDays: null, depth: 3, hopSurvival: 0.75 },
+};
+
+/** The word the Go comments use for each severity, 1 through 5. */
+const SEVERITY_NAMES: Record<number, string> = {
+  1: "Minor",
+  2: "Moderate",
+  3: "Serious",
+  4: "Severe",
+  5: "Ban-level",
+};
+
+/**
+ * What each action type does to the person it lands on, beyond the trust
+ * penalty every action carries.
+ *
+ * Drawn from planEnforcement in internal/service/moderation_action.go and from
+ * what the enforced state actually blocks: a mute is checked by
+ * domain.User.CanPost alone, while a suspension is folded into is_active and so
+ * meets middleware.RequireActive on every guarded route.
+ */
+const ACTION_EFFECTS: Record<ActionType, string> = {
+  warn: "Nothing is blocked. The warning goes on their moderation record, with the reason you write below.",
+  mute: "They cannot post until the mute expires. Reading the feed, reacting and vouching are unaffected.",
+  suspend:
+    "They cannot post, react, vouch or report until the suspension expires. Reading the feed still works.",
+  ban: "Their role becomes banned and their trust score is set to zero. They cannot post or vouch again, and a ban does not expire on its own.",
+};
+
+/**
+ * severityConsequence looks up what a severity costs, or null when the severity
+ * is not one the server recognizes.
+ *
+ * Null rather than a zeroed record, for the reason the Go side returns an `ok`
+ * alongside each of these: a penalty of no points, reaching nobody, decaying
+ * never, is a plausible-looking answer that is wrong in every direction.
+ */
+export function severityConsequence(severity: number): SeverityConsequence | null {
+  const c = SEVERITY_CONSEQUENCES[severity];
+  // A copy, on the same principle as severitiesFor: a caller cannot edit the
+  // policy by holding onto what it was told.
+  return c ? { ...c } : null;
+}
+
+/**
+ * Points as a moderator should read them: 28, not 28.000000000000004, which is
+ * what 40 * 0.7 is in binary floating point.
+ */
+function formatPoints(points: number): string {
+  const rounded = Math.round(points * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/**
+ * How to name an action inside a sentence. A warning is named by its severity
+ * because that is the one action where the moderator picks it; the other three
+ * carry exactly one severity each, so naming it would only repeat the action.
+ */
+function actionNoun(actionType: ActionType, severity: number): string {
+  switch (actionType) {
+    case "warn": {
+      const name = SEVERITY_NAMES[severity];
+      return name ? `a ${name.toLowerCase()} warning` : "a warning";
+    }
+    case "mute":
+      return "a mute";
+    case "suspend":
+      return "a suspension";
+    case "ban":
+      return "a ban";
+  }
+}
+
+/** What taking an action will do, in the words shown to the moderator. */
+export interface ActionConsequence {
+  /** The action named for a sentence, e.g. "a minor warning" or "a ban". */
+  noun: string;
+  /** What the action does to the person it lands on. */
+  effect: string;
+  /** The trust penalty they take, and how long it lingers. */
+  penalty: string;
+  /** How far that penalty travels through the people who vouched for them. */
+  propagation: string;
+}
+
+/**
+ * actionConsequence describes what an action will do, so a volunteer councilor
+ * is not choosing between "Level 1" and "Level 5" with nothing to tell them
+ * apart.
+ *
+ * The propagation sentence is the reason this exists. Acting on somebody also
+ * takes trust from everyone who vouched for them, out to three hops for a ban —
+ * that is the whole point of a vouch graph, and it appeared nowhere in the
+ * interface that applies it.
+ *
+ * An action type and severity the server would reject yield null rather than a
+ * description, so the dialog stays silent instead of promising an outcome that
+ * cannot happen. The pairing is checked against severitiesFor, which mirrors
+ * allowedSeverity in internal/service/moderation_action.go.
+ */
+export function actionConsequence(actionType: string, severity: number): ActionConsequence | null {
+  if (!severitiesFor(actionType).includes(severity)) return null;
+
+  const c = severityConsequence(severity);
+  if (!c) return null;
+
+  const perHop = `${Math.round(c.hopSurvival * 100)}%`;
+  const firstHop = formatPoints(c.penalty * c.hopSurvival);
+
+  return {
+    noun: actionNoun(actionType as ActionType, severity),
+    effect: ACTION_EFFECTS[actionType as ActionType],
+    penalty:
+      c.decayDays === null
+        ? `It costs them ${formatPoints(c.penalty)} trust points, which never decay.`
+        : `It costs them ${formatPoints(c.penalty)} trust points, which decay away over ${c.decayDays} days.`,
+    propagation:
+      c.depth === 1
+        ? `This also lowers the standing of everyone who vouched for them, one step out: each of them loses ${firstHop} points. It travels no further.`
+        : `This also lowers the standing of everyone who vouched for them, up to ${c.depth} steps out through the vouch graph. Anyone who vouched for them directly loses ${firstHop} points, and each step further out carries ${perHop} of the step before it.`,
+  };
+}
+
+/**
+ * severityChoiceLabel names a severity in a picker, e.g. "Minor — 5 trust
+ * points". "Level 1" through "Level 5" told a moderator nothing about which one
+ * to choose, and the number is the input to the penalty rather than a rank
+ * anybody could interpret.
+ */
+export function severityChoiceLabel(severity: number): string {
+  const c = severityConsequence(severity);
+  const name = SEVERITY_NAMES[severity] ?? `Level ${severity}`;
+  return c ? `${name} — ${formatPoints(c.penalty)} trust points` : name;
+}
+
 /** Mirrors maxActionReasonLen in internal/service/moderation_action.go. */
 export const MAX_ACTION_REASON_LENGTH = 1000;
 

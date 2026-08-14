@@ -5,9 +5,11 @@ import {
   NAV_ITEMS,
   SIDEBAR_NAV_ITEMS,
   isActive,
+  navItemLocked,
   visibleNavItems,
   type NavItem,
 } from "./nav";
+import { POSTING_THRESHOLD } from "./trust";
 
 function user(overrides: Partial<User> = {}): User {
   return {
@@ -134,6 +136,46 @@ describe("visibleNavItems", () => {
     const before = SIDEBAR_NAV_ITEMS.length;
     visibleNavItems(SIDEBAR_NAV_ITEMS, user());
     expect(SIDEBAR_NAV_ITEMS).toHaveLength(before);
+  });
+});
+
+// Locked is not hidden, and the difference is the whole point: a pending member
+// used to see an unmarked "Post" item and find out about the rule only after
+// writing something they could not send.
+describe("navItemLocked", () => {
+  it("locks the composer for a pending member", () => {
+    expect(navItemLocked(NAV_ITEMS.compose, user({ role: "pending" }))).toBe(true);
+  });
+
+  it("locks the composer for a member below the posting threshold", () => {
+    expect(
+      navItemLocked(NAV_ITEMS.compose, user({ trust_score: POSTING_THRESHOLD - 1 })),
+    ).toBe(true);
+  });
+
+  it("leaves the composer open to a member who can post", () => {
+    expect(navItemLocked(NAV_ITEMS.compose, user({ trust_score: POSTING_THRESHOLD }))).toBe(
+      false,
+    );
+  });
+
+  it("locks the composer when nobody is signed in", () => {
+    expect(navItemLocked(NAV_ITEMS.compose, null)).toBe(true);
+  });
+
+  // A locked item is still shown; only minRole removes anything.
+  it("keeps the composer in the bottom bar for a pending member", () => {
+    const items = visibleNavItems(BOTTOM_NAV_ITEMS, user({ role: "pending" }));
+    expect(labels(items)).toContain("Post");
+  });
+
+  it.each([
+    ["feed", NAV_ITEMS.feed],
+    ["profile", NAV_ITEMS.profile],
+    ["settings", NAV_ITEMS.settings],
+    ["moderation", NAV_ITEMS.moderation],
+  ])("never locks %s, which needs nothing of the trust graph", (_name, item) => {
+    expect(navItemLocked(item, user({ role: "pending" }))).toBe(false);
   });
 });
 

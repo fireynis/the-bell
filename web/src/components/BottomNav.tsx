@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
-import { BOTTOM_NAV_ITEMS, isActive, visibleNavItems } from "../lib/nav";
+import { BOTTOM_NAV_ITEMS, isActive, navItemLocked, visibleNavItems } from "../lib/nav";
+import LockGlyph from "./LockGlyph";
 
 export default function BottomNav() {
   const { user } = useAuth();
@@ -19,10 +20,14 @@ export default function BottomNav() {
     >
       {items.map((item) => {
         const active = isActive(item.path, location.pathname, item.exact);
+        // Marked, not removed: the destination explains itself, and a member
+        // who cannot post yet should still be able to find out why.
+        const locked = navItemLocked(item, user);
         return (
           <Link
             key={item.path}
             to={item.path}
+            aria-label={locked ? `${item.label} — you cannot post yet` : undefined}
             className="flex flex-col items-center gap-1 px-3 py-2 text-[10px] font-medium"
             style={{
               color: active ? "var(--color-primary)" : "var(--color-text-tertiary)",
@@ -40,7 +45,14 @@ export default function BottomNav() {
             >
               <path d={item.icon} />
             </svg>
-            {item.label}
+            {locked ? (
+              <span className="flex items-center gap-0.5">
+                <LockGlyph size={10} />
+                {item.label}
+              </span>
+            ) : (
+              item.label
+            )}
           </Link>
         );
       })}

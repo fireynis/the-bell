@@ -1,4 +1,5 @@
 import type { User } from "../api/types";
+import { postingBlockReason, type Actor } from "./gating";
 import { hasMinRole, type Role } from "./trust";
 
 export interface NavItem {
@@ -10,6 +11,11 @@ export interface NavItem {
   exact?: boolean;
   /** Lowest role the item is shown to; omitted means everyone sees it. */
   minRole?: Role;
+  /**
+   * The capability the destination needs. Unlike minRole this does not hide the
+   * item — see navItemLocked for why it is marked instead.
+   */
+  gate?: "post";
 }
 
 /**
@@ -29,6 +35,7 @@ export const NAV_ITEMS = {
     label: "Post",
     path: "/compose",
     icon: "M12 4v16m8-8H4",
+    gate: "post",
   },
   profile: {
     label: "Profile",
@@ -96,4 +103,23 @@ export function visibleNavItems(
   user: Pick<User, "role" | "is_active"> | null,
 ): NavItem[] {
   return items.filter((item) => !item.minRole || hasMinRole(user, item.minRole));
+}
+
+/**
+ * navItemLocked reports whether a user can see an item but cannot yet use what
+ * it leads to.
+ *
+ * Locked is deliberately not hidden, which is the opposite of what minRole
+ * does. A gated destination is how somebody learns the feature exists and what
+ * it will take to reach it — hiding the composer from a pending member leaves
+ * them not knowing the town has a bell. But an unmarked link is how they found
+ * out only after writing a post they could not send, so the marking is the
+ * whole point: the answer arrives before the effort, not after it.
+ *
+ * The reason itself is not returned here. It belongs to the page, which has the
+ * room to explain it; a nav item only has room to say "not yet".
+ */
+export function navItemLocked(item: NavItem, user: Actor): boolean {
+  if (item.gate !== "post") return false;
+  return postingBlockReason(user) !== null;
 }

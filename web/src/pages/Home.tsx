@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import PostCard from "../components/PostCard.tsx";
 import MuteToggle from "../components/MuteToggle.tsx";
+import PendingNotice from "../components/PendingNotice.tsx";
+import LockGlyph from "../components/LockGlyph.tsx";
 import { NewPostsBanner } from "../components/NewPostsBanner.tsx";
 import { Toast } from "../components/Toast.tsx";
 import ErrorBanner from "../components/ErrorBanner.tsx";
@@ -14,10 +16,14 @@ import { describeReactions, mergePendingPosts } from "../lib/liveFeed.ts";
 import { mergeLivePosts } from "../lib/feed.ts";
 import { useIntersectionObserver } from "../hooks/useIntersectionObserver.ts";
 import { useSound } from "../hooks/useSound.ts";
+import { useAuth } from "../context/AuthContext.tsx";
+import { awaitingWelcome } from "../lib/gating.ts";
+import { NAV_ITEMS, navItemLocked } from "../lib/nav.ts";
 import type { Post } from "../api/types.ts";
 
 export default function Home() {
   const { posts, loading, hasMore, error, loadMore, retry, updatePost, dropPost } = useFeed();
+  const { user } = useAuth();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [newPosts, setNewPosts] = useState<Post[]>([]);
   const [muted, setMuted] = useState(() => localStorage.getItem("bell-sound-muted") === "true");
@@ -100,8 +106,19 @@ export default function Home() {
     }
   }, [arrivals, playBell]);
 
+  // The composer stays reachable either way; this only decides whether the
+  // shortcut to it promises something the member cannot do yet.
+  const composeLocked = navItemLocked(NAV_ITEMS.compose, user);
+
   return (
     <div className="py-5">
+      {/*
+        First thing on the page for someone the town has not rung in yet. It
+        sits above the feed header rather than below the composer shortcut so
+        that the explanation arrives before the thing it explains.
+      */}
+      {awaitingWelcome(user) && <PendingNotice className="mb-5" />}
+
       {/*
         The feed header at lg and up. It exists for the mute toggle: the compose
         shortcut below is redundant on desktop because the sidebar carries one,
@@ -119,6 +136,13 @@ export default function Home() {
       </div>
 
       <div className="mb-5 flex items-center gap-3 lg:hidden">
+        {/*
+          Still a link when the member cannot post: the composer is where the
+          reason is spelled out in full, so the shortcut leads to an answer
+          rather than to a dead end. What changes is the promise it makes —
+          inviting someone to say what's happening in town and then refusing
+          them is the surprise this replaces.
+        */}
         <Link
           to="/compose"
           className="flex flex-1 items-center gap-3 p-4"
@@ -130,7 +154,14 @@ export default function Home() {
           }}
         >
           <div className="h-8 w-8 rounded-full" style={{ backgroundColor: "var(--color-primary-light)" }} />
-          <span className="text-sm">What's happening in town?</span>
+          {composeLocked ? (
+            <span className="flex items-center gap-2 text-sm">
+              <LockGlyph />
+              You cannot ring the bell yet — see why
+            </span>
+          ) : (
+            <span className="text-sm">What's happening in town?</span>
+          )}
         </Link>
         <MuteToggle muted={muted} arrivals={arrivals} onToggle={toggleMute} />
       </div>

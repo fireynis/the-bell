@@ -14,11 +14,12 @@ import {
   validateImageFile,
   validatePostBody,
 } from "../lib/post.ts";
-import { postingBlockReason } from "../lib/gating.ts";
+import { awaitingWelcome, postingBlockReason } from "../lib/gating.ts";
+import PendingNotice from "../components/PendingNotice.tsx";
 
 export default function Compose() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, profileError } = useAuth();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +29,11 @@ export default function Compose() {
 
   // Null when the user may post. The server is still the authority; this only
   // stops someone writing a whole post and submitting it into a certain 403.
-  const postBlock = postingBlockReason(user);
+  //
+  // profileError is passed so that a member whose profile failed to load is not
+  // told to sign in — they already are, and the sign-in they would go and do
+  // lands them back here with the same message.
+  const postBlock = postingBlockReason(user, { profileUnavailable: profileError });
 
   const bodyCheck = validatePostBody(body);
   const canSubmit = bodyCheck.valid && !submitting && postBlock === null;
@@ -124,19 +129,27 @@ export default function Compose() {
         the platform's core mechanic, so a member who cannot post yet should see
         what the box is and what it will take to use it — hiding it would leave
         them with no idea the feature exists, let alone how to unlock it.
+
+        A newcomer gets the long version, the same one the feed greeted them
+        with. Arriving here from a shortcut marked "you cannot ring the bell
+        yet" and finding one terse line would be the dead end again, just
+        signposted; the welcome is what makes the two halves one journey.
       */}
-      {postBlock && (
-        <div
-          className="mb-4 rounded-[var(--radius-md)] p-3 text-sm"
-          style={{
-            backgroundColor: "var(--color-warning-light, var(--color-surface-tertiary))",
-            color: "var(--color-text-secondary)",
-          }}
-          role="status"
-        >
-          {postBlock}
-        </div>
-      )}
+      {postBlock &&
+        (awaitingWelcome(user) ? (
+          <PendingNotice className="mb-4" />
+        ) : (
+          <div
+            className="mb-4 rounded-[var(--radius-md)] p-3 text-sm"
+            style={{
+              backgroundColor: "var(--color-warning-light, var(--color-surface-tertiary))",
+              color: "var(--color-text-secondary)",
+            }}
+            role="status"
+          >
+            {postBlock}
+          </div>
+        ))}
 
       <form onSubmit={handleSubmit}>
         <div

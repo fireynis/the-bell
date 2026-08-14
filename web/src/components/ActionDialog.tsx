@@ -2,13 +2,16 @@ import { useState, useEffect } from "react";
 import { moderationApi } from "../api/client.ts";
 import type { ApiError } from "../api/types.ts";
 import ErrorBanner from "./ErrorBanner.tsx";
+import { useModalDialog } from "../hooks/useModalDialog.ts";
 import {
   ACTION_TYPES,
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
+  actionConsequence,
   buildActionRequest,
   needsDuration as actionNeedsDuration,
   severitiesFor,
+  severityChoiceLabel,
   validateAction,
 } from "../lib/moderation.ts";
 
@@ -62,7 +65,21 @@ export default function ActionDialog({
     }
   }, [actionType]);
 
+  // Escape is ignored while the action is in flight: the request has gone, and
+  // closing would only hide what it answered. Matches ConfirmDialog.
+  const panelRef = useModalDialog<HTMLDivElement>(() => {
+    if (!submitting) onClose();
+  });
+
   const needsDuration = actionNeedsDuration(actionType);
+  const choices = severitiesFor(actionType);
+  // Severity is decided by the action type everywhere except a warning, which
+  // may be minor or moderate. Offering a one-option dropdown for the other
+  // three asked the moderator to make a choice that had already been made, and
+  // said nothing about what the number meant either way — the consequences
+  // below are that answer, and they are what changes when this does.
+  const severityIsAChoice = choices.length > 1;
+  const consequence = actionConsequence(actionType, severity);
   // An empty box is NaN rather than 0, so validateAction reports it as a
   // missing duration instead of an out-of-range one.
   const durationHours = durationText.trim() === "" ? Number.NaN : Number(durationText);
@@ -99,9 +116,15 @@ export default function ActionDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Take moderation action"
+    >
       <div
-        className="w-full max-w-md p-6"
+        ref={panelRef}
+        className="max-h-full w-full max-w-md overflow-y-auto p-6"
         style={{
           backgroundColor: "var(--color-surface)",
           boxShadow: "var(--shadow-lg)",
@@ -142,15 +165,15 @@ export default function ActionDialog({
             </select>
           </div>
 
-          {/* Severity */}
-          {actionType && (
+          {/* Severity — a warning only; see severityIsAChoice above. */}
+          {severityIsAChoice && (
             <div>
               <label
                 htmlFor="severity"
                 className="mb-1 block text-sm font-medium"
                 style={{ color: "var(--color-text-secondary)" }}
               >
-                Severity
+                How serious?
               </label>
               <select
                 id="severity"
@@ -160,9 +183,9 @@ export default function ActionDialog({
                 onFocus={() => setFocusedField("severity")}
                 onBlur={() => setFocusedField(null)}
               >
-                {severitiesFor(actionType).map((s) => (
+                {choices.map((s) => (
                   <option key={s} value={s}>
-                    Level {s}
+                    {severityChoiceLabel(s)}
                   </option>
                 ))}
               </select>
@@ -190,6 +213,39 @@ export default function ActionDialog({
                 onFocus={() => setFocusedField("duration")}
                 onBlur={() => setFocusedField(null)}
               />
+            </div>
+          )}
+
+          {/*
+            What the action will actually do, stated before the moderator
+            commits to it. The propagation line is the half nothing in this
+            interface used to admit: a moderation action takes trust from the
+            people who vouched for the target as well as from the target, and
+            somebody deciding between a warning and a ban is entitled to know
+            how many neighbours each one reaches.
+
+            aria-live so the description follows the choice for a screen reader
+            rather than sitting silently below it.
+          */}
+          {consequence && (
+            <div
+              className="rounded-[var(--radius-md)] p-3 text-sm leading-relaxed"
+              style={{
+                backgroundColor: "var(--color-surface-secondary)",
+                color: "var(--color-text-secondary)",
+              }}
+              role="status"
+              aria-live="polite"
+              data-testid="action-consequence"
+            >
+              <p className="font-semibold" style={{ color: "var(--color-text)" }}>
+                What {consequence.noun} does
+              </p>
+              <p className="mt-1">{consequence.effect}</p>
+              <p className="mt-1">{consequence.penalty}</p>
+              <p className="mt-2" style={{ color: "var(--color-text)" }}>
+                {consequence.propagation}
+              </p>
             </div>
           )}
 

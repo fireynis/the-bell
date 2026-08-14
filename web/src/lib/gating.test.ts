@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { User } from "../api/types";
 import { canPost, canVouch } from "./trust";
 import {
+  PENDING_PATH_TO_MEMBER,
+  PENDING_WELCOME,
   POSTING_THRESHOLD,
   VOUCHING_THRESHOLD,
+  awaitingWelcome,
   postingBlockReason,
   vouchingBlockReason,
 } from "./gating";
@@ -63,6 +66,21 @@ describe("postingBlockReason", () => {
     expect(reason).toContain("approval");
   });
 
+  // Both routes out of pending are real: any member's vouch promotes on the
+  // spot, and the council can approve directly while the town is in bootstrap.
+  // Naming only the council sends someone to wait on a body that may never look
+  // at them.
+  it("names both ways out of pending", () => {
+    const reason = postingBlockReason(actor({ role: "pending" }));
+    expect(reason).toContain("vouching");
+    expect(reason).toContain("council approval");
+  });
+
+  it("tells a pending user the same story the welcome banner tells", () => {
+    expect(postingBlockReason(actor({ role: "pending" }))).toContain(PENDING_PATH_TO_MEMBER);
+    expect(PENDING_WELCOME.next).toContain(PENDING_PATH_TO_MEMBER);
+  });
+
   // 29.7 is below a threshold of 30, so rounding it for display would print
   // "You need 30. Yours is 30" and read as a broken gate.
   it("floors a fractional score so it never appears to meet the threshold", () => {
@@ -73,6 +91,82 @@ describe("postingBlockReason", () => {
 
   it("treats a malformed score as zero rather than throwing", () => {
     expect(postingBlockReason(actor({ trust_score: Number.NaN }))).toContain("Yours is 0");
+  });
+});
+
+// AuthContext used to answer a failed profile fetch with `user = null`, which
+// is the same thing it says about a visitor with no session at all — so a
+// signed-in member was told to sign in, and signing in returned them to the
+// same message.
+describe("a profile that could not be loaded", () => {
+  it("does not tell a signed-in member to sign in", () => {
+    const reason = postingBlockReason(null, { profileUnavailable: true });
+    expect(reason).not.toContain("signed in");
+  });
+
+  it("says what actually happened and what to do about it", () => {
+    const reason = postingBlockReason(null, { profileUnavailable: true });
+    expect(reason).toContain("could not load your account");
+    expect(reason).toContain("Refresh");
+  });
+
+  it("still asks a genuine visitor to sign in", () => {
+    expect(postingBlockReason(null, { profileUnavailable: false })).toContain("signed in");
+    expect(postingBlockReason(null, {})).toContain("signed in");
+  });
+
+  it("names the action it is talking about, like every other reason", () => {
+    expect(vouchingBlockReason(null, { profileUnavailable: true })).toContain("vouch for someone");
+  });
+
+  // The flag describes why there is no actor, so it has nothing to say about
+  // one we do have — a loaded member is judged on their own record either way.
+  it("changes nothing for a member whose profile did load", () => {
+    const member = actor({ trust_score: 0 });
+    expect(postingBlockReason(member, { profileUnavailable: true })).toBe(
+      postingBlockReason(member),
+    );
+  });
+});
+
+describe("awaitingWelcome", () => {
+  it("greets a pending member", () => {
+    expect(awaitingWelcome(actor({ role: "pending" }))).toBe(true);
+  });
+
+  it.each(["member", "moderator", "council", "banned"])("does not greet a %s", (role) => {
+    expect(awaitingWelcome(actor({ role }))).toBe(false);
+  });
+
+  // The suspension is the more specific thing to say, and a warm "someone will
+  // vouch for you soon" over the top of it would be false comfort.
+  it("does not greet a suspended pending account", () => {
+    expect(awaitingWelcome(actor({ role: "pending", is_active: false }))).toBe(false);
+  });
+
+  it("greets nobody when nobody is signed in", () => {
+    expect(awaitingWelcome(null)).toBe(false);
+  });
+});
+
+describe("the pending welcome", () => {
+  it("says what pending means, what ends it, and what to do meanwhile", () => {
+    expect(PENDING_WELCOME.meaning).toContain("vouched");
+    expect(PENDING_WELCOME.next).toContain(PENDING_PATH_TO_MEMBER);
+    expect(PENDING_WELCOME.meanwhile).toContain("profile");
+  });
+
+  // Completing a profile is the one thing a pending member can act on, so the
+  // banner has to offer somewhere to do it.
+  it("offers a way to complete the profile", () => {
+    expect(PENDING_WELCOME.profileCta.length).toBeGreaterThan(0);
+  });
+
+  it("never calls the member rejected or refused", () => {
+    const all = Object.values(PENDING_WELCOME).join(" ").toLowerCase();
+    for (const word of ["rejected", "denied", "refused", "not allowed"]) {
+      expect(all).not.toContain(word);
+    }
   });
 });
 
