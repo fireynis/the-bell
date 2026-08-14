@@ -29,6 +29,14 @@ type RoleCheckerRepository interface {
 // ListActiveNonBannedUsers is a SELECT *, so the projection narrowed nothing
 // that had not already been fetched.
 
+// TrustScoreWriter persists a recalculated trust score.
+//
+// It is the same one method cache.TrustWorker writes through, declared again
+// here so the role checker depends on the write rather than on the worker.
+type TrustScoreWriter interface {
+	UpdateUserTrustScore(ctx context.Context, id string, score float64) error
+}
+
 // RoleChange records a single promotion or demotion.
 type RoleChange struct {
 	UserID      string
@@ -52,6 +60,11 @@ type RoleChecker struct {
 	repo   RoleCheckerRepository
 	logger *slog.Logger
 	now    func() time.Time
+
+	// inputs and scores are the trust refresher; see SetTrustRefresher. Both
+	// are nil until it is called.
+	inputs TrustInputs
+	scores TrustScoreWriter
 }
 
 // NewRoleChecker creates a new RoleChecker service.
@@ -66,6 +79,17 @@ func NewRoleChecker(repo RoleCheckerRepository, logger *slog.Logger, clock func(
 	}
 }
 
+// SetTrustRefresher gives the checker what it needs to recompute a user's
+// trust score before judging them by it.
+//
+// It is optional in the type but not in practice: internal/app always supplies
+// it. Without it the checker falls back to the stored score, which is what made
+// a town's first check-roles run destructive — see refreshTrust.
+func (rc *RoleChecker) SetTrustRefresher(inputs TrustInputs, scores TrustScoreWriter) {
+	rc.inputs = inputs
+	rc.scores = scores
+}
+
 // Run iterates all active non-banned users and evaluates promotion/demotion criteria.
 func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 	now := rc.now()
@@ -75,11 +99,25 @@ func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 		return nil, fmt.Errorf("listing active users: %w", err)
 	}
 
+	if rc.inputs == nil {
+		rc.logger.Warn("role checker has no trust refresher: roles will be decided by stored scores, " +
+			"which may never have been recalculated")
+	}
+
 	result := &RoleCheckResult{
 		UsersChecked: len(users),
 	}
 
 	for _, u := range users {
+		// Ahead of the council skip on purpose. Council never changes role
+		// here, but on a deployment without Redis this run is the only thing
+		// that ever recalculates anybody, and a council member left on a stale
+		// score is one that cannot vouch.
+		if err := rc.refreshTrust(ctx, u, now); err != nil {
+			rc.logger.Error("trust refresh failed", "user_id", u.ID, "error", err)
+			continue
+		}
+
 		// Council members are never auto-promoted or demoted.
 		if u.Role == domain.RoleCouncil {
 			continue
@@ -97,6 +135,45 @@ func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 	}
 
 	return result, nil
+}
+
+// refreshTrust recomputes u.TrustScore before the policy reads it, and persists
+// the result.
+//
+// Without this, the policy judged a number that in a great many towns had never
+// been computed at all. Users are created at 50.0 and only the Redis-backed
+// trust worker ever recalculates; a deployment running without Redis — a
+// documented mode — leaves every user at that default forever. The demotion
+// threshold is a flat 70.0, so thirty days after such a town opened, this run
+// demoted its entire membership to pending on the strength of a placeholder.
+//
+// Recomputing here also makes `bell check-roles` the recalculation sweep for
+// Redis-less deployments: penalties decay and tenure accrues on the schedule
+// the operator runs it on. Where Redis is present the trust worker's own sweep
+// has usually already written the same number, and recomputing it twice is
+// cheap next to demoting someone on a stale one.
+//
+// A user whose score will not compute is skipped by the caller rather than
+// judged on the old value. Persisting is best-effort by contrast: the run holds
+// the right number either way, so a failed write costs a stale row, not a role.
+func (rc *RoleChecker) refreshTrust(ctx context.Context, u *domain.User, now time.Time) error {
+	if rc.inputs == nil {
+		return nil
+	}
+
+	score, err := CalcCompositeTrust(ctx, rc.inputs, u.ID, now)
+	if err != nil {
+		return fmt.Errorf("recalculating trust: %w", err)
+	}
+	u.TrustScore = score
+
+	if rc.scores == nil {
+		return nil
+	}
+	if err := rc.scores.UpdateUserTrustScore(ctx, u.ID, score); err != nil {
+		rc.logger.Error("persisting refreshed trust score failed", "user_id", u.ID, "error", err)
+	}
+	return nil
 }
 
 // checkPromotion evaluates whether a member should be promoted to moderator.

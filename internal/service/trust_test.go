@@ -755,6 +755,79 @@ func TestCalcCompositeTrust_PermanentPenaltyAloneIsNotABan(t *testing.T) {
 	}
 }
 
+// Council is the mirror image of the ban floor: a pin at the top rather than a
+// clamp at the bottom. Setup seeds council at 100 because they root the trust
+// graph — they are created before anyone exists who could vouch for them — so
+// the voucher component, 35% of the weight, is structurally zero for them
+// forever. Left to the four components, a founding council member on the day
+// the town opens recomputes to 30, and their own first vouch is what enqueues
+// that recalculation. That single write would drop every council member below
+// the 60.0 vouching threshold and leave the town with nobody able to admit
+// anybody.
+func TestCalcCompositeTrust_CouncilKeepsMaxTrust(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		inputs *fakeTrustInputs
+	}{
+		{
+			// The bootstrap case: setup ran moments ago, so there is no tenure,
+			// no activity and — permanently — no vouch anyone could have cast.
+			name: "a freshly bootstrapped council member",
+			inputs: &fakeTrustInputs{
+				user: &domain.User{
+					ID:       "council",
+					Role:     domain.RoleCouncil,
+					IsActive: true,
+					JoinedAt: now,
+				},
+			},
+		},
+		{
+			// Penalties propagate along vouch edges, so a council member who
+			// vouched for someone later sanctioned picks one up. The pin holds:
+			// council standing is a community decision, not a score.
+			name: "a council member carrying a propagated penalty",
+			inputs: &fakeTrustInputs{
+				user: &domain.User{
+					ID:       "council",
+					Role:     domain.RoleCouncil,
+					IsActive: true,
+					JoinedAt: now.AddDate(0, 0, -30),
+				},
+				penalties: []domain.TrustPenalty{
+					{ID: "propagated", UserID: "council", PenaltyAmount: 50, CreatedAt: now},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score, err := CalcCompositeTrust(context.Background(), tt.inputs, "council", now)
+			if err != nil {
+				t.Fatalf("CalcCompositeTrust() unexpected error: %v", err)
+			}
+			if score != 100.0 {
+				t.Errorf("score = %v, want 100 — council is pinned, not scored", score)
+			}
+
+			// The consequence that actually bricks a town: the recalculated
+			// score has to leave council able to vouch.
+			u := *tt.inputs.user
+			u.TrustScore = score
+			if score < domain.VouchingThreshold {
+				t.Errorf("score = %v is below the vouching threshold of %v",
+					score, domain.VouchingThreshold)
+			}
+			if !u.CanVouch() {
+				t.Error("CanVouch() = false after recalculation: the town can no longer admit anyone")
+			}
+		})
+	}
+}
+
 // Suspend and ban are enforced through fields the recalculation never touches,
 // so a restored score cannot revive either one.
 func TestSuspendAndBanSurviveARestoredScore(t *testing.T) {
@@ -766,7 +839,7 @@ func TestSuspendAndBanSurviveARestoredScore(t *testing.T) {
 		user *domain.User
 	}{
 		{
-			"a suspended user stays unable to post: DeactivateUser cleared IsActive",
+			"a suspended user stays unable to post: hydration folds the suspension into IsActive",
 			&domain.User{Role: domain.RoleMember, IsActive: false, TrustScore: restored},
 		},
 		{

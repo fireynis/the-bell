@@ -123,6 +123,14 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	votingSvc := service.NewVotingService(voteRepo, nil)
 	statsSvc := service.NewStatsService(statsRepo)
 	roleChecker := service.NewRoleChecker(roleCheckerRepo, logger, nil)
+	// The role checker must never judge a user by a score nobody has computed.
+	// Users are created at 50.0 and, without Redis, nothing else recalculates
+	// them, so a flat 70.0 demotion threshold would take the whole town down to
+	// pending thirty days after it opened. Refreshing here also makes
+	// `bell check-roles` the recalculation sweep on Redis-less deployments,
+	// where cache.TrustWorker does not exist to run one.
+	trustInputBundle := trustInputs{userRepo, postRepo, reactionRepo, vouchRepo, penaltyRepo}
+	roleChecker.SetTrustRefresher(trustInputBundle, userRepo)
 
 	deps := &Deps{
 		Config:            cfg,
@@ -159,8 +167,11 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		modSvc.SetTrustQueue(trustCache)
 		vouchSvc.SetTrustQueue(trustCache)
 
-		inputs := trustInputs{userRepo, postRepo, reactionRepo, vouchRepo, penaltyRepo}
-		deps.TrustWorker = cache.NewTrustWorker(trustCache, inputs, userRepo, logger)
+		// roleCheckerRepo supplies the roster for the worker's periodic sweep.
+		// Without it the worker only ever recalculates users something just
+		// happened to, which is how penalties came to outlive their decay
+		// windows and tenure never accrued.
+		deps.TrustWorker = cache.NewTrustWorker(trustCache, trustInputBundle, userRepo, roleCheckerRepo, logger)
 		logger.Info("trust recalculation enabled")
 
 		rateLimiter = middleware.NewRateLimiter(middleware.NewRedisRateLimiterClient(rdb), logger)

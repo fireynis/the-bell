@@ -107,6 +107,19 @@ func (s *stubTrustScoreUpdater) callCount() int {
 	return len(s.calls)
 }
 
+// stubUserLister is the roster a sweep walks.
+type stubUserLister struct {
+	users []*domain.User
+	err   error
+}
+
+func (s *stubUserLister) ListActiveNonBannedUsers(_ context.Context) ([]*domain.User, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.users, nil
+}
+
 var workerNow = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 
 // newTestWorker builds a worker with a pinned clock so the composite score is
@@ -114,7 +127,7 @@ var workerNow = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 func newTestWorker(t *testing.T, inputs *fakeTrustInputs, updater *stubTrustScoreUpdater) (*TrustWorker, *TrustCache) {
 	t.Helper()
 	tc := NewTrustCache(redisAvailable(t))
-	w := NewTrustWorker(tc, inputs, updater, testLogger())
+	w := NewTrustWorker(tc, inputs, updater, nil, testLogger())
 	w.now = func() time.Time { return workerNow }
 	// One second is the shortest poll Redis honours — BLPOP takes its timeout
 	// in seconds and go-redis rounds anything smaller up — and it keeps the
@@ -253,6 +266,133 @@ func TestTrustWorker_Run_RecalculatesQueuedUsersDespiteAFailedOne(t *testing.T) 
 
 	if updater.callCount() != 1 {
 		t.Errorf("update calls = %d, want exactly 1 (the healthy user)", updater.callCount())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker did not stop after its context was cancelled")
+	}
+}
+
+// --- The periodic sweep ---
+
+// The queue only ever carries users something just happened to. Tenure accrues,
+// activity ages out of its 90-day window and penalties decay with the calendar
+// alone, so a user nobody interacts with keeps whatever score they last had
+// forever — a penalty that expired months ago still costing them, a member who
+// has passed a year of tenure never collecting it. The sweep is what puts every
+// active user back through the calculation on a schedule.
+func TestTrustWorker_Sweep_EnqueuesEveryActiveUser(t *testing.T) {
+	inputs := &fakeTrustInputs{}
+	w, tc := newTestWorker(t, inputs, newStubTrustScoreUpdater())
+	w.roster = &stubUserLister{users: []*domain.User{
+		{ID: "user-1"}, {ID: "user-2"}, {ID: "user-3"},
+	}}
+
+	ctx := context.Background()
+	enqueued, err := w.sweep(ctx)
+	if err != nil {
+		t.Fatalf("sweep() unexpected error: %v", err)
+	}
+	if enqueued != 3 {
+		t.Errorf("enqueued = %d, want 3", enqueued)
+	}
+
+	got := map[string]bool{}
+	for range 3 {
+		userID, err := tc.DequeueRecalc(ctx, time.Second)
+		if err != nil {
+			t.Fatalf("dequeue: %v", err)
+		}
+		got[userID] = true
+	}
+	for _, want := range []string{"user-1", "user-2", "user-3"} {
+		if !got[want] {
+			t.Errorf("user %q was not enqueued by the sweep", want)
+		}
+	}
+}
+
+// A roster that cannot be read is a failed sweep, not an empty town: reporting
+// it as success would hide a broken sweep behind a quiet log.
+func TestTrustWorker_Sweep_ListFailureIsReported(t *testing.T) {
+	w, _ := newTestWorker(t, &fakeTrustInputs{}, newStubTrustScoreUpdater())
+	w.roster = &stubUserLister{err: errors.New("db connection lost")}
+
+	if _, err := w.sweep(context.Background()); err == nil {
+		t.Fatal("sweep() expected an error, got nil")
+	}
+}
+
+// The worker must survive being built without a roster rather than panicking
+// on the first tick.
+func TestTrustWorker_Sweep_WithoutARosterIsANoOp(t *testing.T) {
+	w, _ := newTestWorker(t, &fakeTrustInputs{}, newStubTrustScoreUpdater())
+
+	enqueued, err := w.sweep(context.Background())
+	if err != nil {
+		t.Fatalf("sweep() unexpected error: %v", err)
+	}
+	if enqueued != 0 {
+		t.Errorf("enqueued = %d, want 0", enqueued)
+	}
+}
+
+// time.NewTicker panics on a non-positive interval, and a zero value is exactly
+// what an unset configuration knob hands over. Keeping the default is a far
+// better answer than taking the worker down with it.
+func TestTrustWorker_SetSweepInterval_IgnoresNonPositive(t *testing.T) {
+	w, _ := newTestWorker(t, &fakeTrustInputs{}, newStubTrustScoreUpdater())
+
+	for _, d := range []time.Duration{0, -time.Minute} {
+		w.SetSweepInterval(d)
+		if w.sweepInterval != defaultSweepInterval {
+			t.Errorf("SetSweepInterval(%v): interval = %v, want the default %v",
+				d, w.sweepInterval, defaultSweepInterval)
+		}
+	}
+
+	w.SetSweepInterval(time.Hour)
+	if w.sweepInterval != time.Hour {
+		t.Errorf("interval = %v, want 1h", w.sweepInterval)
+	}
+}
+
+// End to end through the real queue: Run sweeps at startup, and its own drain
+// loop picks the swept user up and writes the composite. Nothing enqueues this
+// user — the point is that the worker does it to itself.
+func TestTrustWorker_Run_SweepsAtStartup(t *testing.T) {
+	inputs := &fakeTrustInputs{
+		user: &domain.User{ID: "user-idle", JoinedAt: workerNow.AddDate(0, 0, -365)},
+	}
+	updater := newStubTrustScoreUpdater()
+	w, _ := newTestWorker(t, inputs, updater)
+	w.roster = &stubUserLister{users: []*domain.User{{ID: "user-idle"}}}
+	// Long enough that only the startup sweep can be responsible for what
+	// lands below.
+	w.SetSweepInterval(time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case got := <-updater.seen:
+		if got.id != "user-idle" {
+			t.Errorf("updated user = %q, want %q", got.id, "user-idle")
+		}
+		if got.score != 45.0 {
+			t.Errorf("score = %v, want 45", got.score)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the startup sweep never reached a user nobody had enqueued")
 	}
 
 	cancel()

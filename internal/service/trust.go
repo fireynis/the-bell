@@ -12,6 +12,11 @@ import (
 // activityWindowDays is the rolling window the activity component measures over.
 const activityWindowDays = 90
 
+// councilTrustScore is the score council members hold for as long as they hold
+// the role. It matches what newCouncilUser seeds at setup; see the exemption in
+// CalcCompositeTrust for why they are pinned rather than scored.
+const councilTrustScore = 100.0
+
 // ActivePenalty represents a penalty still affecting a user's moderation score.
 type ActivePenalty struct {
 	Points    float64   // Original penalty points (direct or propagated)
@@ -117,6 +122,30 @@ func CalcCompositeTrust(ctx context.Context, inputs TrustInputs, userID string, 
 	// permanent 100-point penalty still holding the moderation component at 0.
 	if user.Role == domain.RoleBanned {
 		return 0, nil
+	}
+
+	// Council is the mirror image of that floor, and for a structural reason
+	// rather than a moderation one: council members root the trust graph.
+	// newCouncilUser creates them before anyone exists who could vouch for
+	// them, and nobody vouches for them afterwards either, so the voucher
+	// component — 35% of the weight — is permanently 0 for them. Scored by the
+	// four components, a council member on the day the town opens recomputes
+	// from the seeded 100 to 30, and the recalculation that does it is the one
+	// their own first vouch enqueues. Every council member would land below the
+	// 60.0 vouching threshold at once, leaving the town with nobody able to
+	// admit anybody.
+	//
+	// Pinning rather than flooring is deliberate: the score is what
+	// CountActiveVouchesWithAvgTrust averages into the voucher component of
+	// everyone council has vouched for, so a council member whose components
+	// happen to be strong must not weigh more heavily than one who mostly
+	// reads. Council standing is decided by the community — the role checker
+	// exempts them from automatic demotion for the same reason — so a penalty
+	// against a council member is not something the score is meant to express.
+	// Move someone out of council and the pin lifts with the role, after which
+	// they score normally, penalties and all.
+	if user.Role == domain.RoleCouncil {
+		return councilTrustScore, nil
 	}
 
 	since := now.AddDate(0, 0, -activityWindowDays)
