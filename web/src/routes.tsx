@@ -4,6 +4,7 @@ import RequireRole from "./components/RequireRole.tsx";
 import AppLayout from "./components/AppLayout.tsx";
 import Home from "./pages/Home";
 import Compose from "./pages/Compose";
+import Neighbors from "./pages/Neighbors";
 import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
 import Login from "./pages/auth/Login";
@@ -24,6 +25,10 @@ export const routes: RouteObject[] = [
         children: [
           { path: "/", element: <Home /> },
           { path: "/compose", element: <Compose /> },
+          // No RequireRole: the directory is open to every signed-in member,
+          // pending included. Finding a neighbour who knows you is how a
+          // pending member stops being one.
+          { path: "/neighbors", element: <Neighbors /> },
           { path: "/profile", element: <Profile /> },
           { path: "/profile/:userId", element: <Profile /> },
           { path: "/auth/settings", element: <Settings /> },

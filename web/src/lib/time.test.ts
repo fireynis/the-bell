@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatAbsoluteTime, formatDateTime, formatRelativeTime } from "./time";
+import {
+  formatAbsoluteTime,
+  formatDateTime,
+  formatMonthYear,
+  formatRelativeTime,
+} from "./time";
 
 const NOW = Date.parse("2026-03-01T12:00:00Z");
 
@@ -86,6 +91,45 @@ describe("formatAbsoluteTime", () => {
   it("returns an empty string for an unparseable date", () => {
     expect(formatAbsoluteTime("not a date")).toBe("");
     expect(formatAbsoluteTime("")).toBe("");
+  });
+});
+
+describe("formatMonthYear", () => {
+  it("names the month and the year", () => {
+    const got = formatMonthYear("2026-03-01T12:00:00Z");
+    expect(got).toContain("2026");
+    expect(got).toMatch(/[A-Za-z]/);
+  });
+
+  // Which day somebody joined is not what a directory is for; printing it makes
+  // a list of neighbours read like an audit log.
+  it("leaves the day out", () => {
+    expect(formatMonthYear("2026-03-17T12:00:00Z")).not.toContain("17");
+  });
+
+  it("tells two months of the same year apart", () => {
+    expect(formatMonthYear("2026-03-15T12:00:00Z")).not.toBe(
+      formatMonthYear("2026-08-15T12:00:00Z"),
+    );
+  });
+
+  it("tells the same month of two years apart", () => {
+    expect(formatMonthYear("2025-03-15T12:00:00Z")).not.toBe(
+      formatMonthYear("2026-03-15T12:00:00Z"),
+    );
+  });
+
+  it.each(["not a date", "", "0000-13-45"])(
+    "returns an empty string for the unparseable input %o",
+    (input) => {
+      expect(formatMonthYear(input)).toBe("");
+    },
+  );
+
+  it("agrees with formatDateTime about what is unparseable", () => {
+    for (const input of ["not a date", "", "2026-03-01T12:00:00Z"]) {
+      expect(formatMonthYear(input) === "").toBe(formatDateTime(input) === "");
+    }
   });
 });
 

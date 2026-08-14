@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { User, Vouch } from "../../api/types";
 import { REVOKE_PENALTY } from "../../lib/vouch";
-import VouchList from "./VouchList";
+import VouchList, { type VouchDirection } from "./VouchList";
 
 /**
  * VouchService.Revoke lets the voucher or any moderator revoke, but the control
@@ -43,14 +43,19 @@ function user(overrides: Partial<User> = {}): User {
 }
 
 /** Renders the "received" side of a profile, where the row's voucher is someone else. */
-function renderList(viewer: User | null, vouches: Vouch[] = [vouch()], onRevoked = vi.fn()) {
+function renderList(
+  viewer: User | null,
+  vouches: Vouch[] = [vouch()],
+  onRevoked = vi.fn(),
+  props: { direction?: VouchDirection; ownerName?: string } = {},
+) {
   return render(
     <MemoryRouter>
       <VouchList
-        direction="received"
+        direction={props.direction ?? "received"}
         vouches={vouches}
         viewer={viewer}
-        ownerName="Bob Vouchee"
+        ownerName={props.ownerName ?? "Bob Vouchee"}
         onRevoked={onRevoked}
       />
     </MemoryRouter>,
@@ -87,6 +92,68 @@ describe("VouchList revoke control", () => {
   it("offers no revoke on a vouch that is already revoked", () => {
     renderList(user({ id: "mod-1", role: "moderator" }), [vouch({ status: "revoked" })]);
     expect(revokeButton()).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The listing carries both parties by name, and every row used to render eight
+ * characters of the counterpart's uuid instead — a page about who knows whom,
+ * populated entirely by hex.
+ */
+describe("VouchList naming", () => {
+  it("names the voucher on a received vouch", () => {
+    renderList(null, [vouch({ voucher_display_name: "Ada Lovelace" })]);
+    expect(screen.getByRole("link", { name: "Ada Lovelace" })).toHaveAttribute(
+      "href",
+      `/profile/${VOUCHER}`,
+    );
+  });
+
+  it("names the vouchee on a given vouch", () => {
+    renderList(null, [vouch({ vouchee_display_name: "Bob Vouchee" })], vi.fn(), {
+      direction: "given",
+      ownerName: "Ada Lovelace",
+    });
+    expect(screen.getByRole("link", { name: "Bob Vouchee" })).toHaveAttribute(
+      "href",
+      `/profile/${VOUCHEE}`,
+    );
+  });
+
+  // A member who has set no name is sent as the empty string on this listing,
+  // so a fallback that only catches `undefined` renders a link naming nobody.
+  it.each([
+    ["the empty string", ""],
+    ["an absent key", undefined],
+  ])("falls back to the id prefix when the name is %s", (_label, name) => {
+    renderList(null, [vouch({ voucher_display_name: name })]);
+    expect(screen.getByRole("link", { name: "voucher-..." })).toBeInTheDocument();
+  });
+
+  it("never renders a link with no name at all", () => {
+    renderList(null, [vouch({ voucher_display_name: "" })]);
+    expect(screen.getByRole("link").textContent?.trim()).not.toBe("");
+  });
+
+  it("names both parties in the revocation warning", () => {
+    renderList(
+      user({ id: VOUCHER }),
+      [vouch({ voucher_display_name: "Ada Lovelace", vouchee_display_name: "Bob Vouchee" })],
+    );
+
+    fireEvent.click(revokeButton()!);
+    expect(screen.getByRole("dialog")).toHaveTextContent("Bob Vouchee");
+  });
+
+  // The owner's name used to fall back to the *counterpart's* id, so a profile
+  // with no display name named the wrong member in the warning.
+  it("falls back to the owner's own id, not the other party's", () => {
+    renderList(user({ id: "mod-1", role: "moderator" }), [vouch()], vi.fn(), {
+      ownerName: "",
+    });
+
+    fireEvent.click(revokeButton()!);
+    expect(screen.getByRole("dialog")).toHaveTextContent("vouchee-...");
   });
 });
 

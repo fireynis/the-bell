@@ -5,6 +5,7 @@ import type { Report, Post, ApiError } from "../api/types.ts";
 import Spinner from "./Spinner.tsx";
 import { formatAbsoluteTime, formatRelativeTime } from "../lib/time.ts";
 import { canRemovePost } from "../lib/moderation.ts";
+import { personName } from "../lib/people.ts";
 
 interface ReportCardProps {
   report: Report;
@@ -101,7 +102,7 @@ export default function ReportCard({
           <>
             <div className="mb-1 flex items-center justify-between">
               <span className="text-xs font-medium" style={{ color: "var(--color-text-secondary)" }}>
-                {post.author_id.slice(0, 8)}
+                {personName(post.author_display_name, post.author_id)}
               </span>
               <Link
                 to={`/moderation/users/${post.author_id}`}
@@ -125,9 +126,11 @@ export default function ReportCard({
         )}
       </div>
 
-      {/* Reporter info */}
+      {/* Who filed it. A moderator weighing a report has to know that, and the
+          queue is the only read that carries the reporter's name — the report
+          echoed back to its own filer carries none. */}
       <p className="mb-3 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
-        Reporter: {report.reporter_id.slice(0, 8)}
+        Reporter: {personName(report.reporter_display_name, report.reporter_id)}
       </p>
 
       {/* Dismiss error */}

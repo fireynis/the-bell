@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import type { User } from "../../api/types";
+import { personName } from "../../lib/people";
 import AdminSection from "./AdminSection";
 
 /** PendingUsersSection lists users awaiting council approval, newest first. */
@@ -31,7 +32,10 @@ export default function PendingUsersSection({
                 className="text-sm font-medium"
                 style={{ color: "var(--color-primary)" }}
               >
-                {user.display_name || user.id.slice(0, 8)}
+                {/* Most pending users arrive with a name now that registration
+                    syncs the trait, but the fallback stays: a council member
+                    still has to be able to approve one who set none. */}
+                {personName(user.display_name, user.id)}
               </Link>
               <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
                 Joined {new Date(user.joined_at).toLocaleDateString()}

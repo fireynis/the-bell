@@ -60,6 +60,7 @@ describe("visibleNavItems", () => {
   it("shows the unrestricted items to an ordinary member", () => {
     expect(labels(visibleNavItems(SIDEBAR_NAV_ITEMS, user()))).toEqual([
       "Feed",
+      "Neighbours",
       "Profile",
       "Settings",
     ]);
@@ -76,6 +77,7 @@ describe("visibleNavItems", () => {
   it("gives council everything", () => {
     expect(labels(visibleNavItems(SIDEBAR_NAV_ITEMS, user({ role: "council" })))).toEqual([
       "Feed",
+      "Neighbours",
       "Profile",
       "Moderation",
       "Town Hall",
@@ -92,13 +94,14 @@ describe("visibleNavItems", () => {
   // Deactivation removes every capability, matching canModerate and isCouncil.
   it("withholds restricted items from a deactivated council member", () => {
     const items = visibleNavItems(SIDEBAR_NAV_ITEMS, user({ role: "council", is_active: false }));
-    expect(labels(items)).toEqual(["Feed", "Profile", "Settings"]);
+    expect(labels(items)).toEqual(["Feed", "Neighbours", "Profile", "Settings"]);
   });
 
   // A role this build has never heard of grants nothing beyond the basics.
   it.each(["archivist", "", "MODERATOR"])("treats the unknown role %o as ordinary", (role) => {
     expect(labels(visibleNavItems(SIDEBAR_NAV_ITEMS, user({ role })))).toEqual([
       "Feed",
+      "Neighbours",
       "Profile",
       "Settings",
     ]);
@@ -107,6 +110,7 @@ describe("visibleNavItems", () => {
   it.each(["pending", "banned"])("shows a %s user only the unrestricted items", (role) => {
     expect(labels(visibleNavItems(SIDEBAR_NAV_ITEMS, user({ role })))).toEqual([
       "Feed",
+      "Neighbours",
       "Profile",
       "Settings",
     ]);
@@ -115,6 +119,7 @@ describe("visibleNavItems", () => {
   it("shows only the unrestricted items when nobody is signed in", () => {
     expect(labels(visibleNavItems(SIDEBAR_NAV_ITEMS, null))).toEqual([
       "Feed",
+      "Neighbours",
       "Profile",
       "Settings",
     ]);
@@ -123,13 +128,36 @@ describe("visibleNavItems", () => {
   it("filters the bottom bar by the same rules", () => {
     expect(labels(visibleNavItems(BOTTOM_NAV_ITEMS, user()))).toEqual([
       "Feed",
+      "Neighbours",
       "Post",
       "Profile",
-      "Settings",
     ]);
     expect(labels(visibleNavItems(BOTTOM_NAV_ITEMS, user({ role: "moderator" })))).toContain(
       "Moderation",
     );
+  });
+
+  // Five items is what fits at 360px, and a moderator sees every one of them.
+  // Settings is the item that gave way; AppLayout's mobile header carries it,
+  // since the sidebar that carries it elsewhere is desktop-only.
+  it("keeps the bottom bar to five items for a moderator", () => {
+    const items = visibleNavItems(BOTTOM_NAV_ITEMS, user({ role: "moderator" }));
+    expect(labels(items)).toEqual(["Feed", "Neighbours", "Post", "Moderation", "Profile"]);
+  });
+
+  it("leaves settings out of the bottom bar", () => {
+    expect(BOTTOM_NAV_ITEMS).not.toContain(NAV_ITEMS.settings);
+    expect(SIDEBAR_NAV_ITEMS).toContain(NAV_ITEMS.settings);
+  });
+
+  // The directory is how a pending member finds somebody who knows them, which
+  // is the one thing that ends their being pending — so it is in both bars for
+  // them, and behind neither a role nor a gate.
+  it.each([
+    ["the sidebar", SIDEBAR_NAV_ITEMS],
+    ["the bottom bar", BOTTOM_NAV_ITEMS],
+  ])("keeps the directory in %s for a pending member", (_name, items) => {
+    expect(labels(visibleNavItems(items, user({ role: "pending" })))).toContain("Neighbours");
   });
 
   it("does not mutate the list it was given", () => {
@@ -173,6 +201,7 @@ describe("navItemLocked", () => {
     ["feed", NAV_ITEMS.feed],
     ["profile", NAV_ITEMS.profile],
     ["settings", NAV_ITEMS.settings],
+    ["neighbors", NAV_ITEMS.neighbors],
     ["moderation", NAV_ITEMS.moderation],
   ])("never locks %s, which needs nothing of the trust graph", (_name, item) => {
     expect(navItemLocked(item, user({ role: "pending" }))).toBe(false);

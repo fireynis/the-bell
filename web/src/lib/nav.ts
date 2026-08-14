@@ -31,6 +31,12 @@ export const NAV_ITEMS = {
     icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1",
     exact: true,
   },
+  neighbors: {
+    label: "Neighbours",
+    path: "/neighbors",
+    // Two figures rather than one, so it is not mistaken for Profile.
+    icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z",
+  },
   compose: {
     label: "Post",
     path: "/compose",
@@ -64,19 +70,33 @@ export const NAV_ITEMS = {
 /** The wide sidebar; composing has its own button there, so it is not listed. */
 export const SIDEBAR_NAV_ITEMS: readonly NavItem[] = [
   NAV_ITEMS.feed,
+  NAV_ITEMS.neighbors,
   NAV_ITEMS.profile,
   NAV_ITEMS.moderation,
   NAV_ITEMS.admin,
   NAV_ITEMS.settings,
 ];
 
-/** The narrow bottom bar, which has room for composing but not for Town Hall. */
+/**
+ * The narrow bottom bar, which has room for composing but not for Town Hall.
+ *
+ * Neighbours is here as well as in the sidebar, and carries no gate: a pending
+ * member is the one who most needs it, since finding somebody who knows them is
+ * how they stop being pending.
+ *
+ * Settings is deliberately absent, which keeps the bar at five items for a
+ * moderator — six was too many at 360px. It is NOT therefore unreachable on a
+ * phone: the sidebar that carries it is `hidden lg:flex`, so dropping it from
+ * here alone would strand every mobile member with no route to their own
+ * account. AppLayout's mobile header carries it instead, and
+ * AppLayout.test.tsx pins that, because the two facts only make sense together.
+ */
 export const BOTTOM_NAV_ITEMS: readonly NavItem[] = [
   NAV_ITEMS.feed,
+  NAV_ITEMS.neighbors,
   NAV_ITEMS.compose,
   NAV_ITEMS.moderation,
   NAV_ITEMS.profile,
-  NAV_ITEMS.settings,
 ];
 
 /**

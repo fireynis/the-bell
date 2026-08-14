@@ -1,4 +1,13 @@
-import type { ApiError, MuteLift, MuteStatus, Post, TakeActionRequest, User } from "../api/types";
+import type {
+  ActionHistoryEntry,
+  ApiError,
+  MuteLift,
+  MuteStatus,
+  Post,
+  TakeActionRequest,
+  User,
+} from "../api/types";
+import { personName, shortId } from "./people";
 import { byteLength, type ValidationResult } from "./post";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
@@ -233,6 +242,37 @@ export function validateRemovalReason(reason: string): ValidationResult {
  */
 export function canRemovePost(post: Post | null | undefined): boolean {
   return post?.status === "visible";
+}
+
+/**
+ * describeHistorySubject names the member whose moderation history is on
+ * screen, for the heading of that page.
+ *
+ * There is no read that hands the page a member's profile — it loads a list of
+ * actions and nothing else — so the name comes from the actions themselves,
+ * every one of which is addressed to this member and carries
+ * `target_display_name`. Any entry will do; the first one with a name wins, so
+ * a member named on some rows and not others is still named.
+ *
+ * This is only sound for the default listing, which is actions taken *against*
+ * the user. The `role=moderator` variant lists actions they took, where the
+ * subject is the moderator rather than the target — this page does not ask for
+ * that variant, and would need the other field if it did.
+ *
+ * The short id stays alongside the name rather than being replaced by it. Two
+ * members may share a display name, and a moderator about to act on somebody
+ * needs to know which of them they are reading. When there is no name it is all
+ * there is to show, and it is not repeated.
+ */
+export function describeHistorySubject(
+  entries: readonly ActionHistoryEntry[] | null | undefined,
+  userId: string,
+): string {
+  const named = entries?.find((entry) => entry?.action?.target_display_name?.trim());
+  const name = personName(named?.action?.target_display_name, userId);
+  const short = shortId(userId);
+
+  return name === short ? short : `${name} · ${short}`;
 }
 
 /** What the queue should do with a report after acting on it. */

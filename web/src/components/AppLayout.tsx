@@ -1,9 +1,10 @@
-import { Outlet } from "react-router";
+import { Link, Outlet } from "react-router";
 import Sidebar from "./Sidebar";
 import BottomNav from "./BottomNav";
 import ErrorBanner from "./ErrorBanner";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
+import { NAV_ITEMS } from "../lib/nav";
 import BellLogo from "./BellLogo";
 
 export default function AppLayout() {
@@ -29,6 +30,33 @@ export default function AppLayout() {
             {config.town_name || "The Bell"}
           </span>
         </div>
+
+        {/*
+          The mobile route to a member's own account. The sidebar that carries
+          Settings everywhere else is `hidden lg:flex`, so this is the only one
+          a phone has — the bottom bar gave the sixth slot to Neighbours, and
+          without this there would be no way to reach it at all below lg.
+        */}
+        <Link
+          to={NAV_ITEMS.settings.path}
+          aria-label={NAV_ITEMS.settings.label}
+          className="rounded-md p-1.5"
+          style={{ color: "var(--color-text-tertiary)" }}
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d={NAV_ITEMS.settings.icon} />
+          </svg>
+        </Link>
       </header>
 
       {/* Main content */}

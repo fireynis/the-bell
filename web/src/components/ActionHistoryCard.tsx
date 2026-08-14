@@ -1,4 +1,5 @@
 import type { ActionHistoryEntry } from "../api/types.ts";
+import { personName } from "../lib/people.ts";
 import { formatDateTime } from "../lib/time.ts";
 
 const ACTION_BADGE_STYLES: Record<string, React.CSSProperties> = {
@@ -63,7 +64,9 @@ export default function ActionHistoryCard({ entry }: ActionHistoryCardProps) {
         style={{ color: "var(--color-text-tertiary)" }}
       >
         <span>Severity: {action.severity}</span>
-        <span>Moderator: {action.moderator_id.slice(0, 8)}</span>
+        {/* The audit-trail listing is the only read that names the moderator;
+            the action echoed back when one is taken carries no names at all. */}
+        <span>Moderator: {personName(action.moderator_display_name, action.moderator_id)}</span>
         {action.expires_at && (
           <span>Expires: {formatDateTime(action.expires_at)}</span>
         )}

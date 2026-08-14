@@ -8,6 +8,7 @@ import {
   activeMuteExpiry,
   buildActionRequest,
   canRemovePost,
+  describeHistorySubject,
   severityChoiceLabel,
   severityConsequence,
   liftMuteBlockReason,
@@ -19,7 +20,7 @@ import {
   validateRemovalReason,
   type ActionInput,
 } from "./moderation";
-import type { ApiError, Post, User } from "../api/types";
+import type { ActionHistoryEntry, ApiError, Post, User } from "../api/types";
 
 const MODERATOR = "moderator-1";
 const TARGET = "target-1";
@@ -650,5 +651,63 @@ describe("ownMuteNotice", () => {
     // Another member's profile carries neither field, and must never be made to
     // look like it does.
     expect(ownMuteNotice(null, now).hasAnything).toBe(false);
+  });
+});
+
+describe("describeHistorySubject", () => {
+  const SUBJECT = "0193a7b2-5f3e-7000-8000-000000000000";
+
+  function entry(targetName?: string): ActionHistoryEntry {
+    return {
+      action: {
+        id: `action-${targetName ?? "anon"}`,
+        target_user_id: SUBJECT,
+        target_display_name: targetName,
+        moderator_id: MODERATOR,
+        action: "warn",
+        severity: 1,
+        reason: "Minor issue",
+        duration: null,
+        created_at: "2026-03-01T12:00:00Z",
+        expires_at: null,
+      },
+      penalties: [],
+    };
+  }
+
+  // The page loads a list of actions and nothing else, so the name has to come
+  // from the actions — every one of them is addressed to this member.
+  it("names the subject from the actions taken against them", () => {
+    expect(describeHistorySubject([entry("Ada Lovelace")], SUBJECT)).toContain("Ada Lovelace");
+  });
+
+  // Two members can share a display name, and a moderator about to act needs to
+  // know which one they are reading.
+  it("keeps the short id beside the name", () => {
+    expect(describeHistorySubject([entry("Ada Lovelace")], SUBJECT)).toBe(
+      "Ada Lovelace · 0193a7b2...",
+    );
+  });
+
+  it("falls back to the id alone, unrepeated, when no action carries a name", () => {
+    expect(describeHistorySubject([entry(), entry()], SUBJECT)).toBe("0193a7b2...");
+  });
+
+  it("takes the name from a later action when the first carries none", () => {
+    expect(describeHistorySubject([entry(), entry("Ada Lovelace")], SUBJECT)).toContain(
+      "Ada Lovelace",
+    );
+  });
+
+  it.each([
+    ["an empty history, which is the first thing the page renders", []],
+    ["a history that has not loaded", undefined],
+    ["a null history", null],
+  ])("still identifies the subject with %s", (_label, entries) => {
+    expect(describeHistorySubject(entries, SUBJECT)).toBe("0193a7b2...");
+  });
+
+  it("ignores a whitespace-only name rather than rendering a blank subject", () => {
+    expect(describeHistorySubject([entry("   ")], SUBJECT)).toBe("0193a7b2...");
   });
 });

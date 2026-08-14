@@ -49,6 +49,25 @@ export function formatAbsoluteTime(dateStr: string): string {
 }
 
 /**
+ * formatMonthYear renders just the month and the year, for the directory's
+ * "Joined March 2026".
+ *
+ * The day is deliberately dropped. How long somebody has been in town is the
+ * useful fact when you are trying to place a name; which Tuesday they signed up
+ * on is not, and printing it makes a list of neighbours read like an audit log.
+ *
+ * Shares the empty-string contract of the other two: an unparseable timestamp
+ * shows nothing rather than the literal "Invalid Date", so the caller can drop
+ * the line instead of rendering it broken.
+ */
+export function formatMonthYear(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+}
+
+/**
  * formatDateTime renders a date and time to the minute, for the moderation
  * audit trail where "3d" is not specific enough to defend a decision.
  *

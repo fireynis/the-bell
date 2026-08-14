@@ -4,6 +4,7 @@ import type {
   ApiError,
   CreatePostRequest,
   CreateVouchRequest,
+  DirectoryResponse,
   ModerationQueueResponse,
   MuteStatus,
   Post,
@@ -100,6 +101,26 @@ export const userApi = {
   listPosts: (userId: string, limit: number) =>
     api.get<UserPostsResponse>(`/users/${userId}/posts?limit=${limit}`),
   updateProfile: (req: UpdateProfileRequest) => api.put<User>("/users/me", req),
+
+  /**
+   * The member directory, newest arrival first. Open to any signed-in member
+   * including a pending one — finding the neighbour who can vouch for you is
+   * the one thing a pending member most needs to be able to do.
+   *
+   * `q` matches a case-insensitive substring of the display name and is omitted
+   * when blank, so an empty search box asks for the whole roll rather than for
+   * the members whose name contains nothing. The server caps `limit` at 100.
+   *
+   * Built through URLSearchParams because the query is typed by a member and
+   * may contain spaces, `&` or `#`, all of which would otherwise corrupt the
+   * request rather than merely fail to match.
+   */
+  list: (limit: number, offset: number, q?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    const search = (q ?? "").trim();
+    if (search) params.set("q", search);
+    return api.get<DirectoryResponse>(`/users?${params.toString()}`);
+  },
 };
 
 export const vouchApi = {

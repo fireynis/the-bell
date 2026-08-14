@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { vouchApi } from "../../api/client";
 import type { ApiError, User, Vouch } from "../../api/types";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { personName } from "../../lib/people";
 import {
   REVOKE_PENALTY_ENFORCED,
   canRevokeVouch,
@@ -25,11 +26,6 @@ const HEADINGS: Record<VouchDirection, string> = {
  */
 function counterpartId(vouch: Vouch, direction: VouchDirection): string {
   return direction === "received" ? vouch.voucher_id : vouch.vouchee_id;
-}
-
-/** How the list labels a member it knows only by id. */
-function shortId(userId: string): string {
-  return `${userId.slice(0, 8)}...`;
 }
 
 /**
@@ -87,13 +83,34 @@ export default function VouchList({
     }
   }
 
-  // Both parties by name where the page knows one: the profile owner is the
-  // vouchee of a received vouch and the voucher of a given one.
+  /**
+   * Both parties by name. The row carries each of them, and the page separately
+   * knows the profile owner — who is the vouchee of a received vouch and the
+   * voucher of a given one — so the owner's own name stands in where the listing
+   * sent nothing for them.
+   *
+   * Each name falls back to that person's own id. It used to fall back to the
+   * counterpart's id for the owner's side, so a profile with no display name
+   * named the wrong member in the revocation warning.
+   */
   function namesFor(vouch: Vouch): { voucherName: string; voucheeName: string } {
-    const owner = ownerName?.trim() ? ownerName.trim() : shortId(counterpartId(vouch, direction));
-    return direction === "received"
-      ? { voucherName: shortId(vouch.voucher_id), voucheeName: owner }
-      : { voucherName: owner, voucheeName: shortId(vouch.vouchee_id) };
+    const owner = ownerName?.trim() ?? "";
+    return {
+      voucherName: personName(
+        vouch.voucher_display_name || (direction === "given" ? owner : ""),
+        vouch.voucher_id,
+      ),
+      voucheeName: personName(
+        vouch.vouchee_display_name || (direction === "received" ? owner : ""),
+        vouch.vouchee_id,
+      ),
+    };
+  }
+
+  /** The other party, which is who each row links to and labels itself with. */
+  function counterpartName(vouch: Vouch): string {
+    const { voucherName, voucheeName } = namesFor(vouch);
+    return direction === "received" ? voucherName : voucheeName;
   }
 
   /**
@@ -141,7 +158,7 @@ export default function VouchList({
                     className="text-sm font-medium"
                     style={{ color: "var(--color-primary)" }}
                   >
-                    {shortId(otherId)}
+                    {counterpartName(v)}
                   </Link>
                   <div className="flex items-center gap-3">
                     <span

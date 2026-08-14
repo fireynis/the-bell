@@ -7,6 +7,7 @@ import ActionHistoryCard from "../../components/ActionHistoryCard.tsx";
 import MuteBanner from "../../components/MuteBanner.tsx";
 import ErrorBanner from "../../components/ErrorBanner.tsx";
 import Spinner from "../../components/Spinner.tsx";
+import { describeHistorySubject } from "../../lib/moderation.ts";
 
 export default function UserHistory() {
   const { id } = useParams<{ id: string }>();
@@ -27,8 +28,11 @@ export default function UserHistory() {
           >
             User Action History
           </h1>
-          <p className="text-sm" style={{ color: "var(--color-text-tertiary)" }}>
-            User: {id?.slice(0, 8)}...
+          {/* Named from the actions themselves — every one of them is addressed
+              to this member — with the full id on hover, since the page has no
+              other read that would tell it who this is. */}
+          <p className="text-sm" title={id} style={{ color: "var(--color-text-tertiary)" }}>
+            User: {describeHistorySubject(entries, id ?? "")}
           </p>
         </div>
 

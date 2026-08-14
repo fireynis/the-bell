@@ -78,6 +78,37 @@ export interface User {
   suspension_lifts?: SuspensionLift[];
 }
 
+/**
+ * One row of the member directory — `GET /api/v1/users`.
+ *
+ * Deliberately not a `User`. The directory is a list anybody signed in may
+ * read, so it carries only what a list of people needs: who they are, where
+ * they stand, and how long they have been here. Trust scores, bios and
+ * moderation state are on the profile, which is a read about one person rather
+ * than about everybody.
+ */
+export interface DirectoryUser {
+  id: string;
+  /**
+   * The empty string for a member who has set no name — the key is always
+   * present. Render it through personName rather than directly.
+   */
+  display_name: string;
+  /** "pending" | "member" | "moderator" | "council"; typed loosely because the
+   * server may introduce a role this build has never heard of. */
+  role: string;
+  joined_at: string;
+}
+
+export interface DirectoryResponse {
+  users: DirectoryUser[];
+  /**
+   * How many members match the search, ignoring limit and offset. This is the
+   * only way to tell a complete list from the first page of a longer one.
+   */
+  total: number;
+}
+
 export interface FeedResponse {
   posts: Post[];
   next_cursor?: string;
