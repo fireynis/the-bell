@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { vouchApi } from "../../api/client";
-import type { ApiError, User, Vouch } from "../../api/types";
+import type { User, Vouch } from "../../api/types";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import Spinner from "../../components/Spinner";
 import {
@@ -9,6 +9,7 @@ import {
   findActiveVouch,
   vouchBlockReason,
 } from "../../lib/vouch";
+import { apiErrorMessage } from "../../lib/verification";
 
 interface VouchActionProps {
   /** The signed-in viewer, or null when nobody is. */
@@ -59,9 +60,10 @@ export default function VouchAction({
     } catch (err) {
       // The server refuses for reasons the client cannot predict — a cycle in
       // the trust graph, the vouchee's state, a limit counted over rows this
-      // client never sees. Its message is the only accurate one available.
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "That did not work. Please try again.");
+      // client never sees. Its message is the only accurate one available,
+      // bar the verification guard, whose three words are a state rather than
+      // something the viewer could act on.
+      setError(apiErrorMessage(err, "That did not work. Please try again."));
     } finally {
       setSubmitting(false);
     }

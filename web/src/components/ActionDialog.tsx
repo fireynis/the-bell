@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { moderationApi } from "../api/client.ts";
-import type { ApiError } from "../api/types.ts";
+import type { User } from "../api/types.ts";
 import ErrorBanner from "./ErrorBanner.tsx";
 import { useModalDialog } from "../hooks/useModalDialog.ts";
 import {
   ACTION_TYPES,
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
+  actionBlockReason,
   actionConsequence,
   buildActionRequest,
   needsDuration as actionNeedsDuration,
@@ -14,6 +15,7 @@ import {
   severityChoiceLabel,
   validateAction,
 } from "../lib/moderation.ts";
+import { apiErrorMessage } from "../lib/verification.ts";
 
 /**
  * Every control in here shares the app's field styling, focus ring included.
@@ -25,18 +27,23 @@ const FIELD_CLASS = "field block w-full rounded-[var(--radius-md)] px-3 py-2";
 interface ActionDialogProps {
   targetUserId: string;
   /**
-   * The signed-in moderator. Without it the dialog cannot tell that the target
-   * is the moderator themselves, which the server refuses outright — so it
-   * would submit a guaranteed 400 and report it as a server failure.
+   * The signed-in moderator, or null while their own profile has not loaded.
+   *
+   * Their id is here because the server refuses an action somebody takes on
+   * themselves, which the dialog would otherwise submit as a guaranteed 400 and
+   * report as a server failure. Their role is here because a ban is the
+   * council's alone — see actionBlockReason — and without it the dialog offered
+   * every moderator the one irreversible action in the system, then let them
+   * fill in the form and answered it with a bare "forbidden".
    */
-  moderatorId: string;
+  moderator: Pick<User, "id" | "role" | "is_active"> | null;
   onClose: () => void;
   onActionTaken: () => void;
 }
 
 export default function ActionDialog({
   targetUserId,
-  moderatorId,
+  moderator,
   onClose,
   onActionTaken,
 }: ActionDialogProps) {
@@ -78,15 +85,27 @@ export default function ActionDialog({
   // An empty box is NaN rather than 0, so validateAction reports it as a
   // missing duration instead of an out-of-range one.
   const durationHours = durationText.trim() === "" ? Number.NaN : Number(durationText);
-  const input = { actionType, severity, reason, moderatorId, targetUserId };
+  const input = { actionType, severity, reason, moderatorId: moderator?.id ?? "", targetUserId };
   const check = validateAction(input, durationHours);
-  const canSubmit = check.valid && !submitting;
+  // Checked as well as offering only the actions this moderator may take: the
+  // rank rule and the form rules are separate refusals, and the select is a
+  // presentation of the first rather than the enforcement of it.
+  const rankBlock = actionBlockReason(actionType, moderator);
+  // Stated whatever is selected, so the rule is visible before a moderator goes
+  // looking for the action that is missing from their list.
+  const banBlock = actionBlockReason("ban", moderator);
+  const canSubmit = check.valid && rankBlock === null && !submitting;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (submitting) return;
     if (!check.valid) {
       setError(check.error ?? null);
+      return;
+    }
+
+    if (rankBlock) {
+      setError(rankBlock);
       return;
     }
 
@@ -97,8 +116,7 @@ export default function ActionDialog({
       await moderationApi.takeAction(buildActionRequest(input, durationHours));
       onActionTaken();
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to take action.");
+      setError(apiErrorMessage(err, "Failed to take action."));
     } finally {
       setSubmitting(false);
     }
@@ -142,14 +160,35 @@ export default function ActionDialog({
               value={actionType}
               onChange={(e) => setActionType(e.target.value)}
               className={FIELD_CLASS}
+              aria-describedby={banBlock ? "action-type-rank" : undefined}
             >
               <option value="">Select action...</option>
-              {ACTION_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {type.charAt(0).toUpperCase() + type.slice(1)}
-                </option>
-              ))}
+              {/*
+                Disabled rather than dropped for an action this moderator's rank
+                does not reach. Hiding Ban would leave a moderator wondering
+                where it went, or believing the town has no such power; showing
+                it greyed out with the rule underneath says who does have it,
+                which is the thing they need to know in order to escalate.
+              */}
+              {ACTION_TYPES.map((type) => {
+                const blocked = actionBlockReason(type, moderator) !== null;
+                const name = type.charAt(0).toUpperCase() + type.slice(1);
+                return (
+                  <option key={type} value={type} disabled={blocked}>
+                    {blocked ? `${name} (council only)` : name}
+                  </option>
+                );
+              })}
             </select>
+            {banBlock && (
+              <p
+                id="action-type-rank"
+                className="mt-1 text-xs"
+                style={{ color: "var(--color-text-tertiary)" }}
+              >
+                {banBlock}
+              </p>
+            )}
           </div>
 
           {/* Severity — a warning only; see severityIsAChoice above. */}
@@ -263,9 +302,9 @@ export default function ActionDialog({
               so clearing the duration field left a dead button and no clue —
               and a moderator who opened this on their own account got no
               warning until the server answered 400. */}
-          {!check.valid && !error && (
+          {!error && (check.error ?? rankBlock) && (
             <p className="text-sm" style={{ color: "var(--color-text-tertiary)" }} role="status">
-              {check.error}
+              {check.error ?? rankBlock}
             </p>
           )}
 

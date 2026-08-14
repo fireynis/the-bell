@@ -1,5 +1,6 @@
 import type { ApiError, Post, User } from "../api/types";
 import { byteLength, validationDetail, type ValidationResult } from "./post";
+import { UNVERIFIED_EMAIL_NOTICE, isEmailUnverified } from "./verification";
 
 /** Mirrors maxReportReasonLen in internal/service/report.go. */
 export const MAX_REPORT_REASON_LENGTH = 1000;
@@ -82,6 +83,11 @@ export function validateReportReason(reason: string): ValidationResult {
 export function reportErrorMessage(err: ApiError | null | undefined): string {
   const fallback = "Your report could not be sent. Please try again.";
   if (!err) return fallback;
+
+  // Ahead of the switch: the verification guard answers 403 too, and "your
+  // account cannot send reports right now" would describe standing rather than
+  // the unopened message that is actually in the way.
+  if (isEmailUnverified(err)) return UNVERIFIED_EMAIL_NOTICE;
 
   switch (err.status) {
     case 429:

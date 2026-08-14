@@ -5,6 +5,7 @@ import ErrorBanner from "./ErrorBanner";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
 import { NAV_ITEMS } from "../lib/nav";
+import { UNVERIFIED_EMAIL_NOTICE, VERIFICATION_PATH } from "../lib/verification";
 import BellLogo from "./BellLogo";
 
 interface AppLayoutProps {
@@ -22,7 +23,7 @@ interface AppLayoutProps {
 
 export default function AppLayout({ wide = false }: AppLayoutProps) {
   const { config } = useTheme();
-  const { profileError, refreshSession } = useAuth();
+  const { profileError, emailUnverified, refreshSession } = useAuth();
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: "var(--color-surface-secondary)" }}>
@@ -97,6 +98,31 @@ export default function AppLayout({ wide = false }: AppLayoutProps) {
                 message="We could not load your account just now. Some things will look as though you are signed out until it loads."
                 onRetry={() => void refreshSession()}
               />
+            </div>
+          )}
+
+          {/*
+            Also said once, at the top of every page, and for the same reason:
+            an unverified member is signed in and refused everywhere, so each
+            page on its own could only report the failure it happened to meet.
+
+            Warm rather than alarming — nothing has gone wrong, there is simply
+            a message waiting in their inbox — so it borrows the accent colours
+            the mute banner uses rather than the danger red of a real error.
+          */}
+          {emailUnverified && (
+            <div
+              className="mt-4 rounded-[var(--radius-md)] p-3 text-sm"
+              style={{
+                backgroundColor: "var(--color-accent-light)",
+                color: "var(--color-accent)",
+              }}
+              role="status"
+            >
+              {UNVERIFIED_EMAIL_NOTICE}{" "}
+              <Link to={VERIFICATION_PATH} className="font-semibold underline">
+                Verify your email
+              </Link>
             </div>
           )}
           <Outlet />

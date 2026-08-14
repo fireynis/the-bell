@@ -9,6 +9,7 @@ import {
   type FeedState,
 } from "../lib/feed";
 import type { Post } from "../api/types";
+import { apiErrorMessage } from "../lib/verification";
 
 const PAGE_SIZE = 20;
 
@@ -30,8 +31,11 @@ export function useFeed() {
 
       const data = await api.get<FeedResponse>(`/posts/?${params}`);
       setFeed((prev) => applyFeedPage(prev, data, !!cursor));
-    } catch {
-      setError("Failed to load posts. Please try again.");
+    } catch (err) {
+      // The feed is the first thing an unverified member meets, and the guard
+      // refuses it: a bare "failed to load posts" would send them reloading a
+      // page that cannot load until they open their inbox.
+      setError(apiErrorMessage(err, "Failed to load posts. Please try again."));
     } finally {
       setLoading(false);
       fetchingRef.current = false;

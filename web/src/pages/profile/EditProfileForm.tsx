@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { userApi } from "../../api/client";
-import type { ApiError, User } from "../../api/types";
+import type { User } from "../../api/types";
 import ErrorBanner from "../../components/ErrorBanner";
+import { apiErrorMessage } from "../../lib/verification";
 
 /**
  * EditProfileForm edits the signed-in user's own profile in place, collapsing
@@ -52,8 +53,7 @@ export default function EditProfileForm({
       onSave(updated);
       setEditing(false);
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to update profile.");
+      setError(apiErrorMessage(err, "Failed to update profile."));
     } finally {
       setSaving(false);
     }

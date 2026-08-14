@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { User } from "../api/types";
+import { formatDateTime } from "./time";
 import { canPost, canVouch } from "./trust";
 import {
   PENDING_PATH_TO_MEMBER,
@@ -11,7 +12,7 @@ import {
   vouchingBlockReason,
 } from "./gating";
 
-type Actor = Pick<User, "trust_score" | "role" | "is_active">;
+type Actor = Pick<User, "trust_score" | "role" | "is_active" | "muted_until">;
 
 function actor(overrides: Partial<Actor> = {}): Actor {
   return {
@@ -192,6 +193,74 @@ describe("vouchingBlockReason", () => {
   });
 });
 
+/**
+ * A mute reaches the composer, which it did not before: the Actor type picked
+ * everything domain.User.CanPost reads except muted_until, so a muted member
+ * got an enabled box, wrote a whole post, and was answered with a bare 403.
+ */
+describe("a muted member", () => {
+  const NOW = new Date("2026-08-14T12:00:00Z");
+  const LATER = "2026-08-15T09:30:00Z";
+
+  const muted = (until: string) => actor({ muted_until: until });
+
+  it("cannot post while the mute is in force", () => {
+    expect(postingBlockReason(muted(LATER), { now: NOW })).not.toBeNull();
+  });
+
+  it("is told when it ends, in the same words the moderation pages use", () => {
+    const reason = postingBlockReason(muted(LATER), { now: NOW });
+    expect(reason).toContain(formatDateTime(LATER));
+  });
+
+  // Being silenced is not being cut off. A mute stops posting and nothing else,
+  // which is exactly what the action dialog promised the moderator who applied
+  // it — so the member is told the same thing rather than left to guess.
+  it("is told what still works", () => {
+    const reason = postingBlockReason(muted(LATER), { now: NOW });
+    expect(reason).toContain("read the feed");
+    expect(reason).toContain("react");
+  });
+
+  // Nothing sweeps an expired mute; the comparison against the clock is the
+  // whole mechanism, so it has to stop applying on its own.
+  it("can post again once the mute has run out", () => {
+    expect(postingBlockReason(muted("2026-08-14T11:59:00Z"), { now: NOW })).toBeNull();
+  });
+
+  it("is not muted by a timestamp the API sent malformed", () => {
+    expect(postingBlockReason(muted("not a date"), { now: NOW })).toBeNull();
+  });
+
+  // domain.User.CanVouch does not consult a mute, so neither does this: a mute
+  // silences somebody, it does not stop them saying they know their neighbour.
+  it("can still vouch", () => {
+    expect(
+      vouchingBlockReason(actor({ trust_score: VOUCHING_THRESHOLD, muted_until: LATER }), {
+        now: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  // The mute is the specific, dated thing in the way. Sending them off to earn
+  // trust would be advice that cannot unblock them.
+  it("blames the mute rather than a low trust score", () => {
+    const reason = postingBlockReason(actor({ trust_score: 0, muted_until: LATER }), { now: NOW });
+    expect(reason).toContain("muted");
+    expect(reason).not.toContain("trust score");
+  });
+
+  // Suspension outranks it: a suspended member cannot read the feed's controls
+  // either, so "you can still read and react" would be the wrong promise.
+  it("is told about a suspension first", () => {
+    const reason = postingBlockReason(
+      actor({ is_active: false, muted_until: LATER }),
+      { now: NOW },
+    );
+    expect(reason).toContain("suspended");
+  });
+});
+
 // The message and the gate must never disagree: a reason shown beside an
 // enabled button, or a disabled button with no explanation, is worse than
 // either alone. Rather than trusting that both were updated together, the two
@@ -206,20 +275,36 @@ describe("block reasons agree with the trust predicates", () => {
     VOUCHING_THRESHOLD,
     100,
   ];
+  // Undefined, in force, and lapsed — the mute has to be in the matrix or the
+  // agreement it is checking would hold everywhere except where it is new.
+  const mutes: Array<string | undefined> = [
+    undefined,
+    "2100-01-01T00:00:00Z",
+    "2000-01-01T00:00:00Z",
+  ];
 
   for (const role of roles) {
     for (const score of scores) {
       for (const isActive of [true, false]) {
-        const subject = actor({ role, trust_score: score, is_active: isActive });
-        const label = `${role} with score ${score}${isActive ? "" : " (suspended)"}`;
+        for (const mutedUntil of mutes) {
+          const subject = actor({
+            role,
+            trust_score: score,
+            is_active: isActive,
+            muted_until: mutedUntil,
+          });
+          const label = `${role} with score ${score}${isActive ? "" : " (suspended)"}${
+            mutedUntil ? ` muted until ${mutedUntil}` : ""
+          }`;
 
-        it(`gives a posting reason exactly when canPost refuses: ${label}`, () => {
-          expect(postingBlockReason(subject) === null).toBe(canPost(subject));
-        });
+          it(`gives a posting reason exactly when canPost refuses: ${label}`, () => {
+            expect(postingBlockReason(subject) === null).toBe(canPost(subject));
+          });
 
-        it(`gives a vouching reason exactly when canVouch refuses: ${label}`, () => {
-          expect(vouchingBlockReason(subject) === null).toBe(canVouch(subject));
-        });
+          it(`gives a vouching reason exactly when canVouch refuses: ${label}`, () => {
+            expect(vouchingBlockReason(subject) === null).toBe(canVouch(subject));
+          });
+        }
       }
     }
   }

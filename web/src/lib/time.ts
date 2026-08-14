@@ -39,6 +39,28 @@ export function formatRelativeTime(dateStr: string, options: RelativeTimeOptions
 }
 
 /**
+ * activeExpiry reads a timestamp that only means anything while it is still in
+ * the future — a mute's end, a suspension's — and returns it, or null when
+ * there is nothing in force at `now`.
+ *
+ * The comparison against the clock is the whole mechanism, mirroring
+ * domain.User.IsMuted: nothing sweeps an expired restriction, it simply stops
+ * applying, and a page left open outlives the response that loaded it.
+ *
+ * An unparseable timestamp reads as nothing in force rather than as an Invalid
+ * Date, sharing the empty-string contract of the formatters below: a bad value
+ * from the API leaves the plain view rather than a restriction nobody can name.
+ */
+export function activeExpiry(raw: string | null | undefined, now: Date): Date | null {
+  if (!raw) return null;
+
+  const expiry = new Date(raw);
+  if (Number.isNaN(expiry.getTime())) return null;
+
+  return expiry.getTime() > now.getTime() ? expiry : null;
+}
+
+/**
  * formatAbsoluteTime renders the full timestamp used in hover tooltips.
  * Returns an empty string for an unparseable input so a bad value from the API
  * shows nothing rather than "Invalid Date".

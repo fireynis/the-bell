@@ -19,6 +19,37 @@ import type {
   VouchesResponse,
 } from "./types";
 
+type ApiErrorListener = (err: ApiError) => void;
+
+const errorListeners = new Set<ApiErrorListener>();
+
+/**
+ * onApiError watches every refusal this client raises, and returns the function
+ * that stops watching.
+ *
+ * It exists for the failures that are not the caller's business. An unverified
+ * email is refused per request but is a fact about the whole session, and the
+ * page that has to say so — the layout — is not the page that made the call. A
+ * listener here is what lets one banner speak for all of them; see
+ * isEmailUnverified in lib/verification.ts and AuthProvider, its only
+ * subscriber.
+ *
+ * Listeners see the error and cannot stop it: every caller still receives its
+ * own rejection and decides for itself what to show.
+ */
+export function onApiError(listener: ApiErrorListener): () => void {
+  errorListeners.add(listener);
+  return () => {
+    errorListeners.delete(listener);
+  };
+}
+
+/** Announces a refusal, then hands it back for the caller to throw. */
+function announce(err: ApiError): ApiError {
+  for (const listener of errorListeners) listener(err);
+  return err;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -39,7 +70,7 @@ class ApiClient {
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw { error: body.error ?? res.statusText, status: res.status } satisfies ApiError;
+      throw announce({ error: body.error ?? res.statusText, status: res.status });
     }
 
     if (res.status === 204) return undefined as T;
@@ -83,7 +114,7 @@ class ApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw { error: body.error || res.statusText, status: res.status } satisfies ApiError;
+      throw announce({ error: body.error || res.statusText, status: res.status });
     }
     if (res.status === 204) return undefined as T;
     return res.json();

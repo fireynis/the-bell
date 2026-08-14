@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTION_TYPES,
+  BAN_IS_COUNCIL_ONLY,
   MAX_ACTION_REASON_LENGTH,
   MAX_DURATION_HOURS,
   MAX_REMOVAL_REASON_LENGTH,
+  actionBlockReason,
   actionConsequence,
   activeMuteExpiry,
   buildActionRequest,
@@ -308,6 +310,27 @@ describe("validateAction", () => {
     expect(validateAction(input({ reason })).valid).toBe(true);
   });
 
+  /*
+   * The server's bound is `len(reason)` over a Go string: UTF-8 bytes. This
+   * used to be checked in UTF-16 units, so a reason of accented or non-Latin
+   * text passed here and was refused there — the exact round trip the whole
+   * function exists to prevent, and the one a moderator writing in anything
+   * but ASCII would have met first.
+   */
+  it("measures the reason in bytes, as the server does", () => {
+    // 600 two-byte characters: 600 UTF-16 units, 1200 bytes.
+    const reason = "é".repeat(600);
+    expect(reason.length).toBeLessThan(MAX_ACTION_REASON_LENGTH);
+
+    const result = validateAction(input({ reason }));
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("1200 bytes");
+  });
+
+  it("accepts multi-byte text that fits inside the byte bound", () => {
+    expect(validateAction(input({ reason: "é".repeat(500) })).valid).toBe(true);
+  });
+
   it.each(["mute", "suspend"])("refuses a %s with no duration", (actionType) => {
     const severity = actionType === "mute" ? 3 : 4;
     expect(validateAction(input({ actionType, severity })).valid).toBe(false);
@@ -363,6 +386,53 @@ describe("validateAction", () => {
  * action whose moderator and target are the same person. The dialog knew only
  * the target, so it happily submitted one and took a guaranteed 400 for it.
  */
+/**
+ * Who may ban, mirroring authorizeAction in
+ * internal/service/moderation_action.go.
+ *
+ * The route group admits any moderator, and the service then checks the council
+ * role for a ban and for nothing else. Nothing on this side encoded that, so
+ * the dialog offered every moderator the one irreversible action in the system
+ * and let them fill in the form before the server said no.
+ */
+describe("actionBlockReason", () => {
+  const council = { role: "council", is_active: true };
+  const moderator = { role: "moderator", is_active: true };
+
+  it("lets the council ban", () => {
+    expect(actionBlockReason("ban", council)).toBeNull();
+  });
+
+  it("refuses a moderator, and says who can", () => {
+    expect(actionBlockReason("ban", moderator)).toBe(BAN_IS_COUNCIL_ONLY);
+    expect(BAN_IS_COUNCIL_ONLY).toContain("council");
+  });
+
+  // Every other action is within a moderator's authority; the route group has
+  // already established that they are one.
+  it.each(["warn", "mute", "suspend"])("leaves %s to any moderator", (actionType) => {
+    expect(actionBlockReason(actionType, moderator)).toBeNull();
+  });
+
+  // isCouncil is the shape of domain.User.IsCouncil, which a suspended
+  // councilor does not satisfy — and neither would the server.
+  it("refuses a suspended councilor", () => {
+    expect(actionBlockReason("ban", { role: "council", is_active: false })).toBe(
+      BAN_IS_COUNCIL_ONLY,
+    );
+  });
+
+  it.each([null, undefined])("refuses a viewer who is not loaded yet (%o)", (actor) => {
+    expect(actionBlockReason("ban", actor)).toBe(BAN_IS_COUNCIL_ONLY);
+  });
+
+  // A server that grows a new action type must not have it silently barred by
+  // a rule written about bans.
+  it("says nothing about an action type it has never heard of", () => {
+    expect(actionBlockReason("shadowban", moderator)).toBeNull();
+  });
+});
+
 describe("validateAction on yourself", () => {
   const onSelf = (overrides: Partial<ActionInput> = {}) =>
     validateAction(input({ targetUserId: MODERATOR, ...overrides }));

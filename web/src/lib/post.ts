@@ -1,4 +1,5 @@
 import type { ApiError, Post } from "../api/types";
+import { UNVERIFIED_EMAIL_NOTICE, isEmailUnverified } from "./verification";
 
 /** Mirrors domain.MaxPostBodyLength in internal/domain/post.go. */
 export const MAX_POST_BODY_LENGTH = 1000;
@@ -176,6 +177,11 @@ export function postMutationErrorMessage(
       : "The post could not be deleted. Please try again.";
 
   if (!err) return fallback;
+
+  // Ahead of the switch, because it is a 403 that has nothing to do with
+  // authorship: telling somebody only the author can edit their own post would
+  // send them looking for a bug that is not there.
+  if (isEmailUnverified(err)) return UNVERIFIED_EMAIL_NOTICE;
 
   switch (err.status) {
     case 409:

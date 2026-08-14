@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { userApi, vouchApi } from "../api/client";
 import { useAuth } from "../context/AuthContext";
-import type { ApiError, Post, User, VouchesResponse } from "../api/types";
+import type { Post, User, VouchesResponse } from "../api/types";
 import Avatar from "../components/Avatar";
 import ErrorBanner from "../components/ErrorBanner";
 import OwnModerationHistory from "../components/OwnModerationHistory";
@@ -16,6 +16,7 @@ import VouchList from "./profile/VouchList";
 import VouchAction from "./profile/VouchAction";
 import { vouchingBlockReason } from "../lib/gating";
 import { replacePost, withoutPost } from "../lib/post";
+import { apiErrorMessage } from "../lib/verification";
 
 /**
  * "history" is the member's own moderation record, and it is offered on their
@@ -29,7 +30,7 @@ const POST_LIMIT = 50;
 
 export default function Profile() {
   const { userId } = useParams<{ userId: string }>();
-  const { user: viewer } = useAuth();
+  const { user: viewer, updateUser } = useAuth();
   const isOwnProfile = !userId;
 
   // Derived from the signed-in viewer, not the profile being read: it answers
@@ -69,8 +70,10 @@ export default function Profile() {
       setVouches(vouchData);
       setViewerVouches(viewerVouchData);
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to load profile.");
+      // GET /users/me is behind the verification guard even though GET /me is
+      // not, so an unverified member's own profile is one of the pages that
+      // fails — with a message that has to say which inbox to open.
+      setError(apiErrorMessage(err, "Failed to load profile."));
     } finally {
       setLoading(false);
     }
@@ -178,9 +181,21 @@ export default function Profile() {
               className="mt-4 border-t pt-4"
               style={{ borderColor: "var(--color-border-light)" }}
             >
+              {/*
+                Saved into the auth context as well as into this page. The
+                sidebar renders the context's copy, which was only ever
+                refreshed at sign-in — so a member who changed their display
+                name saw the new one here and the old one in the corner of
+                every page until they signed in again. Guarded on
+                isOwnProfile, and guarded again inside updateUser, which
+                ignores an update naming anybody else.
+              */}
               <EditProfileForm
                 user={user}
-                onSave={(updated) => setUser(updated)}
+                onSave={(updated) => {
+                  setUser(updated);
+                  if (isOwnProfile) updateUser(updated);
+                }}
               />
               {/*
                 Vouching is the platform's core mechanic, so where the viewer

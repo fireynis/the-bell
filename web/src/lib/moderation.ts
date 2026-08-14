@@ -9,6 +9,8 @@ import type {
 } from "../api/types";
 import { personName, shortId } from "./people";
 import { byteLength, type ValidationResult } from "./post";
+import { activeExpiry } from "./time";
+import { isCouncil } from "./trust";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
 export const ACTION_TYPES = ["warn", "mute", "suspend", "ban"] as const;
@@ -340,6 +342,31 @@ export function needsDuration(actionType: string): boolean {
   return isActionType(actionType) && NEEDS_DURATION.includes(actionType);
 }
 
+/** The one sentence that explains why a moderator cannot ban. */
+export const BAN_IS_COUNCIL_ONLY = "Only the council can ban.";
+
+/**
+ * actionBlockReason explains why this moderator may not take this action, or
+ * returns null when they may.
+ *
+ * Mirrors authorizeAction in internal/service/moderation_action.go: the route
+ * group admits any moderator, and every action is within a moderator's
+ * authority except a ban, which the service checks the council role for
+ * separately. Nothing else on this side of the wire encoded that, so the dialog
+ * offered a moderator the one irreversible action in the system and answered
+ * their filled-in form with a bare "forbidden".
+ *
+ * The council test is isCouncil, which is the shape of domain.User.IsCouncil —
+ * a suspended councilor is not one, and the server would refuse them too.
+ */
+export function actionBlockReason(
+  actionType: string,
+  actor: Pick<User, "role" | "is_active"> | null | undefined,
+): string | null {
+  if (actionType !== "ban") return null;
+  return isCouncil(actor ?? null) ? null : BAN_IS_COUNCIL_ONLY;
+}
+
 export interface ActionInput {
   actionType: string;
   severity: number;
@@ -393,10 +420,16 @@ export function validateAction(input: ActionInput, durationHours?: number): Vali
   if (reason.length === 0) {
     return { valid: false, error: "A reason is required." };
   }
-  if (reason.length > MAX_ACTION_REASON_LENGTH) {
+  // Bytes, not UTF-16 units, for the reason given on byteLength: the server
+  // bounds `len(reason)` over a Go string. Measuring reason.length instead
+  // waved through a reason of multi-byte characters — 400 emoji are 400 units
+  // here and 1600 bytes there — that the server then rejected, which is exactly
+  // the round trip this function exists to prevent.
+  const bytes = byteLength(reason);
+  if (bytes > MAX_ACTION_REASON_LENGTH) {
     return {
       valid: false,
-      error: `Reason is ${reason.length} characters; the maximum is ${MAX_ACTION_REASON_LENGTH}.`,
+      error: `Reason is ${bytes} bytes; the maximum is ${MAX_ACTION_REASON_LENGTH}.`,
     };
   }
 
@@ -460,7 +493,10 @@ export function activeMuteExpiry(
   status: MuteStatus | null | undefined,
   now: Date,
 ): Date | null {
-  return parseActiveExpiry(status?.muted_until, now);
+  // activeExpiry in lib/time.ts, which is also what the posting gate asks of a
+  // member's own muted_until (canPost in lib/trust.ts). A member told they are
+  // muted by one rule and not the other would be reading two clocks.
+  return activeExpiry(status?.muted_until, now);
 }
 
 /**
@@ -518,7 +554,7 @@ export interface OwnMuteNotice {
  * is never a way to learn about somebody else's moderation.
  */
 export function ownMuteNotice(user: User | null | undefined, now: Date): OwnMuteNotice {
-  const mutedUntil = parseActiveExpiry(user?.muted_until, now);
+  const mutedUntil = activeExpiry(user?.muted_until, now);
   const latestLift = user?.mute_lifts?.[0] ?? null;
 
   return {
@@ -528,12 +564,3 @@ export function ownMuteNotice(user: User | null | undefined, now: Date): OwnMute
   };
 }
 
-/** Shared by ownMuteNotice and activeMuteExpiry: a timestamp still in the future, or null. */
-function parseActiveExpiry(raw: string | undefined, now: Date): Date | null {
-  if (!raw) return null;
-
-  const expiry = new Date(raw);
-  if (Number.isNaN(expiry.getTime())) return null;
-
-  return expiry.getTime() > now.getTime() ? expiry : null;
-}

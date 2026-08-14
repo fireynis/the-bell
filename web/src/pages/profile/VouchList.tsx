@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { vouchApi } from "../../api/client";
-import type { ApiError, User, Vouch } from "../../api/types";
+import type { User, Vouch } from "../../api/types";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { personName } from "../../lib/people";
+import { apiErrorMessage } from "../../lib/verification";
 import {
   REVOKE_PENALTY_ENFORCED,
   canRevokeVouch,
@@ -76,8 +77,7 @@ export default function VouchList({
       // The server refuses for reasons this list cannot see — the vouch already
       // revoked by someone else, the viewer's role changed since the page
       // loaded. Its message is the only accurate one available.
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "That did not work. Please try again.");
+      setError(apiErrorMessage(err, "That did not work. Please try again."));
     } finally {
       setSubmitting(false);
     }

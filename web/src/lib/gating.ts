@@ -1,8 +1,18 @@
 import type { User } from "../api/types";
+import { activeMuteExpiry } from "./moderation";
+import { formatDateTime } from "./time";
 import { POSTING_THRESHOLD, VOUCHING_THRESHOLD, canPost, canVouch } from "./trust";
 
-/** The subset of a user these checks read. */
-export type Actor = Pick<User, "trust_score" | "role" | "is_active"> | null;
+/**
+ * The subset of a user these checks read.
+ *
+ * muted_until is part of it because domain.User.CanPost is: a muted member kept
+ * an enabled composer, wrote a whole post and got a bare 403 for it. The server
+ * sends the field on the caller's own profile and nowhere else, and absent —
+ * never null — when no mute is in force, so a neighbour's profile simply reads
+ * as unmuted, which is all this side is entitled to know.
+ */
+export type Actor = Pick<User, "trust_score" | "role" | "is_active" | "muted_until"> | null;
 
 /**
  * Why there is no actor to check, in the case where that is not simply "nobody
@@ -18,6 +28,12 @@ export type Actor = Pick<User, "trust_score" | "role" | "is_active"> | null;
 export interface ActorContext {
   /** True when a session exists but the member's profile could not be read. */
   profileUnavailable?: boolean;
+  /**
+   * The clock a mute is measured against; defaults to now. Injectable for the
+   * same reason domain.User.CanPost takes one — the boundary is testable
+   * without a fake clock.
+   */
+  now?: Date;
 }
 
 /**
@@ -74,6 +90,7 @@ function blockReason(
   threshold: number,
   action: string,
   ctx?: ActorContext,
+  muteBlocks = false,
 ): string | null {
   if (!user) {
     if (ctx?.profileUnavailable) {
@@ -89,6 +106,16 @@ function blockReason(
   }
   if (user.role === "pending") {
     return `The town has not rung you in yet. It takes ${PENDING_PATH_TO_MEMBER} — then you can ${action}.`;
+  }
+
+  // Ahead of the trust gate, and only for posting. It is ahead because a mute
+  // is the specific, dated thing standing in the way — chasing vouches would
+  // not lift it — and only for posting because domain.User.CanPost is the one
+  // gate that consults it: CanVouch does not, so a muted member can still
+  // vouch, exactly as the action dialog promises the moderator who muted them.
+  const muteEnds = muteBlocks ? activeMuteExpiry(user, ctx?.now ?? new Date()) : null;
+  if (muteEnds) {
+    return `You are muted until ${formatDateTime(muteEnds.toISOString())}. You can still read the feed and react.`;
   }
 
   const score = user.trust_score;
@@ -112,12 +139,13 @@ function blockReason(
  * stays the authority, but the user's effort is not wasted discovering that.
  *
  * Returns null exactly when canPost returns true; the two are tested against
- * each other so a future change to one cannot silently outgrow the other. The
- * context only ever changes the wording for a null actor, which canPost already
- * refuses, so passing one cannot open the gate.
+ * each other so a future change to one cannot silently outgrow the other —
+ * including the mute, which both consult. `profileUnavailable` only ever
+ * changes the wording for a null actor, which canPost already refuses, so
+ * passing a context cannot open the gate.
  */
 export function postingBlockReason(user: Actor, ctx?: ActorContext): string | null {
-  return blockReason(user, POSTING_THRESHOLD, "post", ctx);
+  return blockReason(user, POSTING_THRESHOLD, "post", ctx, true);
 }
 
 /**

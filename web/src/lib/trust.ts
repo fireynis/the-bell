@@ -1,4 +1,5 @@
 import type { User } from "../api/types";
+import { activeExpiry } from "./time";
 
 /**
  * Trust thresholds, mirroring internal/domain/user.go. The server is always the
@@ -43,11 +44,43 @@ function isRoleBlocked(role: string): boolean {
   return role === "pending" || role === "banned";
 }
 
-export function canPost(user: Pick<User, "trust_score" | "role" | "is_active"> | null): boolean {
-  if (!user) return false;
-  return user.is_active && !isRoleBlocked(user.role) && user.trust_score >= POSTING_THRESHOLD;
+/** The subset of a member the posting gate reads. */
+export type Poster = Pick<User, "trust_score" | "role" | "is_active" | "muted_until">;
+
+/**
+ * isMuted mirrors domain.User.IsMuted: a mute is in force while its expiry is
+ * still ahead of the clock, and lapses on its own with nothing to run.
+ *
+ * The field is absent — never null — on a member who is not muted, and the
+ * server sends it on the caller's own profile and nowhere else, so this can
+ * only ever answer about the signed-in member.
+ */
+export function isMuted(user: Pick<User, "muted_until"> | null, now: Date = new Date()): boolean {
+  return activeExpiry(user?.muted_until, now) !== null;
 }
 
+/**
+ * canPost mirrors domain.User.CanPost, mute included.
+ *
+ * The clock is a parameter with a default for the same reason the Go method
+ * takes one: the mute boundary is testable without a fake clock, and a caller
+ * that already has a `now` uses the one it uses everywhere else.
+ */
+export function canPost(user: Poster | null, now: Date = new Date()): boolean {
+  if (!user) return false;
+  return (
+    user.is_active &&
+    !isMuted(user, now) &&
+    !isRoleBlocked(user.role) &&
+    user.trust_score >= POSTING_THRESHOLD
+  );
+}
+
+/**
+ * canVouch mirrors domain.User.CanVouch, which — unlike CanPost — asks nothing
+ * about a mute. A mute silences somebody; it does not stop them saying they
+ * know their neighbour, and the action dialog tells moderators as much.
+ */
 export function canVouch(user: Pick<User, "trust_score" | "role" | "is_active"> | null): boolean {
   if (!user) return false;
   return user.is_active && !isRoleBlocked(user.role) && user.trust_score >= VOUCHING_THRESHOLD;

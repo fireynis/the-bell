@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { postApi } from "../api/client";
-import type { ApiError } from "../api/types";
 import { useAuth } from "../context/AuthContext";
 import ErrorBanner from "../components/ErrorBanner.tsx";
 import Spinner from "../components/Spinner.tsx";
@@ -15,6 +14,7 @@ import {
   validatePostBody,
 } from "../lib/post.ts";
 import { awaitingWelcome, postingBlockReason } from "../lib/gating.ts";
+import { apiErrorMessage } from "../lib/verification.ts";
 import { RINGING, RING_THE_BELL } from "../lib/copy.ts";
 import PendingNotice from "../components/PendingNotice.tsx";
 
@@ -108,8 +108,7 @@ export default function Compose() {
       }
       navigate("/", { replace: true });
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to create post. Please try again.");
+      setError(apiErrorMessage(err, "Failed to create post. Please try again."));
       setSubmitting(false);
     }
   }

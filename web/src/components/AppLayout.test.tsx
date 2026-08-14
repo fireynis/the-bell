@@ -1,8 +1,10 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { postApi } from "../api/client";
 import { AuthProvider } from "../context/AuthContext";
 import { BOTTOM_NAV_ITEMS, NAV_ITEMS } from "../lib/nav";
+import { UNVERIFIED_EMAIL_NOTICE, VERIFICATION_PATH } from "../lib/verification";
 import AppLayout from "./AppLayout";
 
 /**
@@ -84,6 +86,87 @@ describe("AppLayout mobile header", () => {
  * narrowing the column twice; Town Hall's four-across stat row was the visible
  * cost, crushed into a 600px reading column.
  */
+/**
+ * The unverified-email banner.
+ *
+ * The guard skips GET /v1/me, so this member is signed in and looks entirely
+ * ordinary — and every other call is refused with a message no page used to
+ * recognize. The banner belongs here rather than on any one page because the
+ * refusal belongs to the session: whichever page they open, the same thing is
+ * in the way, and it is not that page's failure to explain.
+ */
+describe("AppLayout unverified email banner", () => {
+  const notice = () => screen.queryByText(UNVERIFIED_EMAIL_NOTICE, { exact: false });
+
+  it("says nothing while nothing has been refused", async () => {
+    renderLayout();
+
+    await waitFor(() => expect(screen.getByRole("banner")).toBeInTheDocument());
+    expect(notice()).toBeNull();
+  });
+
+  it("appears once the API refuses a call for want of a verified address", async () => {
+    renderLayout();
+    await waitFor(() => expect(screen.getByRole("banner")).toBeInTheDocument());
+
+    // Any call at all: the layout learns from the client rather than from the
+    // page that made it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: "email not verified" }),
+        } as unknown as Response),
+      ),
+    );
+    await postApi.create({ body: "hello" }).catch(() => undefined);
+
+    expect(await screen.findByText(UNVERIFIED_EMAIL_NOTICE, { exact: false })).toBeInTheDocument();
+  });
+
+  it("offers the way out of it", async () => {
+    renderLayout();
+    await waitFor(() => expect(screen.getByRole("banner")).toBeInTheDocument());
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: "email not verified" }),
+        } as unknown as Response),
+      ),
+    );
+    await postApi.create({ body: "hello" }).catch(() => undefined);
+
+    const link = await screen.findByRole("link", { name: /verify your email/i });
+    expect(link).toHaveAttribute("href", VERIFICATION_PATH);
+  });
+
+  // An ordinary refusal is the page's business, not the whole session's.
+  it("stays quiet for a 403 that means something else", async () => {
+    renderLayout();
+    await waitFor(() => expect(screen.getByRole("banner")).toBeInTheDocument());
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ error: "account suspended" }),
+        } as unknown as Response),
+      ),
+    );
+    await postApi.create({ body: "hello" }).catch(() => undefined);
+
+    expect(notice()).toBeNull();
+  });
+});
+
 describe("AppLayout content column", () => {
   it("holds pages to the reading measure by default", () => {
     const { container } = renderLayout();

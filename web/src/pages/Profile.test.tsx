@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OwnModerationEntry } from "../api/types";
-import { AuthProvider } from "../context/AuthContext";
+import { AuthProvider, useAuth } from "../context/AuthContext";
 import Profile from "./Profile";
 
 /**
@@ -41,7 +41,7 @@ function stubApi(history: OwnModerationEntry[] = []) {
 
   vi.stubGlobal(
     "fetch",
-    vi.fn((url: string) => {
+    vi.fn((url: string, init?: RequestInit) => {
       if (url.startsWith("/.ory")) return answer({ id: "session-1", active: true });
       // Checked before the bare /users/me below, which is a prefix of it.
       if (url.startsWith("/api/v1/users/me/moderation-history")) {
@@ -49,6 +49,12 @@ function stubApi(history: OwnModerationEntry[] = []) {
         return answer({ actions: history });
       }
       if (url.startsWith("/api/v1/me") || url.startsWith("/api/v1/users/me")) {
+        // A save answers with the whole updated member, which is what both the
+        // page and the auth context go on to render.
+        if (init?.method === "PUT") {
+          const sent = JSON.parse(init.body as string) as { display_name: string };
+          return answer(profileBody(VIEWER_ID, sent.display_name));
+        }
         return answer(profileBody(VIEWER_ID, "Ada"));
       }
       if (url.includes("/posts")) return answer({ posts: [] });
@@ -63,11 +69,21 @@ function stubApi(history: OwnModerationEntry[] = []) {
   return historyCalls;
 }
 
+/**
+ * Stands in for the sidebar, which renders the auth context's copy of the
+ * member rather than the profile page's.
+ */
+function ContextName() {
+  const { user } = useAuth();
+  return <div data-testid="context-name">{user?.display_name ?? ""}</div>;
+}
+
 /** Renders the own-profile route ("/profile") or a neighbour's. */
 function renderProfile(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
+        <ContextName />
         <Routes>
           <Route path="/profile" element={<Profile />} />
           <Route path="/profile/:userId" element={<Profile />} />
@@ -80,6 +96,54 @@ function renderProfile(path: string) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+/**
+ * Editing your own profile updates the signed-in member everywhere, not just on
+ * the page you did it from.
+ *
+ * The sidebar renders the auth context's copy, which used to be fetched at
+ * sign-in and never again — so a member changed their display name, saw it here,
+ * and went on seeing the old one in the corner of every page until they signed
+ * in again.
+ */
+describe("Profile — saving your own profile", () => {
+  async function saveDisplayName(path: string, name: string) {
+    renderProfile(path);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit profile" }));
+    fireEvent.change(screen.getByDisplayValue("Ada"), { target: { value: name } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  }
+
+  it("tells the rest of the app the member's new name", async () => {
+    stubApi();
+
+    await saveDisplayName("/profile", "Ada Lovelace");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("context-name").textContent).toBe("Ada Lovelace"),
+    );
+  });
+
+  it("shows it on the profile itself as well", async () => {
+    stubApi();
+
+    await saveDisplayName("/profile", "Ada Lovelace");
+
+    expect(await screen.findByRole("heading", { name: "Ada Lovelace" })).toBeTruthy();
+  });
+
+  // The form is only rendered on your own profile, and the context ignores an
+  // update naming anybody else — so a neighbour's page has no route to it.
+  it("offers no edit form on a neighbour's profile", async () => {
+    stubApi();
+
+    renderProfile(`/profile/${NEIGHBOUR_ID}`);
+
+    await screen.findByRole("button", { name: /^Posts/ });
+    expect(screen.queryByRole("button", { name: "Edit profile" })).toBeNull();
+  });
 });
 
 describe("Profile — my moderation history", () => {

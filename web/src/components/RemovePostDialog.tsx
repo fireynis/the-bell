@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { moderationApi } from "../api/client.ts";
-import type { ApiError } from "../api/types.ts";
 import ErrorBanner from "./ErrorBanner.tsx";
 import { useModalDialog } from "../hooks/useModalDialog.ts";
 import { MAX_REMOVAL_REASON_LENGTH, validateRemovalReason } from "../lib/moderation.ts";
+import { apiErrorMessage } from "../lib/verification.ts";
 
 interface RemovePostDialogProps {
   postId: string;
@@ -45,8 +45,7 @@ export default function RemovePostDialog({ postId, onClose, onRemoved }: RemoveP
       await moderationApi.removePost(postId, reason.trim());
       onRemoved();
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to remove the post.");
+      setError(apiErrorMessage(err, "Failed to remove the post."));
       setSubmitting(false);
     }
   }
