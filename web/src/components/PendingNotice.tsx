@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import { PENDING_WELCOME } from "../lib/gating";
+import ResidencyClaimField from "./ResidencyClaimField";
 
 interface PendingNoticeProps {
   /** Extra spacing for the page it sits on; the notice owns nothing else. */
@@ -56,6 +57,15 @@ export default function PendingNotice({ className }: PendingNoticeProps) {
       >
         {PENDING_WELCOME.profileCta}
       </Link>
+
+      {/*
+        The other half of "someone has to recognise you": the profile link sends
+        them off to fill something in, this asks for the one thing the council
+        actually reads while deciding. It is inside the welcome rather than after
+        it because it only makes sense as an answer to what the welcome just
+        said.
+      */}
+      <ResidencyClaimField />
     </section>
   );
 }

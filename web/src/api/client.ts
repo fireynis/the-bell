@@ -3,12 +3,15 @@ import type {
   ActionHistoryResponse,
   ApiError,
   CreatePostRequest,
+  CreateProposalRequest,
   CreateVouchRequest,
   DirectoryResponse,
   ModerationQueueResponse,
   MuteStatus,
   OwnModerationHistoryResponse,
   Post,
+  Proposal,
+  ProposalsResponse,
   Report,
   TakeActionRequest,
   TownConfig,
@@ -169,6 +172,49 @@ export const userApi = {
     if (search) params.set("q", search);
     return api.get<DirectoryResponse>(`/users?${params.toString()}`);
   },
+
+  /**
+   * Records where in town the member says they are, for the council reading
+   * their approval.
+   *
+   * Answers 204 with no body — deliberately, because there is nothing to read
+   * back: the claim is exactly the string that was sent, and the one other place
+   * it surfaces is a queue this member cannot see. The empty string clears it,
+   * which is the only way to take it back.
+   *
+   * Trimmed here as well as on the server so that the local copy a caller keeps
+   * after saving matches what was actually stored, rather than differing by the
+   * whitespace the server quietly removed.
+   */
+  setResidencyClaim: (claim: string) =>
+    api.put<void>("/users/me/residency-claim", { claim: (claim ?? "").trim() }),
+};
+
+export const proposalApi = {
+  /**
+   * The council's proposals, either the ones still open or the ones already
+   * decided. The two are separate requests rather than one filtered on the
+   * client: the decided list is history and grows without bound, and a page
+   * showing three open votes has no business downloading every decision the
+   * town has ever made to find them.
+   */
+  list: (status: "open" | "decided") =>
+    api.get<ProposalsResponse>(`/admin/proposals?status=${status}`),
+
+  /** Answers 201 with the created proposal, already open and awaiting votes. */
+  create: (req: CreateProposalRequest) => api.post<Proposal>("/admin/proposals", req),
+
+  /**
+   * Casts this council member's vote, answering 200 with the whole updated
+   * proposal.
+   *
+   * Read the result rather than adjusting the tally locally: this vote may have
+   * been the deciding one, in which case the proposal comes back decided and —
+   * for a promotion or a removal — already carried out. There is no second
+   * request that tells you that happened.
+   */
+  vote: (proposalId: string, vote: "approve" | "reject") =>
+    api.post<Proposal>(`/admin/proposals/${proposalId}/votes`, { approve: vote === "approve" }),
 };
 
 export const vouchApi = {

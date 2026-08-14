@@ -1,19 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, proposalApi } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import Spinner from "../components/Spinner";
 import ErrorBanner from "../components/ErrorBanner";
 import ThemeSettings from "./admin/ThemeSettings";
 import PendingUsersSection from "./admin/PendingUsersSection";
-import CouncilVotesSection from "./admin/CouncilVotesSection";
+import ProposalsSection from "./admin/ProposalsSection";
 import { isCouncil } from "../lib/trust";
-import { applyVote } from "../lib/proposal";
+import { applyProposalUpdate, proposalErrorMessage } from "../lib/proposal";
 import { NAV_ITEMS } from "../lib/nav";
 import type {
   ApiError,
   TownStats,
-  ProposalSummary,
-  ProposalsResponse,
+  Proposal,
   PendingUsersResponse,
   User,
 } from "../api/types";
@@ -81,7 +80,7 @@ export default function Admin() {
 
   const [stats, setStats] = useState<TownStats | null>(null);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);
-  const [proposals, setProposals] = useState<ProposalSummary[]>([]);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [approving, setApproving] = useState<string | null>(null);
@@ -94,15 +93,20 @@ export default function Admin() {
     setError(null);
 
     try {
-      const [statsData, pendingResult, proposalsData] = await Promise.all([
+      // Open and decided are separate reads — the history grows without bound
+      // and has no business being downloaded to find three open votes — but
+      // they are held as one list here, so that a vote which decides a proposal
+      // simply moves it from one half of the town hall to the other.
+      const [statsData, pendingResult, open, decided] = await Promise.all([
         api.get<TownStats>("/admin/stats"),
         api.get<PendingUsersResponse>("/vouches/pending").catch(() => null),
-        api.get<ProposalsResponse>("/admin/council/votes"),
+        proposalApi.list("open"),
+        proposalApi.list("decided"),
       ]);
 
       setStats(statsData);
       setPendingUsers(pendingResult?.users ?? []);
-      setProposals(proposalsData.proposals ?? []);
+      setProposals([...(open.proposals ?? []), ...(decided.proposals ?? [])]);
     } catch (err) {
       const apiErr = err as ApiError;
       setError(apiErr.error ?? `Failed to load ${NAV_ITEMS.admin.label}.`);
@@ -137,15 +141,16 @@ export default function Admin() {
 
   async function handleVote(proposalId: string, vote: "approve" | "reject") {
     setVoting(proposalId);
+    setError(null);
     try {
-      const updated = await api.post<ProposalSummary>(
-        "/admin/council/votes",
-        { proposal_id: proposalId, vote },
-      );
-      setProposals((prev) => applyVote(prev, updated));
+      // The response is the whole updated proposal, and this vote may have been
+      // the one that decided it — in which case a promotion or a removal has
+      // already been carried out. Folding the server's copy back in is what puts
+      // that on screen without a reload.
+      const updated = await proposalApi.vote(proposalId, vote);
+      setProposals((prev) => applyProposalUpdate(prev, updated));
     } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to cast vote.");
+      setError(proposalErrorMessage(err as ApiError, "vote"));
     } finally {
       setVoting(null);
     }
@@ -208,10 +213,12 @@ export default function Admin() {
           approving={approving}
         />
 
-        <CouncilVotesSection
+        <ProposalsSection
           proposals={proposals}
+          viewerId={user?.id ?? null}
           onVote={handleVote}
           voting={voting}
+          onCreated={fetchData}
         />
 
         <ThemeSettings />

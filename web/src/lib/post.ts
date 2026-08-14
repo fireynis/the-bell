@@ -32,6 +32,25 @@ export function byteLength(value: string): number {
 }
 
 /**
+ * runeLength measures a string the way Go's `utf8.RuneCountInString` does.
+ *
+ * The counterpart to byteLength, and needed wherever a server-side bound is
+ * written in characters rather than bytes. JS `.length` counts UTF-16 code
+ * units, so an emoji or any character outside the basic plane counts as two —
+ * which would let a counter say a field is over a limit the server considers it
+ * comfortably inside. Spreading the string iterates code points, which is what
+ * a rune is.
+ *
+ * Grapheme clusters are still not runes: a flag or a family emoji is several
+ * code points and counts as several, exactly as it does in Go. That is the
+ * point — this mirrors the server's arithmetic rather than a human's idea of a
+ * character.
+ */
+export function runeLength(value: string): number {
+  return [...(value ?? "")].length;
+}
+
+/**
  * validatePostBody applies the same rules as the server so the compose box can
  * disable submission instead of round-tripping to a guaranteed 400.
  *

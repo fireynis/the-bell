@@ -66,6 +66,31 @@ export const PENDING_WELCOME = {
 } as const;
 
 /**
+ * The one thing a pending member can offer the council in return.
+ *
+ * It sits beside PENDING_WELCOME because it is part of the same conversation:
+ * the welcome says somebody has to recognise you, and this is the member's
+ * chance to give them something to recognise. That is also why it is phrased as
+ * an offer rather than a step — nothing is gated on it, no approval waits for
+ * it, and a member who would rather not say is not being uncooperative.
+ *
+ * "Where in town" and not "your address": the council needs enough to place
+ * somebody, and asking for a house number invites more precision than the
+ * purpose justifies.
+ */
+export const RESIDENCY_PROMPT = {
+  label: "Where in town are you?",
+  help: "Tell the council where in town you are — it helps your neighbours recognise you.",
+  placeholder: "The old mill road, near the school...",
+  save: "Save",
+  saving: "Saving...",
+  /** Shown after a successful save; quiet, because 204 means it simply worked. */
+  saved: "Saved — the council will see this with your name.",
+  /** Who ever sees it, said plainly, because the answer is the reason to answer at all. */
+  privacy: "Only the council sees this, and only while they are deciding. It never appears on your profile.",
+} as const;
+
+/**
  * awaitingWelcome reports whether to greet this actor as a newcomer.
  *
  * A suspended pending account is deliberately excluded. The suspension is the

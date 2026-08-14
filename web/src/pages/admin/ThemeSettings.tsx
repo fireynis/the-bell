@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useTheme } from "../../context/ThemeContext";
 
-const DEFAULT_PRIMARY = "#0A7AFF";
-const DEFAULT_ACCENT = "#D4A017";
+// Must match the :root defaults in index.css — this is what "Reset" restores.
+const DEFAULT_PRIMARY = "#8B5023";
+const DEFAULT_ACCENT = "#866309";
 
 export default function ThemeSettings() {
   const { config, updateConfig } = useTheme();

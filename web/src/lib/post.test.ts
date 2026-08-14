@@ -13,6 +13,7 @@ import {
   postMutationErrorMessage,
   remainingChars,
   replacePost,
+  runeLength,
   validateImageFile,
   validatePostBody,
   validationDetail,
@@ -177,6 +178,36 @@ describe("byteLength", () => {
 
   it("is zero for an empty string", () => {
     expect(byteLength("")).toBe(0);
+  });
+});
+
+describe("runeLength", () => {
+  it("counts plain ASCII as one character each", () => {
+    expect(runeLength("hello")).toBe(5);
+  });
+
+  // The counterpart of the byteLength case above: a bound written in characters
+  // on the server must not be measured in UTF-16 units, which would refuse a
+  // field the server would have accepted.
+  it("counts an emoji as one character, not as its two UTF-16 units", () => {
+    expect("🔔".length).toBe(2);
+    expect(runeLength("🔔")).toBe(1);
+  });
+
+  it("counts an accented character as one, whatever it costs in bytes", () => {
+    expect(runeLength("é")).toBe(1);
+    expect(byteLength("é")).toBe(2);
+  });
+
+  // A rune is a code point, exactly as in Go — a flag is two of them, and this
+  // deliberately agrees with the server rather than with a human's idea of one
+  // character.
+  it("counts a flag as the code points it is made of", () => {
+    expect(runeLength("🇨🇦")).toBe(2);
+  });
+
+  it("is zero for an empty string", () => {
+    expect(runeLength("")).toBe(0);
   });
 });
 

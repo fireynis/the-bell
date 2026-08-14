@@ -1,8 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import PendingNotice from "./PendingNotice";
-import { PENDING_WELCOME } from "../lib/gating";
+import { AuthProvider } from "../context/AuthContext";
+import { PENDING_WELCOME, RESIDENCY_PROMPT } from "../lib/gating";
 
 /**
  * A new arrival used to land on the feed with no explanation at all — the word
@@ -11,13 +12,33 @@ import { PENDING_WELCOME } from "../lib/gating";
  * of the greeting that make it an explanation rather than a rejection.
  */
 
+/**
+ * The notice carries the residency prompt, which reads the signed-in member, so
+ * it needs a session around it. Answering every request with an empty body is
+ * enough: the prompt starts blank for a member whose profile carries no claim,
+ * which is every member until they answer it.
+ */
 function renderNotice() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as Response),
+    ),
+  );
+
   return render(
     <MemoryRouter>
-      <PendingNotice />
+      <AuthProvider>
+        <PendingNotice />
+      </AuthProvider>
     </MemoryRouter>,
   );
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("PendingNotice", () => {
   it("says what pending means and what ends it", () => {
@@ -40,5 +61,13 @@ describe("PendingNotice", () => {
     renderNotice();
     expect(screen.getByRole("status")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: PENDING_WELCOME.title })).toBeInTheDocument();
+  });
+
+  // The welcome says a neighbour has to recognise them; this is where they get
+  // to help with that, so the two belong on screen together.
+  it("asks where in town they are, alongside the welcome", () => {
+    renderNotice();
+    expect(screen.getByLabelText(RESIDENCY_PROMPT.label)).toBeInTheDocument();
+    expect(screen.getByText(RESIDENCY_PROMPT.help)).toBeInTheDocument();
   });
 });

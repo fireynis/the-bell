@@ -79,6 +79,22 @@ export interface User {
    * suspension that ran its full course.
    */
   suspension_lifts?: SuspensionLift[];
+  /**
+   * Where in town a member says they live, in their own words.
+   *
+   * It appears on exactly two reads — the council's pending-approval queue, and
+   * the member's own profile — and on no other user's profile, no directory row
+   * and no post. That is a privacy line the server enforces; treating it as a
+   * field like any other is how it would quietly end up on a page it has no
+   * business being on.
+   *
+   * Optional because it is absent from every response that is not one of those
+   * two, and because the empty string is a member who cleared it rather than one
+   * whose claim was withheld. Read it through residencyClaimOf rather than
+   * directly, so a build running against a server that does not send it on the
+   * self view degrades to an empty box rather than to `undefined`.
+   */
+  residency_claim?: string;
 }
 
 /**
@@ -177,29 +193,82 @@ export interface TownStats {
   pending_users: number;
 }
 
-export interface CouncilVote {
-  id: string;
-  proposal_id: string;
-  voter_id: string;
-  vote: "approve" | "reject";
-  created_at: string;
-}
-
-export interface ProposalSummary {
-  proposal_id: string;
-  approve_count: number;
-  reject_count: number;
-  total_council: number;
-  status: "pending" | "approved" | "rejected";
-  votes: CouncilVote[];
-}
-
 export interface PendingUsersResponse {
   users: User[];
 }
 
+/**
+ * The three things a council can put to a vote. Used for creating one; a
+ * proposal read back off the wire types its `type` as a plain string, because a
+ * server that has learned a fourth kind must not white-screen a council page
+ * that has not.
+ */
+export type ProposalType = "council_promotion" | "council_removal" | "bootstrap_reentry";
+
+/**
+ * Where a proposal stands. "open" is the only one that can still be voted on;
+ * the other two are the record of what the council decided, and a passed
+ * proposal has already been carried out by the time it says so.
+ */
+export type ProposalStatus = "open" | "passed" | "rejected";
+
+/** One proposal as `GET /api/v1/admin/proposals` sends it. */
+export interface Proposal {
+  id: string;
+  /**
+   * One of ProposalType. Typed loosely on the read for the reason given there —
+   * render it through proposalTitle, which has a sentence for a kind it does not
+   * recognise.
+   */
+  type: string;
+  /** Absent for bootstrap re-entry, which is about the town rather than a person. */
+  target_user_id?: string;
+  /** Absent for the same reason, and for a target who has set no display name. */
+  target_display_name?: string;
+  /** Why the proposer says the council should do this, in their own words. */
+  rationale: string;
+  created_by: string;
+  /** Absent for a proposer who has set no display name; fall back on anything falsy. */
+  created_by_display_name: string;
+  status: ProposalStatus;
+  created_at: string;
+  /** Absent while the proposal is open. */
+  decided_at?: string;
+  approve_count: number;
+  reject_count: number;
+  /**
+   * The electorate for *this* proposal, which is not always the size of the
+   * council: a removal excludes its own target, who does not vote on it. Using
+   * a council count from anywhere else would report a tally out of the wrong
+   * denominator and, on a small council, name the wrong majority.
+   */
+  council_size: number;
+  /** How the caller voted, or null if they have not — the field is always present. */
+  my_vote: "approve" | "reject" | null;
+}
+
 export interface ProposalsResponse {
-  proposals: ProposalSummary[];
+  proposals: Proposal[];
+}
+
+/** Body of POST /api/v1/admin/proposals. */
+export interface CreateProposalRequest {
+  type: ProposalType;
+  /** Required for the two targeted types, omitted for bootstrap re-entry. */
+  target_user_id?: string;
+  /** 1..1000 characters; validate with validateRationale before sending. */
+  rationale: string;
+}
+
+/**
+ * Body of POST /api/v1/admin/proposals/{id}/votes.
+ *
+ * A boolean rather than the "approve" | "reject" word the tally is counted in,
+ * because that is what the server parses. proposalApi.vote takes the word and
+ * converts, so no caller has to remember which way round it goes.
+ */
+export interface CastVoteRequest {
+  approve: boolean;
 }
 
 export interface Report {

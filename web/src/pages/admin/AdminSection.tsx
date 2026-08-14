@@ -14,11 +14,21 @@ export default function AdminSection({
   title,
   isEmpty,
   emptyMessage,
+  action,
   children,
 }: {
   title: string;
   isEmpty: boolean;
   emptyMessage: string;
+  /**
+   * A control belonging to the section as a whole, shown beside its heading.
+   *
+   * It sits outside `children` because it has to survive the empty state: the
+   * moment a town hall has nothing open is exactly the moment somebody wants to
+   * raise something, and a button that disappears when the list is empty is a
+   * dead end.
+   */
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -30,12 +40,14 @@ export default function AdminSection({
         borderRadius: "var(--radius-lg)",
       }}
     >
-      <h2
-        className={isEmpty ? "text-lg font-semibold" : "mb-4 text-lg font-semibold"}
-        style={{ color: "var(--color-text)" }}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3${isEmpty ? "" : " mb-4"}`}
       >
-        {title}
-      </h2>
+        <h2 className="text-lg font-semibold" style={{ color: "var(--color-text)" }}>
+          {title}
+        </h2>
+        {action}
+      </div>
       {isEmpty ? (
         <p className="mt-2 text-sm" style={{ color: "var(--color-text-secondary)" }}>
           {emptyMessage}

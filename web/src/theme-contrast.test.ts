@@ -11,9 +11,10 @@ import { describe, expect, it } from "vitest";
  * stylesheet is parsed and every foreground is checked against the background
  * it is actually drawn on.
  *
- * The town's own primary and accent are deliberately absent: those arrive at
- * runtime from town config, and deriveThemeVars is what keeps them legible.
- * See color.test.ts for that half.
+ * The primary and accent checked here are the defaults in the stylesheet — the
+ * palette every town gets until it picks its own. A town that does pick its own
+ * replaces them at runtime, and deriveThemeVars is what keeps those legible;
+ * see color.test.ts for that half.
  */
 
 /**
@@ -70,6 +71,13 @@ const PAIRS: ReadonlyArray<[label: string, foreground: string, background: strin
   ["metadata on a card", "--color-text-tertiary", "--color-surface"],
   ["metadata on the page", "--color-text-tertiary", "--color-surface-secondary"],
   ["a quiet button's label", "--color-text-secondary", "--color-surface-tertiary"],
+  ["a link on a card", "--color-primary", "--color-surface"],
+  ["a link on the page", "--color-primary", "--color-surface-secondary"],
+  ["a primary button's label", "--color-text-inverse", "--color-primary"],
+  ["a primary button hovered", "--color-text-inverse", "--color-primary-hover"],
+  ["the active nav item", "--color-primary", "--color-primary-light"],
+  ["a pending notice", "--color-primary", "--color-primary-subtle"],
+  ["a mute notice", "--color-accent", "--color-accent-light"],
   ["a success notice", "--color-success", "--color-success-light"],
   ["a warning notice", "--color-warning", "--color-warning-light"],
   ["an error notice", "--color-danger", "--color-danger-light"],
@@ -117,6 +125,10 @@ describe("the two schemes", () => {
       "--color-surface-secondary",
       "--color-text",
       "--color-text-inverse",
+      "--color-primary",
+      "--color-primary-light",
+      "--color-accent",
+      "--color-accent-light",
       "--color-border",
       "--color-danger",
       "--color-success",

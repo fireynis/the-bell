@@ -9,15 +9,38 @@
 */
 
 :root {
-  /* Primary — warm sky blue */
-  --color-primary: #0A7AFF;
-  --color-primary-hover: #0066DD;
-  --color-primary-light: #E8F4FD;
-  --color-primary-subtle: #F0F8FF;
+  /*
+    Primary — cast bronze, the metal the bell itself is poured from.
 
-  /* Accent — golden bell */
-  --color-accent: #D4A017;
-  --color-accent-hover: #B8890F;
+    The default was #0A7AFF, the iOS system blue: 4.01:1 on white, so every
+    link and every button label sat below AA, and it gave a town's noticeboard
+    the palette of an admin dashboard. This is a small town's bell, so the
+    default is the bell's own material — deep enough to carry white on a filled
+    button (6.42:1) and to be read as a link on any of the three surfaces.
+
+    A town that sets its own primary still overrides all four of these; see
+    deriveThemeVars.
+  */
+  --color-primary: #8B5023;
+  --color-primary-hover: #6D3D18;
+  /*
+    The tint behind an active nav item, an avatar and a pressed reaction. Held
+    at 90% lightness rather than the 94% deriveThemeVars uses, because the
+    surfaces here are warm creams: a warm tint that pale would be the same
+    colour as the page it is meant to stand out from.
+  */
+  --color-primary-light: #F6E3D5;
+  --color-primary-subtle: #FBF4EF;
+
+  /*
+    Accent — brass, the bell's other alloy, kept for the notices that are warm
+    rather than alarming: a mute, an unverified email.
+
+    Darkened from #D4A017, which was 2.22:1 against the tint it is drawn on —
+    those notices are text, not decoration, and nobody could read them.
+  */
+  --color-accent: #866309;
+  --color-accent-hover: #604606;
   --color-accent-light: #FEF7E0;
 
   /* Surfaces — warm creams */
@@ -125,13 +148,18 @@
 */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-primary: #47A0FF;
-    --color-primary-hover: #70B5FF;
-    --color-primary-light: #172D45;
-    --color-primary-subtle: #142334;
+    /*
+      Bronze under lamplight: the same hue and saturation as the light scheme's
+      primary, lifted into the band deriveThemeVars pulls a town's colour into,
+      so the default and a town that types the default hex land in one place.
+    */
+    --color-primary: #DA9C6C;
+    --color-primary-hover: #E2B28D;
+    --color-primary-light: #452B17;
+    --color-primary-subtle: #342214;
 
-    --color-accent: #E9C25C;
-    --color-accent-hover: #F0D287;
+    --color-accent: #F4C652;
+    --color-accent-hover: #F6D379;
     --color-accent-light: #33270C;
 
     --color-surface: #171A21;
