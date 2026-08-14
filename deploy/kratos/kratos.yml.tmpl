@@ -1,0 +1,114 @@
+version: v1.3.1
+
+# TEMPLATE — not read directly by Kratos.
+#
+# The kratos service in docker-compose.yml renders this file at container start,
+# replacing __PUBLIC_URL__ with $PUBLIC_URL from .env and __PUBLIC_HOST__ with
+# the hostname derived from it. Every URL below therefore follows the one
+# PUBLIC_URL setting, which is what keeps cookies.domain from drifting away from
+# the host the browser actually used — the classic "login silently does nothing"
+# misconfiguration.
+#
+# Edit this file, never the rendered copy inside the container.
+
+dsn: memory
+
+serve:
+  public:
+    # The browser reaches Kratos through The Bell's /.ory/* reverse proxy, never
+    # directly, so this must be the public site URL plus /.ory. Kratos stamps
+    # this base into the flow "action" URLs it hands the SPA; pointing it at
+    # Kratos's own port would send form posts to a port that is not published.
+    base_url: __PUBLIC_URL__/.ory
+    cors:
+      enabled: true
+      allowed_origins:
+        - __PUBLIC_URL__
+      allowed_methods:
+        - POST
+        - GET
+        - PUT
+        - PATCH
+        - DELETE
+      allowed_headers:
+        - Authorization
+        - Cookie
+        - Content-Type
+      exposed_headers:
+        - Content-Type
+        - Set-Cookie
+      allow_credentials: true
+  admin:
+    base_url: http://kratos:4434/
+
+cookies:
+  # Must be the host the browser sees. A cookie scoped to a different domain is
+  # simply dropped, which looks like "the password was wrong" rather than a
+  # configuration error.
+  domain: __PUBLIC_HOST__
+  same_site: Lax
+
+selfservice:
+  default_browser_return_url: __PUBLIC_URL__/
+  allowed_return_urls:
+    - __PUBLIC_URL__
+
+  methods:
+    password:
+      enabled: true
+      config:
+        min_password_length: 8
+
+  flows:
+    registration:
+      enabled: true
+      ui_url: __PUBLIC_URL__/auth/registration
+      after:
+        password:
+          hooks:
+            - hook: session
+
+    login:
+      ui_url: __PUBLIC_URL__/auth/login
+
+    logout:
+      after:
+        default_browser_return_url: __PUBLIC_URL__/
+
+    settings:
+      ui_url: __PUBLIC_URL__/auth/settings
+
+    recovery:
+      enabled: true
+      ui_url: __PUBLIC_URL__/auth/recovery
+
+    verification:
+      enabled: true
+      ui_url: __PUBLIC_URL__/auth/verification
+
+session:
+  cookie:
+    name: bell_session
+    domain: __PUBLIC_HOST__
+    same_site: Lax
+  lifespan: 720h
+
+identity:
+  default_schema_id: default
+  schemas:
+    - id: default
+      url: file:///etc/kratos/identity.schema.json
+
+# secrets are supplied by the environment (SECRETS_COOKIE / SECRETS_CIPHER) and
+# are deliberately absent here so that no usable key ever lives in the repo.
+#
+# Note that Kratos does NOT fail when they are missing — it quietly generates a
+# random cookie secret at boot, which invalidates every session on every
+# restart. docker-compose.yml therefore makes both variables mandatory.
+
+# courier.smtp.connection_uri likewise comes from the environment. Without a
+# working relay, account recovery and email verification produce no mail.
+
+log:
+  level: info
+  format: json

@@ -83,11 +83,16 @@ identity:
     - id: default
       url: file:///etc/kratos/identity.schema.json
 
-secrets:
-  cookie:
-    - PLEASE-CHANGE-ME-I-AM-VERY-INSECURE
-  cipher:
-    - 32-LONG-SECRET-NOT-SECURE-AT-ALL
+# secrets and courier.smtp.connection_uri are supplied by the environment
+# (SECRETS_COOKIE, SECRETS_CIPHER, COURIER_SMTP_CONNECTION_URI) and are
+# deliberately absent here. Anything written in this file is in the repository,
+# and a cookie secret in the repository means anyone who can read it can forge a
+# session for any account.
+#
+# Kratos does not complain when the secrets are missing: it silently generates a
+# random cookie secret at boot, which logs every user out on every restart. That
+# failure is invisible, so docker-compose.yml makes both variables mandatory
+# rather than defaulting them.
 
 log:
   level: info

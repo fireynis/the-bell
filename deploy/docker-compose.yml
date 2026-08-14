@@ -53,11 +53,51 @@ services:
     depends_on:
       kratos-migrate:
         condition: service_completed_successfully
-    command: serve --config /etc/kratos/kratos.yml --dev
     environment:
       DSN: postgres://belluser:${POSTGRES_PASSWORD}@postgres:5432/bell_kratos?sslmode=disable
+      # The one setting that decides every URL Kratos hands the browser. It must
+      # be the address residents type, not an internal service name.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # Mandatory. Kratos does not fail when these are missing — it generates a
+      # random cookie secret per boot, logging everyone out on every restart —
+      # so the compose file refuses to start instead. Generate with:
+      #   KRATOS_SECRETS_COOKIE  openssl rand -hex 32
+      #   KRATOS_SECRETS_CIPHER  openssl rand -hex 16   (must be EXACTLY 32 chars)
+      SECRETS_COOKIE: ${KRATOS_SECRETS_COOKIE:?set KRATOS_SECRETS_COOKIE in .env - see .env.example}
+      SECRETS_CIPHER: ${KRATOS_SECRETS_CIPHER:?set KRATOS_SECRETS_CIPHER in .env, exactly 32 characters - see .env.example}
+      # A syntactically valid but non-routable default: Kratos rejects an empty
+      # connection URI outright. Recovery and verification mail fails at send
+      # time until this points at a real relay.
+      COURIER_SMTP_CONNECTION_URI: ${COURIER_SMTP_CONNECTION_URI:-smtp://localhost:1025/?disable_starttls=true}
+      COURIER_SMTP_FROM_ADDRESS: ${COURIER_SMTP_FROM_ADDRESS:-noreply@localhost}
+      COURIER_SMTP_FROM_NAME: "${TOWN_NAME:-My Town}"
+      # --dev suits a plain-HTTP trial on localhost. Clear this (KRATOS_EXTRA_ARGS=)
+      # once the site is served over HTTPS; see deploy/README.md.
+      #
+      # `-` and not `:-`: the colon form substitutes the default for an empty
+      # value as well as a missing one, so setting KRATOS_EXTRA_ARGS= in .env to
+      # leave development mode would silently put --dev back and serve a public
+      # HTTPS site with non-Secure cookies.
+      KRATOS_EXTRA_ARGS: ${KRATOS_EXTRA_ARGS---dev}
+    # kratos.yml is rendered from kratos.yml.tmpl at start so that ~10 URLs plus
+    # the cookie domain all follow PUBLIC_URL. Deriving the host in shell keeps
+    # it to one variable: a separately-set cookie domain that disagrees with the
+    # real host produces a login that appears to succeed and then does nothing.
+    # One list element, not a plain string: Compose word-splits a string command
+    # into argv, which would hand `sh -c` only the first word as its script.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        PUBLIC_HOST=$${PUBLIC_URL#*://}
+        PUBLIC_HOST=$${PUBLIC_HOST%%/*}
+        PUBLIC_HOST=$${PUBLIC_HOST%%:*}
+        sed -e "s|__PUBLIC_URL__|$${PUBLIC_URL%/}|g" \
+            -e "s|__PUBLIC_HOST__|$${PUBLIC_HOST}|g" \
+            /etc/kratos/kratos.yml.tmpl > /tmp/kratos.yml
+        exec kratos serve --config /tmp/kratos.yml --watch-courier $${KRATOS_EXTRA_ARGS}
     volumes:
-      - ./kratos/kratos.yml:/etc/kratos/kratos.yml:ro
+      - ./kratos/kratos.yml.tmpl:/etc/kratos/kratos.yml.tmpl:ro
       - ./kratos/identity.schema.json:/etc/kratos/identity.schema.json:ro
     networks:
       - bell
@@ -109,8 +149,56 @@ services:
       PORT: "8080"
       TOWN_NAME: "${TOWN_NAME:-My Town}"
       IMAGE_STORAGE_PATH: /data/images
+      # Empty means production, which is what any networked deployment wants.
+      # Set BELL_ENV=dev only for a plain-HTTP trial on localhost: it strips the
+      # Secure attribute from session cookies as they pass back through the
+      # /.ory proxy, which is required for login to work without TLS.
+      BELL_ENV: ${BELL_ENV:-}
     volumes:
       - bell_images:/data/images
+    networks:
+      - bell
+
+  # Runs `bell check-roles` on an interval. Moderator promotion and demotion for
+  # sustained low trust happen only when this command runs, so without it those
+  # rules are documented but never applied. Delete this service if an in-process
+  # scheduler is ever added to the binary.
+  #
+  # It also recomputes trust scores, so this interval is the rate at which
+  # moderation penalties decay and tenure accrues on any deployment without
+  # Redis — there, this is the only trust recalculation there is. This stack
+  # includes Redis, whose trust worker already sweeps every 24h.
+  check-roles:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: bell-check-roles
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    depends_on:
+      bell:
+        condition: service_healthy
+    environment:
+      # No REDIS_URL: check-roles builds its dependency graph without a Redis
+      # client, so setting one would only suggest a cache that is never used.
+      # The Kratos URLs are here because startup config validation requires
+      # them, not because role checking calls Kratos.
+      DATABASE_URL: postgres://belluser:${POSTGRES_PASSWORD}@postgres:5432/bell?sslmode=disable
+      KRATOS_PUBLIC_URL: http://kratos:4433
+      KRATOS_ADMIN_URL: http://kratos:4434
+      TOWN_NAME: "${TOWN_NAME:-My Town}"
+      IMAGE_STORAGE_PATH: /data/images
+    # `sleep` last, so the first pass runs at startup rather than a day later.
+    # The loop survives a failed run: a brief database blip must not silently
+    # stop role checking until somebody notices months later.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          ./bell check-roles || echo "check-roles failed, retrying next cycle"
+          sleep ${CHECK_ROLES_INTERVAL_SECONDS:-86400}
+        done
     networks:
       - bell
 

@@ -21,34 +21,47 @@ New users start as "pending" and must be vouched for by trusted members before t
 
 ## Quick Start
 
+The `deploy/` directory is a self-contained stack — PostgreSQL with Apache AGE,
+Kratos, Redis, the app, and a role-check scheduler — on a private network with
+one published port.
+
 ```bash
-# Ensure the shared Docker network exists
-docker network create proxy
+cd deploy
+cp .env.example .env
 
-# Configure
-cat > .env <<EOF
-POSTGRES_PASSWORD=your_db_password
-TOWN_NAME=Springfield
-EOF
+# Generate the required secrets and paste them into .env
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+echo "KRATOS_SECRETS_COOKIE=$(openssl rand -hex 32)"
+echo "KRATOS_SECRETS_CIPHER=$(openssl rand -hex 16)"
 
-# Start all services
-docker compose up -d
+docker compose up -d --build
 
 # Bootstrap with initial council members
-docker exec -it bell ./bell setup --council=mayor@springfield.gov,clerk@springfield.gov
+docker compose exec -it bell ./bell setup --council=mayor@springfield.gov,clerk@springfield.gov
 ```
 
-You do not need to create the databases by hand. On first start the Postgres
-container creates `bell` from `POSTGRES_DB` and runs `deploy/init-db.sh`, which
-creates `bell_kratos`. Against a pre-existing Postgres that skipped those init
-hooks, run `bell setup --create-db` instead — it derives both names from
+The site is then at `http://localhost:8080`. Set `PUBLIC_URL` in `.env` to the
+address residents will actually use — every Kratos URL and the session cookie
+domain follow it.
+
+**[deploy/README.md](deploy/README.md) is the full guide**, and it covers the
+parts a real town needs: TLS (the defaults are a plain-HTTP trial and are not
+safe on a public address), SMTP for password recovery, backups, and upgrades.
+
+Databases are created for you: on first start the Postgres container creates
+`bell` from `POSTGRES_DB` and runs `deploy/init-db.sh`, which creates
+`bell_kratos`. Against a pre-existing Postgres that skipped those init hooks,
+run `bell setup --create-db` instead — it derives both names from
 `DATABASE_URL`, so a DSN ending in `/thebell` yields `thebell` and
 `thebell_kratos`.
 
 `bell setup` prompts for anything you omit, so `-it` matters if you leave off
 `--council` or `--town-name`.
 
-The application is then available at `http://bell.home.arpa` (or whatever domain your reverse proxy is configured with).
+> The `docker-compose.yml` in the repository root is **not** the one to start
+> from. It is the maintainer's own deployment of `bell.themacarthurs.ca`, with
+> that hostname baked into Traefik labels, an external `proxy` network, and host
+> paths under `/storage/the-bell`.
 
 ## Architecture
 

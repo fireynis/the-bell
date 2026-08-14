@@ -44,6 +44,53 @@ services:
       - "homepage.href=https://bell.themacarthurs.ca"
       - "homepage.description=Community micro-blog"
 
+  # Runs `bell check-roles` on a fixed interval. Promotion to moderator and
+  # demotion for sustained low trust only happen when this command runs, so
+  # without a scheduler those rules are documented but never enforced.
+  #
+  # It also recomputes trust scores, which makes the interval the rate at which
+  # moderation penalties decay and tenure accrues wherever Redis is absent — the
+  # Redis-backed trust worker is otherwise the only thing that recalculates.
+  # This stack has Redis (that worker sweeps every 24h), so here the refresh is
+  # mostly belt-and-braces; on a Redis-less deployment it is the whole sweep.
+  #
+  # A sidecar rather than host cron so a fresh deployment gets it without any
+  # host-level setup. If an in-process scheduler ever lands in the binary, delete
+  # this service — two schedulers would double every promotion check.
+  bell-check-roles:
+    build: .
+    container_name: bell-check-roles
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    depends_on:
+      bell:
+        condition: service_healthy
+    environment:
+      # No REDIS_URL: check-roles builds its dependency graph without a Redis
+      # client, so setting one would only suggest a cache that is never used.
+      # The Kratos URLs are here because startup config validation requires
+      # them, not because role checking calls Kratos.
+      DATABASE_URL: postgres://belluser:${POSTGRES_PASSWORD}@bell-postgres:5432/bell?sslmode=disable
+      KRATOS_PUBLIC_URL: http://kratos:4433
+      KRATOS_ADMIN_URL: http://kratos:4434
+      TOWN_NAME: "${TOWN_NAME:-My Town}"
+      IMAGE_STORAGE_PATH: /storage/the-bell/images
+    # `sleep` last, so the first pass runs at start rather than a day later. The
+    # loop keeps going on failure: one bad run (say a brief DB blip) must not
+    # silently end role checking until someone notices months later.
+    # One list element, not a plain string: Compose word-splits a string command
+    # into argv, which would hand `sh -c` only the first word as its script.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          ./bell check-roles || echo "check-roles failed, retrying next cycle"
+          sleep ${CHECK_ROLES_INTERVAL_SECONDS:-86400}
+        done
+    networks:
+      - proxy
+
   bell-postgres:
     # Pinned: apache/age:latest floats across Postgres majors (it moved to PG18
     # and will move again), which would leave the server unable to start against
@@ -98,9 +145,26 @@ services:
     depends_on:
       kratos-migrate:
         condition: service_completed_successfully
-    command: serve --config /etc/kratos/kratos.yml
+    # --watch-courier runs the mail worker in-process. Without it Kratos queues
+    # recovery and verification messages and never delivers them, which looks
+    # exactly like a working flow until someone waits for an email.
+    command: serve --config /etc/kratos/kratos.yml --watch-courier
     environment:
       DSN: postgres://belluser:${POSTGRES_PASSWORD}@bell-postgres:5432/bell_kratos?sslmode=disable
+      # Mandatory, not defaulted: a missing cookie secret makes Kratos generate a
+      # random one per boot (silently invalidating every session), and a shared
+      # default would be a published key. Generate with:
+      #   KRATOS_SECRETS_COOKIE  openssl rand -hex 32
+      #   KRATOS_SECRETS_CIPHER  openssl rand -hex 16   (must be EXACTLY 32 chars)
+      SECRETS_COOKIE: ${KRATOS_SECRETS_COOKIE:?set KRATOS_SECRETS_COOKIE in .env - see .env.example}
+      SECRETS_CIPHER: ${KRATOS_SECRETS_CIPHER:?set KRATOS_SECRETS_CIPHER in .env, exactly 32 characters - see .env.example}
+      # The default is a deliberately non-functional placeholder: Kratos rejects
+      # an empty value outright, so there has to be something syntactically
+      # valid here. Until a real relay is set, password recovery and email
+      # verification fail at send time (logged by the courier worker).
+      COURIER_SMTP_CONNECTION_URI: ${COURIER_SMTP_CONNECTION_URI:-smtp://localhost:1025/?disable_starttls=true}
+      COURIER_SMTP_FROM_ADDRESS: ${COURIER_SMTP_FROM_ADDRESS:-noreply@bell.themacarthurs.ca}
+      COURIER_SMTP_FROM_NAME: "${TOWN_NAME:-My Town}"
     volumes:
       - ./kratos/kratos.yml:/etc/kratos/kratos.yml:ro
       - ./kratos/identity.schema.json:/etc/kratos/identity.schema.json:ro
