@@ -37,7 +37,8 @@ Every user has a **trust score** from 0 to 100. The score is a weighted composit
 | Posting | 30 | You must have trust >= 30 to create posts |
 | Vouching | 60 | You must have trust >= 60 to vouch for others |
 | Promotion | 85 | Eligible for automatic promotion to moderator (additional criteria apply) |
-| Demotion | 70 | Trust below 70 for 30 consecutive days triggers automatic demotion |
+| Demotion (moderator) | 70 | A moderator below 70 for 30 consecutive days is demoted to member |
+| Demotion (member) | 35 | A member below 35 for 30 consecutive days is demoted to pending |
 
 ## Posting
 
@@ -138,12 +139,23 @@ Promotion checks run when `bell check-roles` is executed (typically via a daily 
 
 ### Automatic Demotion
 
-A user is automatically demoted when their trust score falls below 70 for 30 consecutive days:
+Each role has its own demotion bar, and a user is demoted after sitting below
+it for 30 consecutive days:
 
-- Moderator is demoted to member
-- Member is demoted to pending
+- A moderator below **70** is demoted to member
+- A member below **35** is demoted to pending
 
-The demotion clock resets after each demotion.
+The bars differ on purpose. A healthy, quietly-participating member computes to
+roughly 50, so the member bar sits well beneath that: a served suspension or
+being a few hops from someone else's ban is survivable, and only genuinely
+collapsed trust crosses it. Moderators are held to the standing the role was
+granted for. Council, pending and banned users are never on a demotion clock,
+and recovering above your bar resets it.
+
+A demotion also clears the clock, and landing on a role with no bar clears it
+just the same. That matters for the member who drops to pending: the days they
+spent below 35 are not still counting, so a neighbour vouching them back up to
+member does not put them one sweep away from being demoted all over again.
 
 ### Council
 
@@ -211,6 +223,21 @@ members can see it too, since they are the other party to it; nobody else can,
 and it appears nowhere on your public profile. Note that the trust penalty above
 still applies and decays on its own schedule, so your score may stay reduced
 after the mute itself has ended.
+
+**Your own moderation history.** Open your profile and choose **My history** to
+see everything moderation has done to your account: what the action was, the
+reason the moderator wrote, when it happened, when any restriction ends, and how
+many trust points it cost you — along with the month that cost will have faded
+away, since most penalties decay. Most people will open it once and find
+"Nothing here", which is the normal state of an account. It is readable even
+while you are suspended or banned; that is when you most need it.
+
+Two things are deliberately not there. It does not say **which** moderator
+acted: a decision belongs to the moderation team, and if you disagree with one,
+that is who to take it up with. And it shows only what the action cost **you** —
+a penalty also reaches the people who vouched for you, but what it cost them is
+their business, not yours. Nobody else can see your history, and you cannot see
+anybody else's.
 
 **Lifting a mute early.** A moderator or council member can end a mute before it
 runs out — for one applied in error, or one they agree to shorten after you

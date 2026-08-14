@@ -164,9 +164,12 @@ func (s *Server) protected(g guard) []func(http.Handler) http.Handler {
 		mws = append(mws, middleware.RequireActive)
 		// Verification gates participation, not self-inspection, so it rides
 		// with RequireActive: skipActive already marks the routes where a user
-		// who may not participate still has to learn why, and GET /v1/me is the
-		// only one. Giving verification its own opt-out would leave two flags
-		// that must be set together on every such route, and one of them would
+		// who may not participate still has to learn why — GET /v1/me and
+		// GET /v1/users/me/moderation-history, and nothing else. A member who
+		// has not verified their email can still be moderated, so the endpoint
+		// that explains a moderation decision cannot be gated on it either.
+		// Giving verification its own opt-out would leave two flags that
+		// must be set together on every such route, and one of them would
 		// eventually be forgotten.
 		if s.cfg.RequireVerifiedEmail {
 			mws = append(mws, middleware.RequireVerifiedEmail)
@@ -211,6 +214,14 @@ func (s *Server) apiRoutes(r chi.Router) {
 			phOpts = append(phOpts, handler.WithPostPublisher(s.sseBroker))
 		}
 		postH = handler.NewPostHandler(s.postService, phOpts...)
+	}
+	// Built here for the reason postH is: the moderation handler now serves two
+	// route families with different guards — the moderator-only /v1/moderation
+	// group, and the member's own history under /v1/users/me, which a suspended
+	// member has to be able to reach.
+	var mh *handler.ModerationHandler
+	if s.moderationActionService != nil {
+		mh = handler.NewModerationHandler(s.moderationActionService)
 	}
 
 	// GET /api/v1/me — return the authenticated user.
@@ -278,6 +289,33 @@ func (s *Server) apiRoutes(r chi.Router) {
 				r.Put("/me", uh.UpdateMe)
 			})
 
+			// A member's own moderation record: what was done to them, why, and
+			// what it cost. It skips RequireActive on the same reasoning as
+			// GET /v1/me, and here the reasoning is at its strongest — a
+			// suspended or banned member is precisely the person who most needs
+			// to read why, and RequireActive would answer them "account
+			// suspended" and nothing else. Being told you are suspended by the
+			// endpoint that exists to explain the suspension is the failure
+			// mode this route was added to remove.
+			//
+			// It is a route group of its own rather than an addition to the
+			// group above, because that group is what enforces the ordinary
+			// rule; carving the exception out where it can be seen is the same
+			// discipline the skipActive flag itself encodes.
+			//
+			// The route lives under /v1/users because that is the path it
+			// belongs on, which means chi mounts one subrouter for the prefix
+			// and this rides inside it. The handler comes from the moderation
+			// service, so it is nil on a deployment without one; the /v1/users
+			// group as a whole still needs s.userService, which app.Build
+			// always wires alongside it.
+			if mh != nil {
+				r.Group(func(r chi.Router) {
+					r.Use(s.protected(guard{skipActive: true})...)
+					r.Get("/me/moderation-history", mh.OwnHistory)
+				})
+			}
+
 			r.Get("/{id}", uh.GetByID)
 			r.Get("/{id}/posts", uh.ListPosts)
 			r.Get("/{id}/vouches", uh.ListVouches)
@@ -294,7 +332,7 @@ func (s *Server) apiRoutes(r chi.Router) {
 		})
 	}
 
-	if reportH != nil || s.moderationActionService != nil || postH != nil {
+	if reportH != nil || mh != nil || postH != nil {
 		r.Route("/v1/moderation", func(r chi.Router) {
 			r.Use(s.protected(guard{role: domain.RoleModerator})...)
 
@@ -310,8 +348,7 @@ func (s *Server) apiRoutes(r chi.Router) {
 				r.Post("/posts/{id}/remove", postH.RemoveByModerator)
 			}
 
-			if s.moderationActionService != nil {
-				mh := handler.NewModerationHandler(s.moderationActionService)
+			if mh != nil {
 				r.Post("/actions", mh.TakeAction)
 				r.Get("/actions/{user_id}", mh.ListActions)
 				// Lifting a mute is a DELETE of the mute itself, not another

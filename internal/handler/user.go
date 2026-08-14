@@ -96,12 +96,12 @@ type ownProfileResponse struct {
 	// MuteLifts is the record of moderators ending a mute early. Omitted when
 	// empty, on the same principle as MutedUntil.
 	//
-	// This is the only moderation history a member sees about themselves: the
-	// actions taken against them all sit behind /v1/moderation, which requires
-	// the moderator role. That asymmetry is deliberate for now — showing a
-	// member their own severities, penalties and the moderators who applied
-	// them is a policy question in its own right — but a release had to be
-	// visible to the person released, or it may as well not have happened.
+	// It is here rather than on GET /v1/users/me/moderation-history, which is
+	// where a member now reads the actions taken against them, because a lift
+	// is not one: it writes no moderation_actions row, carries no severity and
+	// costs no trust. Putting mercy in the list of sanctions would misfile it.
+	// The two are read together — the history says what was done, this says
+	// what was undone — and neither names the moderator who did either.
 	MuteLifts []muteLiftResponse `json:"mute_lifts,omitempty"`
 	// SuspensionLifts is the same record for suspensions, and it is the only
 	// trace of one a member can ever see. A suspension surfaces to them as

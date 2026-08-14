@@ -217,12 +217,11 @@ own profile** — the three self views listed under `muted_until` below. They ar
 omitted entirely rather than sent as `[]` when there are none, on the same
 principle as `muted_until`, and each is capped at the ten most recent.
 
-This is the only moderation history a member sees about themselves. Everything
-else sits behind `/api/v1/moderation`, which requires the moderator role. The
-asymmetry is deliberate: showing a member their own severities, penalties and
-the moderators who applied them is a policy question in its own right, but a
-release had to be visible to the person released or it may as well not have
-happened.
+These lists are about restrictions **undone**. What was *done* to a member —
+warnings, mutes, suspensions, bans, with the reason and the trust each cost —
+is read from `GET /api/v1/users/me/moderation-history`. A lift is deliberately
+not in that list: it writes no `moderation_actions` row, carries no severity and
+costs no trust, so filing mercy among the sanctions would misfile it.
 
 `suspension_lifts` matters more than its counterpart. A mute at least shows to
 the member as `muted_until` while it runs; a suspension only ever shows as
@@ -231,7 +230,8 @@ this entry there is nothing to distinguish an early release from a suspension
 that ran its full course.
 
 Neither list names the moderator who acted. Which moderator handled a case
-appears on no member-facing response.
+appears on **no** member-facing response — see the moderation history endpoint
+below, which holds the same line for the actions themselves.
 
 Only lifts that actually released the member appear. Both `DELETE` endpoints are
 idempotent and accept a lift against anyone, and a no-op lift is recorded but
@@ -385,6 +385,125 @@ curl -X PUT https://bell.example.com/api/v1/users/me \
   -H "Content-Type: application/json" \
   -H "Cookie: ory_kratos_session=..." \
   -d '{"display_name":"Alice Smith","bio":"Hello!","avatar_url":""}'
+```
+
+---
+
+#### `GET /api/v1/users/me/moderation-history`
+
+The moderation taken **against the signed-in member**, newest first: what was
+done, why, when it ends, and what it cost their standing.
+
+**Auth**: Required
+**Role**: Any — **including suspended and banned**, and including a member who
+has not verified their email.
+
+**Query Parameters**:
+
+| Param | Type | Default | Max |
+|-------|------|---------|-----|
+| `limit` | int | 20 | 100 |
+| `offset` | int | 0 | — |
+
+**Response** `200 OK`:
+
+```json
+{
+  "actions": [
+    {
+      "id": "0193a7b2-1234-7000-8000-00000000000a",
+      "action": "mute",
+      "severity": 3,
+      "reason": "Posting the same notice in six threads.",
+      "created_at": "2026-03-01T12:00:00Z",
+      "expires_at": "2026-03-04T12:00:00Z",
+      "penalty": {
+        "amount": 25,
+        "decays_at": "2026-11-26T12:00:00Z"
+      }
+    }
+  ]
+}
+```
+
+A member who has never been moderated gets `200` with `"actions": []`. That is
+the answer most callers will ever see, and it is a success rather than a `404`:
+"nothing has happened to you" answers the question.
+
+##### The subject is the session
+
+There is no user id anywhere in this request — not in the path, not in a query
+parameter. The subject is whoever the session authenticates, which is the whole
+of the authorization: there is nothing to tamper with, so there is no way to ask
+this route about anybody else. It is also why it carries no role floor. Every
+member is entitled to their own record and to nobody else's.
+
+##### Why it is readable while suspended or banned
+
+Every other authenticated read requires an active account. This one does not,
+and that is the point of it. A suspended member is precisely the person who most
+needs to know what they did and when it ends; being told "account suspended" by
+the endpoint that exists to explain the suspension is the failure this route was
+added to remove. The same reasoning already governs `GET /api/v1/me`.
+
+Email verification is skipped for the same reason: a member who has not verified
+can still be moderated, so the explanation cannot be gated on it.
+
+##### It names no moderator
+
+No field here identifies who acted, and none will be added. This is the same
+line `mute_lifts` and `suspension_lifts` hold, for the same reason: in a town
+small enough to run this platform, naming the individual moderator turns a
+decision of the moderation team into a personal grievance with a neighbour. A
+member who disagrees takes it up with the team.
+
+The moderator-facing `GET /api/v1/moderation/actions/{user_id}` does carry
+`moderator_id` and `moderator_display_name`, and it requires the moderator role;
+the two responses are separate types on the server precisely so they cannot
+drift into one.
+
+##### It carries only the member's own penalty
+
+`penalty` is the **direct** trust cost to this member and nothing else. A
+moderation action also propagates a decayed penalty to everyone who vouched for
+the person — out to three hops for a ban — and none of that appears here.
+Showing it would tell a member exactly who stands one step from them in the
+vouch graph, and reveal that those neighbours took a hit.
+
+For the same reason, penalties propagated **to** this member by somebody *else's*
+moderation are absent: they would disclose that a neighbour had been moderated.
+Those penalties are real and they do lower the member's composite trust score,
+which reflects them silently. That is where they belong.
+
+##### Reading `penalty`
+
+- **`penalty` present with `decays_at`** — the penalty fades away completely at
+  that time. Most do; a minor warning's 5 points are gone in 90 days.
+- **`penalty` present with no `decays_at`** — it never decays. This is a ban's
+  100 points, and nothing else.
+- **`penalty` absent entirely** — no direct penalty was recorded for this
+  action. This happens when propagation failed after the action was written, a
+  case the server tolerates rather than losing the action over.
+
+The distinction between the second and third is only readable because the whole
+object is omitted in the third case, so "permanent" and "none" cannot be
+confused.
+
+##### `expires_at`
+
+When the restriction the action imposed ends. Absent for a warning and for a
+ban, neither of which expires.
+
+It is the expiry **as recorded at the time**. A mute a moderator later lifted
+early still reports the expiry it was originally given — the audit trail is not
+rewritten after the fact, because it exists to preserve what was actually
+decided. The lift reaches the member separately, as `mute_lifts` on their
+profile. Do not read `expires_at` here to decide whether somebody is restricted
+right now; `muted_until` on the self profile answers that.
+
+```bash
+curl https://bell.example.com/api/v1/users/me/moderation-history \
+  -H "Cookie: ory_kratos_session=..."
 ```
 
 ---
@@ -1231,9 +1350,11 @@ through the vouch graph, and queues no recalculation.
 That is deliberate. Every severity in `moderation_actions` is 1–5 and every one
 of those names a real trust penalty — there is no severity meaning "not a
 punishment", so a release would have to file itself as one, against the person
-released and against everyone who vouched for them. The audit trail is also
-rendered to the member as a badge and the words "Severity: N", so an act of
-mercy would be shown to them as a sanction. This is the same wall
+released and against everyone who vouched for them. The audit trail also reaches
+the person it concerns now, through
+`GET /api/v1/users/me/moderation-history`, which opens each entry with "You were
+muted" and the trust it cost — so an act of mercy would be shown to them as one
+more sanction, in the plainest possible words. This is the same wall
 `POST /api/v1/moderation/posts/{id}/remove` hit from the other side.
 
 The consequence for readers: **the original mute action stays in the audit trail

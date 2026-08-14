@@ -562,13 +562,13 @@ func (s *ModerationActionService) restrictionStatus(
 // for them. This is the same wall post removal hit from the other side: it had
 // no severity meaning "against content rather than a person".
 //
-// That would not stay an internal accounting problem either. ActionHistoryCard
-// renders each action as a coloured severity badge and the words "Severity: N",
-// so wherever the audit trail reaches a member, an act of mercy would be shown
-// to them as a sanction. Today it reaches no member at all — the whole trail
-// sits behind /v1/moderation, which requires the moderator role — so this is a
-// statement about what the rendering WOULD do, not about a surface that exists.
-// The severity argument is the load-bearing one and does not depend on it.
+// That is no longer an internal accounting problem either. The audit trail now
+// reaches the member it concerns: GET /v1/users/me/moderation-history shows
+// them every action taken against them, opening each one with "You were muted"
+// and the trust it cost. A release filed as an action would appear there as one
+// more sanction against the person it released, in the plainest possible words.
+// The severity argument above is the load-bearing one and stands on its own,
+// but the surface it was hypothetical about now exists.
 //
 // The record instead goes to moderation_reliefs, which has no severity column
 // at all, and which the member's own profile reads. Columns on the mute action

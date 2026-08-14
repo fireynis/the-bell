@@ -225,6 +225,112 @@ func (h *ModerationHandler) LiftSuspension(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ownPenaltyResponse is the trust cost of one action to the member it landed
+// on. `decays_at` is omitted when the penalty never decays, which is readable
+// as "never" rather than "unknown" only because the enclosing object is present
+// at all — a member who took no penalty has no `penalty` key.
+type ownPenaltyResponse struct {
+	Amount   float64 `json:"amount"`
+	DecaysAt string  `json:"decays_at,omitempty"`
+}
+
+// ownModerationEntryResponse is one moderation action as its subject sees it.
+//
+// It carries no moderator, by the same rule the mute and suspension lifts on a
+// member's profile follow: which moderator handled a case appears on no
+// member-facing response. In a town small enough to run this platform, naming
+// the individual turns a moderation decision into a personal grievance with a
+// neighbour; the decision belongs to the moderation team.
+//
+// service.OwnModerationEntry has already stripped the record, so this is a
+// second wall rather than the only one: there is no field here for a moderator
+// id, and there is none there either.
+type ownModerationEntryResponse struct {
+	ID        string              `json:"id"`
+	Action    string              `json:"action"`
+	Severity  int                 `json:"severity"`
+	Reason    string              `json:"reason"`
+	CreatedAt string              `json:"created_at"`
+	ExpiresAt string              `json:"expires_at,omitempty"`
+	Penalty   *ownPenaltyResponse `json:"penalty,omitempty"`
+}
+
+type ownModerationHistoryResponse struct {
+	Actions []ownModerationEntryResponse `json:"actions"`
+}
+
+func toOwnModerationEntry(e service.OwnModerationEntry) ownModerationEntryResponse {
+	resp := ownModerationEntryResponse{
+		ID:        e.ID,
+		Action:    string(e.Action),
+		Severity:  e.Severity,
+		Reason:    e.Reason,
+		CreatedAt: e.CreatedAt.Format(timestampFormat),
+	}
+	if e.ExpiresAt != nil {
+		resp.ExpiresAt = e.ExpiresAt.Format(timestampFormat)
+	}
+	if e.Penalty != nil {
+		penalty := &ownPenaltyResponse{Amount: e.Penalty.Amount}
+		if e.Penalty.DecaysAt != nil {
+			penalty.DecaysAt = e.Penalty.DecaysAt.Format(timestampFormat)
+		}
+		resp.Penalty = penalty
+	}
+	return resp
+}
+
+// OwnHistory handles GET /api/v1/users/me/moderation-history.
+//
+// The member-facing counterpart to ListActions below, and the only moderation
+// history a member has ever been able to read about themselves beyond a lifted
+// mute. Before it, somebody warned for something learned that they had been
+// warned only if a moderator told them out of band — the reason, the trust it
+// cost and when that cost fades all sat behind the moderator-only route.
+//
+// It is served by the moderation handler rather than the user handler because
+// the shape and the policy are moderation's, not the profile's. The handler is
+// named for the subject matter; the route's guard decides the audience.
+//
+// The subject is the authenticated caller and is taken from the session, never
+// from the URL or a query parameter. That is the whole of the authorization:
+// there is no id to tamper with, so there is no way to ask this route about
+// anybody else. It is also why the route needs no role floor — every member is
+// entitled to their own record, and to nobody else's.
+//
+// It deliberately sits behind a guard that skips RequireActive; see the route
+// registration in internal/server/routes.go. A suspended or banned member is
+// exactly who most needs to read why.
+//
+// A clean record answers 200 with an empty array rather than 404: "nothing has
+// happened to you" is a successful answer to the question, and the frontend has
+// a reassuring empty state to render for it.
+func (h *ModerationHandler) OwnHistory(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	entries, err := h.actions.OwnModerationHistory(
+		r.Context(),
+		user.ID,
+		parseLimit(r.URL.Query().Get("limit")),
+		parseOffset(r.URL.Query().Get("offset")),
+	)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	resp := ownModerationHistoryResponse{Actions: make([]ownModerationEntryResponse, 0, len(entries))}
+	for _, e := range entries {
+		resp.Actions = append(resp.Actions, toOwnModerationEntry(e))
+	}
+
+	JSON(w, http.StatusOK, resp)
+}
+
 type listActionsResponse struct {
 	Actions []service.ActionHistoryEntry `json:"actions"`
 }
