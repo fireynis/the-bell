@@ -502,8 +502,11 @@ export interface OwnMuteNotice {
  *
  * It exists because muted_until disappears the moment a mute is lifted. Without
  * the lift record a member released early would see their profile simply stop
- * saying they were muted, with nothing anywhere to say it happened — the whole
- * moderation audit trail sits behind the moderator-only /v1/moderation routes.
+ * saying they were muted, with nothing anywhere to say it happened. (A member
+ * can now also read the actions against them at
+ * GET /api/v1/users/me/moderation-history, but a lift writes no action row —
+ * mercy is not filed among the sanctions — so this record remains the only
+ * member-visible trace of an early release.)
  *
  * The expiry is re-checked against `now` even though the server already omits
  * an expired muted_until: a page left open outlives the response that loaded

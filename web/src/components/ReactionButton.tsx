@@ -1,6 +1,12 @@
 import { useCallback, useState } from "react";
 import { api } from "../api/client";
-import { reactionEmoji, revertReaction, toggleReaction, type ReactionState } from "../lib/reactions";
+import {
+  reactionEmoji,
+  reactionLabel,
+  revertReaction,
+  toggleReaction,
+  type ReactionState,
+} from "../lib/reactions";
 
 interface ReactionButtonProps {
   postId: string;
@@ -45,24 +51,20 @@ export default function ReactionButton({ postId, type, count, active }: Reaction
   const emoji = reactionEmoji(type);
 
   return (
+    // The emoji is the whole visible label, so on its own a screen reader read
+    // this button out as "bell three". aria-pressed carries whether the reader
+    // has already reacted, and the pill's own colours are driven from that same
+    // attribute in CSS so the two cannot disagree.
     <button
       type="button"
       onClick={toggle}
       disabled={toggling}
-      className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm transition-colors"
-      style={{
-        backgroundColor: state.active ? "var(--color-primary-light)" : "var(--color-surface-tertiary)",
-        color: state.active ? "var(--color-primary)" : "var(--color-text-secondary)",
-      }}
-      onMouseEnter={(e) => {
-        if (!state.active) e.currentTarget.style.backgroundColor = "var(--color-surface-hover)";
-      }}
-      onMouseLeave={(e) => {
-        if (!state.active) e.currentTarget.style.backgroundColor = "var(--color-surface-tertiary)";
-      }}
+      aria-pressed={state.active}
+      aria-label={reactionLabel(type, state.count)}
+      className="reaction-pill inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm"
     >
-      <span>{emoji}</span>
-      {state.count > 0 && <span>{state.count}</span>}
+      <span aria-hidden="true">{emoji}</span>
+      {state.count > 0 && <span aria-hidden="true">{state.count}</span>}
     </button>
   );
 }

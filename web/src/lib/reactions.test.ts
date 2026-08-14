@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REACTION_TYPES,
   reactionEmoji,
+  reactionLabel,
   revertReaction,
   toggleReaction,
   type ReactionState,
@@ -78,5 +79,35 @@ describe("revertReaction", () => {
   it("never restores a negative count", () => {
     const got = revertReaction({ count: 0, active: true }, { count: -1, active: false });
     expect(got.count).toBe(0);
+  });
+});
+
+/**
+ * The button shows an emoji and a bare number, both aria-hidden. Without this
+ * a screen reader announced "🔔 3" — neither what the control is nor what the
+ * number counts.
+ */
+describe("reactionLabel", () => {
+  it("names the reaction and counts what the number is counting", () => {
+    expect(reactionLabel("bell", 3)).toBe("Bell, 3 reactions");
+  });
+
+  it("does not say '1 reactions'", () => {
+    expect(reactionLabel("heart", 1)).toBe("Heart, 1 reaction");
+  });
+
+  // The count is hidden at zero, so the name is the only thing said.
+  it("says so when nobody has reacted", () => {
+    expect(reactionLabel("celebrate", 0)).toBe("Celebrate, no reactions");
+  });
+
+  it.each(REACTION_TYPES)("names %s rather than reading the raw type", (type) => {
+    expect(reactionLabel(type, 1).startsWith(type)).toBe(false);
+  });
+
+  // Same rule as reactionEmoji: the server can start sending a type this build
+  // has never heard of, and it must not leak into what a reader hears.
+  it("falls back to a generic name for an unknown type", () => {
+    expect(reactionLabel("applaud", 2)).toBe("Reaction, 2 reactions");
   });
 });

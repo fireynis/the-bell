@@ -27,6 +27,7 @@ export default function BottomNav() {
           <Link
             key={item.path}
             to={item.path}
+            aria-current={active ? "page" : undefined}
             aria-label={locked ? `${item.label} — you cannot post yet` : undefined}
             className="flex flex-col items-center gap-1 px-3 py-2 text-[10px] font-medium"
             style={{

@@ -23,6 +23,31 @@ export function reactionEmoji(reactionType: string): string {
   return REACTION_EMOJI[reactionType] ?? DEFAULT_EMOJI;
 }
 
+/** What each reaction is called out loud, where the emoji is the visible label. */
+const REACTION_NAME: Record<string, string> = {
+  bell: "Bell",
+  heart: "Heart",
+  celebrate: "Celebrate",
+};
+
+/** Said for a reaction type this build has no name for, as reactionEmoji does. */
+const DEFAULT_NAME = "Reaction";
+
+/**
+ * reactionLabel names a reaction button for a screen reader.
+ *
+ * The button shows an emoji and a bare number, which is read out as "bell
+ * three" — neither what the control is nor what the number counts. The name
+ * says both; whether the reader has already reacted is carried separately by
+ * aria-pressed, so it is deliberately not repeated here.
+ */
+export function reactionLabel(reactionType: string, count: number): string {
+  const name = REACTION_NAME[reactionType] ?? DEFAULT_NAME;
+  if (count === 0) return `${name}, no reactions`;
+  if (count === 1) return `${name}, 1 reaction`;
+  return `${name}, ${count} reactions`;
+}
+
 /** A single reaction button's view of one reaction type on one post. */
 export interface ReactionState {
   count: number;

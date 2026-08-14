@@ -104,17 +104,9 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
               onChange={(e) => setBody(e.target.value)}
               rows={6}
               disabled={saving}
-              className="w-full resize-none leading-relaxed focus:outline-none"
-              style={{
-                borderColor: "var(--color-border)",
-                borderWidth: "1px",
-                borderStyle: "solid",
-                borderRadius: "var(--radius-md)",
-                padding: "0.5rem 0.75rem",
-                color: "var(--color-text)",
-                backgroundColor: "var(--color-surface)",
-                fontSize: "0.9375rem",
-              }}
+              // The same serif the post is read in on the card behind, so an
+              // edit is made in the shape it will be seen in.
+              className="field post-body w-full resize-none rounded-[var(--radius-md)] px-3 py-2"
             />
             {/* The same progressive counter the composer uses, on the same limit. */}
             <p
@@ -136,22 +128,14 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-              style={{
-                backgroundColor: "var(--color-surface-tertiary)",
-                color: "var(--color-text-secondary)",
-              }}
+              className="btn btn-quiet rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSave}
-              className="rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              style={{
-                backgroundColor: "var(--color-primary)",
-                color: "var(--color-text-inverse)",
-              }}
+              className="btn btn-primary rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? (
                 <span className="inline-flex items-center gap-2">

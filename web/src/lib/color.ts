@@ -62,6 +62,9 @@ export function hexToHSL(hex: string): HSL | null {
   return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
 }
 
+/** Which palette the derived shades have to sit in. */
+export type ColorScheme = "light" | "dark";
+
 /** How much darker the hover shade of each colour is, in lightness points. */
 const PRIMARY_HOVER_DARKEN = 10;
 const ACCENT_HOVER_DARKEN = 8;
@@ -69,6 +72,33 @@ const ACCENT_HOVER_DARKEN = 8;
 /** Lightness of the tinted background shades, which stay pale at any hue. */
 const LIGHT_SHADE_LIGHTNESS = 94;
 const SUBTLE_SHADE_LIGHTNESS = 97;
+
+/**
+ * The band a town's colour is pulled into on a dark background.
+ *
+ * A brand navy at 20% lightness is invisible on ink and a pastel at 90% glares,
+ * so both ends are pulled in. The floor is what makes the dark scheme's
+ * --color-text-inverse safe to set to near-black: whatever a town picks, the
+ * filled button underneath the label is light enough to carry dark text.
+ */
+const DARK_LIGHTNESS_FLOOR = 64;
+const DARK_LIGHTNESS_CEILING = 78;
+
+/** On a dark background the hover shade brightens instead of darkening. */
+const DARK_HOVER_LIGHTEN = 8;
+
+/**
+ * The tinted backgrounds in the dark scheme: dark enough to read as a surface,
+ * and desaturated so a vivid brand hue does not glow behind body text.
+ */
+const DARK_TINT_LIGHTNESS = 18;
+const DARK_TINT_MAX_SATURATION = 50;
+const DARK_SUBTLE_LIGHTNESS = 14;
+const DARK_SUBTLE_MAX_SATURATION = 45;
+
+function clampLightness(value: number): number {
+  return Math.max(DARK_LIGHTNESS_FLOOR, Math.min(DARK_LIGHTNESS_CEILING, value));
+}
 
 function hsl(h: number, s: number, l: number): string {
   return `hsl(${h}, ${clampPercent(s)}%, ${clampPercent(l)}%)`;
@@ -86,35 +116,59 @@ function clampPercent(value: number): number {
 /**
  * deriveThemeVars builds the CSS custom properties for a town's colours.
  *
- * Each colour yields a hover shade and one or two pale tints rather than
- * requiring an admin to pick four colours that agree with each other. A colour
- * that cannot be parsed contributes nothing, so a bad accent still leaves a
- * good primary applied.
+ * Each colour yields a hover shade and one or two tints rather than requiring
+ * an admin to pick four colours that agree with each other. A colour that
+ * cannot be parsed contributes nothing, so a bad accent still leaves a good
+ * primary applied.
+ *
+ * The scheme has to be decided here rather than in a `prefers-color-scheme`
+ * block, because these land as inline custom properties on the root element and
+ * an inline property outranks every stylesheet rule. A dark scheme written in
+ * CSS alone would be overruled by the town's own colours the moment it had any.
+ *
+ * In the light scheme the primary is passed through as the exact hex the town
+ * chose. In the dark scheme it is pulled into a readable band first — a brand
+ * colour nobody can see is not the brand colour either.
  */
-export function deriveThemeVars(primary?: string, accent?: string): Record<string, string> {
+export function deriveThemeVars(
+  primary?: string,
+  accent?: string,
+  scheme: ColorScheme = "light",
+): Record<string, string> {
   const vars: Record<string, string> = {};
+  const dark = scheme === "dark";
 
   const primaryHSL = primary ? hexToHSL(primary) : null;
   if (primary && primaryHSL) {
-    vars["--color-primary"] = primary;
+    const base = dark ? clampLightness(primaryHSL.l) : primaryHSL.l;
+
+    vars["--color-primary"] = dark ? hsl(primaryHSL.h, primaryHSL.s, base) : primary;
     vars["--color-primary-hover"] = hsl(
       primaryHSL.h,
       primaryHSL.s,
-      primaryHSL.l - PRIMARY_HOVER_DARKEN,
+      dark ? base + DARK_HOVER_LIGHTEN : base - PRIMARY_HOVER_DARKEN,
     );
-    vars["--color-primary-light"] = hsl(primaryHSL.h, primaryHSL.s, LIGHT_SHADE_LIGHTNESS);
-    vars["--color-primary-subtle"] = hsl(primaryHSL.h, primaryHSL.s, SUBTLE_SHADE_LIGHTNESS);
+    vars["--color-primary-light"] = dark
+      ? hsl(primaryHSL.h, Math.min(primaryHSL.s, DARK_TINT_MAX_SATURATION), DARK_TINT_LIGHTNESS)
+      : hsl(primaryHSL.h, primaryHSL.s, LIGHT_SHADE_LIGHTNESS);
+    vars["--color-primary-subtle"] = dark
+      ? hsl(primaryHSL.h, Math.min(primaryHSL.s, DARK_SUBTLE_MAX_SATURATION), DARK_SUBTLE_LIGHTNESS)
+      : hsl(primaryHSL.h, primaryHSL.s, SUBTLE_SHADE_LIGHTNESS);
   }
 
   const accentHSL = accent ? hexToHSL(accent) : null;
   if (accent && accentHSL) {
-    vars["--color-accent"] = accent;
+    const base = dark ? clampLightness(accentHSL.l) : accentHSL.l;
+
+    vars["--color-accent"] = dark ? hsl(accentHSL.h, accentHSL.s, base) : accent;
     vars["--color-accent-hover"] = hsl(
       accentHSL.h,
       accentHSL.s,
-      accentHSL.l - ACCENT_HOVER_DARKEN,
+      dark ? base + DARK_HOVER_LIGHTEN : base - ACCENT_HOVER_DARKEN,
     );
-    vars["--color-accent-light"] = hsl(accentHSL.h, accentHSL.s, LIGHT_SHADE_LIGHTNESS);
+    vars["--color-accent-light"] = dark
+      ? hsl(accentHSL.h, Math.min(accentHSL.s, DARK_TINT_MAX_SATURATION), DARK_TINT_LIGHTNESS)
+      : hsl(accentHSL.h, accentHSL.s, LIGHT_SHADE_LIGHTNESS);
   }
 
   return vars;

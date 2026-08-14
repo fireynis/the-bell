@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import type { ApiError, Post, User, VouchesResponse } from "../api/types";
 import Avatar from "../components/Avatar";
 import ErrorBanner from "../components/ErrorBanner";
+import OwnModerationHistory from "../components/OwnModerationHistory";
 import OwnMuteNotice from "../components/OwnMuteNotice";
 import PostCard from "../components/PostCard";
 import RoleBadge from "../components/RoleBadge";
@@ -16,7 +17,12 @@ import VouchAction from "./profile/VouchAction";
 import { vouchingBlockReason } from "../lib/gating";
 import { replacePost, withoutPost } from "../lib/post";
 
-type Tab = "posts" | "vouches";
+/**
+ * "history" is the member's own moderation record, and it is offered on their
+ * own profile and nowhere else — the endpoint behind it answers only about the
+ * caller, so there is nothing it could show on somebody else's page.
+ */
+type Tab = "posts" | "vouches" | "history";
 
 /** How many of a profile's posts to show; the page does not paginate them. */
 const POST_LIMIT = 50;
@@ -76,7 +82,7 @@ export default function Profile() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-2xl p-4">
+      <div className="py-5">
         <div className="flex justify-center py-12">
           <Spinner size="lg" />
         </div>
@@ -86,7 +92,7 @@ export default function Profile() {
 
   if (error || !user) {
     return (
-      <div className="mx-auto max-w-2xl p-4">
+      <div className="py-5">
         <ErrorBanner
           message={error ?? "User not found."}
           onRetry={fetchProfile}
@@ -95,12 +101,18 @@ export default function Profile() {
     );
   }
 
-  // Both tabs share one style; the active tab is distinguished by the inline
+  // "My history" exists only on the member's own profile, and the selected tab
+  // survives navigating from there to a neighbour's page. Falling back leaves
+  // them on a real tab rather than an empty panel under a row of buttons none
+  // of which looks selected.
+  const currentTab: Tab = activeTab === "history" && !isOwnProfile ? "posts" : activeTab;
+
+  // Every tab shares one style; the active one is distinguished by the inline
   // colours applied at each call site.
   const tabClasses = "px-4 py-2 text-sm font-medium border-b-2";
 
   const tabStyle = (tab: Tab): React.CSSProperties =>
-    activeTab === tab
+    currentTab === tab
       ? {
           borderColor: "var(--color-primary)",
           color: "var(--color-primary)",
@@ -112,7 +124,7 @@ export default function Profile() {
 
   return (
     <div className="py-5">
-      <div className="mx-auto max-w-2xl px-4">
+      <div>
         {/* Profile Header */}
         <div
           className="rounded-lg p-6"
@@ -223,11 +235,28 @@ export default function Profile() {
               : 0}
             )
           </button>
+          {/*
+            No count on this one. A number beside "My history" would announce
+            how many times a member has been moderated every time they open
+            their own profile, including the zero that most people will have —
+            and a tab reading "My history (0)" invites a look at something that
+            has nothing in it. The count also cannot be known without making
+            the request, which the tab exists to defer.
+          */}
+          {isOwnProfile && (
+            <button
+              className={tabClasses}
+              style={tabStyle("history")}
+              onClick={() => setActiveTab("history")}
+            >
+              My history
+            </button>
+          )}
         </div>
 
         {/* Tab Content */}
         <div className="mt-4">
-          {activeTab === "posts" && (
+          {currentTab === "posts" && (
             <div>
               {posts.length === 0 ? (
                 <p
@@ -251,7 +280,7 @@ export default function Profile() {
             </div>
           )}
 
-          {activeTab === "vouches" && vouches && (
+          {currentTab === "vouches" && vouches && (
             <div className="space-y-6">
               <VouchList
                 direction="received"
@@ -269,6 +298,15 @@ export default function Profile() {
               />
             </div>
           )}
+
+          {/*
+            Mounted only while the tab is open, which is what keeps the read
+            off every profile load: a member who never opens this never asks
+            the server for it. Guarded on isOwnProfile as well as on the tab,
+            so no future change to how tabs are selected can put somebody
+            else's page in front of this component.
+          */}
+          {currentTab === "history" && isOwnProfile && <OwnModerationHistory />}
         </div>
       </div>
     </div>

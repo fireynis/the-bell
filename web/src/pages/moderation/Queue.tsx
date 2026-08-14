@@ -59,74 +59,74 @@ export default function Queue() {
     }
   }
 
+  // No inner container: AppLayout already centres the column and supplies the
+  // horizontal gutter.
   return (
     <div className="py-5">
-      <div className="mx-auto max-w-2xl p-4">
-        <div className="mb-6">
-          <h1
-            className="text-2xl font-bold"
-            style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
-          >
-            Moderation Queue
-          </h1>
-        </div>
-
-        {error && (
-          <div className="mb-4">
-            <ErrorBanner message={error} onRetry={retry} />
-          </div>
-        )}
-
-        {/* The action succeeded but the report is still pending, so the card is
-            still below. Saying so beats letting the two disagree in silence. */}
-        {resolutionError && (
-          <div className="mb-4">
-            <ErrorBanner message={resolutionError} />
-          </div>
-        )}
-
-        {reports.length === 0 && !loading && !error && (
-          <p style={{ color: "var(--color-text-tertiary)" }}>No pending reports.</p>
-        )}
-
-        <div className="flex flex-col gap-4">
-          {reports.map((report) => (
-            <ReportCard
-              key={report.id}
-              report={report}
-              currentUserId={user?.id ?? ""}
-              onDismiss={removeReport}
-              onTakeAction={handleTakeAction}
-              onRemovePost={handleRemovePost}
-            />
-          ))}
-        </div>
-
-        {loading && (
-          <div className="flex justify-center py-6">
-            <Spinner />
-          </div>
-        )}
-
-        <div ref={sentinelRef} className="h-1" />
-
-        {actionTarget && (
-          <ActionDialog
-            targetUserId={actionTarget.targetUserId}
-            moderatorId={user?.id ?? ""}
-            onClose={() => setActionTarget(null)}
-            onActionTaken={handleActionTaken}
-          />
-        )}
-
-        {removalTarget && (
-          <RemovePostDialog
-            postId={removalTarget.postId}
-            onClose={() => setRemovalTarget(null)}
-            onRemoved={handlePostRemoved}
-          />
-        )}
+      <div className="mb-6">
+        <h1
+          className="text-2xl font-bold"
+          style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
+        >
+          Moderation Queue
+        </h1>
       </div>
+
+      {error && (
+        <div className="mb-4">
+          <ErrorBanner message={error} onRetry={retry} />
+        </div>
+      )}
+
+      {/* The action succeeded but the report is still pending, so the card is
+          still below. Saying so beats letting the two disagree in silence. */}
+      {resolutionError && (
+        <div className="mb-4">
+          <ErrorBanner message={resolutionError} />
+        </div>
+      )}
+
+      {reports.length === 0 && !loading && !error && (
+        <p style={{ color: "var(--color-text-tertiary)" }}>No pending reports.</p>
+      )}
+
+      <div className="flex flex-col gap-4">
+        {reports.map((report) => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            currentUserId={user?.id ?? ""}
+            onDismiss={removeReport}
+            onTakeAction={handleTakeAction}
+            onRemovePost={handleRemovePost}
+          />
+        ))}
+      </div>
+
+      {loading && (
+        <div className="flex justify-center py-6">
+          <Spinner />
+        </div>
+      )}
+
+      <div ref={sentinelRef} className="h-1" />
+
+      {actionTarget && (
+        <ActionDialog
+          targetUserId={actionTarget.targetUserId}
+          moderatorId={user?.id ?? ""}
+          onClose={() => setActionTarget(null)}
+          onActionTaken={handleActionTaken}
+        />
+      )}
+
+      {removalTarget && (
+        <RemovePostDialog
+          postId={removalTarget.postId}
+          onClose={() => setRemovalTarget(null)}
+          onRemoved={handlePostRemoved}
+        />
+      )}
     </div>
   );
 }

@@ -61,9 +61,11 @@ export interface User {
    * Mutes a moderator ended early, newest first, and only on the caller's own
    * profile. Absent rather than empty when there are none.
    *
-   * This is the only moderation history a member sees about themselves. It
-   * exists because muted_until vanishes the moment a mute is lifted, so without
-   * it a member released early has no way to learn that it happened.
+   * It exists because muted_until vanishes the moment a mute is lifted, so
+   * without it a member released early has no way to learn that it happened.
+   * The actions taken against them are a separate read —
+   * userApi.ownModerationHistory — because a lift is not one of those: it
+   * carries no severity and costs no trust.
    */
   mute_lifts?: MuteLift[];
   /**
@@ -255,6 +257,58 @@ export interface ActionHistoryEntry {
 
 export interface ActionHistoryResponse {
   actions: ActionHistoryEntry[];
+}
+
+/**
+ * What one moderation action cost the member it landed on — and nothing about
+ * what it cost anyone else.
+ */
+export interface OwnPenalty {
+  /** Trust points the member themselves lost. */
+  amount: number;
+  /**
+   * When the penalty has faded away completely. Absent — never null — when it
+   * never does, which is true of a ban's penalty and of nothing else.
+   *
+   * That reading is only unambiguous because the enclosing `penalty` object is
+   * present at all: an action whose penalty was never recorded carries no
+   * `penalty` key, so "permanent" and "none" cannot be confused.
+   */
+  decays_at?: string;
+}
+
+/**
+ * One moderation action as its subject sees it — `GET
+ * /api/v1/users/me/moderation-history`.
+ *
+ * Deliberately not a `ModerationAction`. That type is the moderator's view of
+ * the audit trail and carries `moderator_id` and `moderator_display_name`;
+ * which moderator handled a case appears on no member-facing response, and the
+ * separate type is what keeps the two from drifting into one.
+ */
+export interface OwnModerationEntry {
+  id: string;
+  /** "warn" | "mute" | "suspend" | "ban". A string, so a new server-side action type cannot break the page. */
+  action: string;
+  severity: number;
+  /** The moderator's written reason, exactly as they wrote it. */
+  reason: string;
+  created_at: string;
+  /**
+   * When the restriction the action imposed ends. Absent for a warning and for
+   * a ban, neither of which expires.
+   *
+   * It is the expiry recorded at the time, so a mute a moderator later lifted
+   * early still reports the expiry it was given — the lift itself reaches the
+   * member through `mute_lifts` on their profile.
+   */
+  expires_at?: string;
+  /** Absent when no direct penalty was recorded against the member. */
+  penalty?: OwnPenalty;
+}
+
+export interface OwnModerationHistoryResponse {
+  actions: OwnModerationEntry[];
 }
 
 /**

@@ -2,18 +2,8 @@ import { useState } from "react";
 import { moderationApi } from "../api/client.ts";
 import type { ApiError } from "../api/types.ts";
 import ErrorBanner from "./ErrorBanner.tsx";
+import { useModalDialog } from "../hooks/useModalDialog.ts";
 import { MAX_REMOVAL_REASON_LENGTH, validateRemovalReason } from "../lib/moderation.ts";
-
-const inputStyle: React.CSSProperties = {
-  borderColor: "var(--color-border)",
-  borderWidth: "1px",
-  borderStyle: "solid",
-  borderRadius: "var(--radius-md)",
-  padding: "0.5rem 0.75rem",
-  width: "100%",
-  display: "block",
-  outline: "none",
-};
 
 interface RemovePostDialogProps {
   postId: string;
@@ -32,7 +22,10 @@ export default function RemovePostDialog({ postId, onClose, onRemoved }: RemoveP
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focused, setFocused] = useState(false);
+
+  const panelRef = useModalDialog<HTMLDivElement>(() => {
+    if (!submitting) onClose();
+  });
 
   const check = validateRemovalReason(reason);
   const canSubmit = check.valid && !submitting;
@@ -59,8 +52,14 @@ export default function RemovePostDialog({ postId, onClose, onRemoved }: RemoveP
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Remove post"
+    >
       <div
+        ref={panelRef}
         className="w-full max-w-md p-6"
         style={{
           backgroundColor: "var(--color-surface)",
@@ -91,18 +90,7 @@ export default function RemovePostDialog({ postId, onClose, onRemoved }: RemoveP
               onChange={(e) => setReason(e.target.value)}
               maxLength={MAX_REMOVAL_REASON_LENGTH}
               rows={3}
-              style={{
-                ...inputStyle,
-                resize: "none",
-                ...(focused
-                  ? {
-                      borderColor: "var(--color-primary)",
-                      boxShadow: "0 0 0 1px var(--color-primary)",
-                    }
-                  : {}),
-              }}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
+              className="field block w-full resize-none rounded-[var(--radius-md)] px-3 py-2"
               placeholder="Describe why this post is being removed..."
             />
             <p className="mt-1 text-xs" style={{ color: "var(--color-text-tertiary)" }}>
@@ -116,34 +104,14 @@ export default function RemovePostDialog({ postId, onClose, onRemoved }: RemoveP
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md px-4 py-2 text-sm font-medium"
-              style={{
-                backgroundColor: "var(--color-surface-tertiary)",
-                color: "var(--color-text-secondary)",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.filter = "";
-              }}
+              className="btn btn-quiet rounded-md px-4 py-2 text-sm font-medium"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSubmit}
-              className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-              style={{
-                backgroundColor: "var(--color-danger)",
-                color: "var(--color-text-inverse)",
-              }}
-              onMouseEnter={(e) => {
-                if (canSubmit) (e.currentTarget as HTMLButtonElement).style.filter = "brightness(1.1)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.filter = "";
-              }}
+              className="btn btn-danger rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
             >
               {submitting ? "Removing..." : "Remove Post"}
             </button>

@@ -63,23 +63,7 @@ export default function ThemeSettings() {
             value={townName}
             onChange={(e) => setTownName(e.target.value)}
             maxLength={100}
-            className="w-full px-3 py-2 text-sm focus:outline-none"
-            style={{
-              borderWidth: "1px",
-              borderStyle: "solid",
-              borderColor: "var(--color-border)",
-              borderRadius: "var(--radius-sm)",
-              color: "var(--color-text)",
-              backgroundColor: "var(--color-surface)",
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = "var(--color-primary)";
-              e.currentTarget.style.boxShadow = "0 0 0 1px var(--color-primary)";
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = "var(--color-border)";
-              e.currentTarget.style.boxShadow = "none";
-            }}
+            className="field w-full px-3 py-2 text-sm"
           />
         </div>
 
@@ -146,21 +130,13 @@ export default function ThemeSettings() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-50"
-            style={{
-              backgroundColor: "var(--color-primary)",
-              color: "var(--color-text-inverse)",
-            }}
+            className="btn btn-primary rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save"}
           </button>
           <button
             onClick={handleReset}
-            className="rounded-full px-4 py-2 text-sm font-medium"
-            style={{
-              backgroundColor: "var(--color-surface-tertiary)",
-              color: "var(--color-text-secondary)",
-            }}
+            className="btn btn-quiet rounded-full px-4 py-2 text-sm font-medium"
           >
             Reset to defaults
           </button>

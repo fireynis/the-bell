@@ -8,6 +8,7 @@ import PendingUsersSection from "./admin/PendingUsersSection";
 import CouncilVotesSection from "./admin/CouncilVotesSection";
 import { isCouncil } from "../lib/trust";
 import { applyVote } from "../lib/proposal";
+import { NAV_ITEMS } from "../lib/nav";
 import type {
   ApiError,
   TownStats,
@@ -104,7 +105,7 @@ export default function Admin() {
       setProposals(proposalsData.proposals ?? []);
     } catch (err) {
       const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to load admin dashboard.");
+      setError(apiErr.error ?? `Failed to load ${NAV_ITEMS.admin.label}.`);
     } finally {
       setLoading(false);
     }
@@ -150,9 +151,11 @@ export default function Admin() {
     }
   }
 
+  // These pages carry no container of their own: the route mounts them inside
+  // AppLayout's wide variant, which centres them and supplies the gutter.
   if (!council) {
     return (
-      <div className="mx-auto max-w-4xl p-4">
+      <div className="py-5">
         <div
           className="rounded-[var(--radius-md)] p-4 text-sm"
           style={{
@@ -168,7 +171,7 @@ export default function Admin() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-4xl p-4">
+      <div className="py-5">
         <div className="flex justify-center py-12">
           <Spinner size="lg" />
         </div>
@@ -177,41 +180,41 @@ export default function Admin() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl p-4">
-      <div className="py-5">
-        <h1
-          className="mb-6 text-2xl font-bold"
-          style={{
-            color: "var(--color-text)",
-            fontFamily: "var(--font-display)",
-          }}
-        >
-          Admin Dashboard
-        </h1>
+    <div className="py-5">
+      {/* Named for the destination the town navigates to, not for the role
+          that reaches it — the nav says Town Hall, so the page does too. */}
+      <h1
+        className="mb-6 text-2xl font-bold"
+        style={{
+          color: "var(--color-text)",
+          fontFamily: "var(--font-display)",
+        }}
+      >
+        {NAV_ITEMS.admin.label}
+      </h1>
 
-        {error && (
-          <div className="mb-4">
-            <ErrorBanner message={error} onRetry={fetchData} />
-          </div>
-        )}
-
-        <div className="space-y-6">
-          {stats && <StatsPanel stats={stats} />}
-
-          <PendingUsersSection
-            users={pendingUsers}
-            onApprove={handleApprove}
-            approving={approving}
-          />
-
-          <CouncilVotesSection
-            proposals={proposals}
-            onVote={handleVote}
-            voting={voting}
-          />
-
-          <ThemeSettings />
+      {error && (
+        <div className="mb-4">
+          <ErrorBanner message={error} onRetry={fetchData} />
         </div>
+      )}
+
+      <div className="space-y-6">
+        {stats && <StatsPanel stats={stats} />}
+
+        <PendingUsersSection
+          users={pendingUsers}
+          onApprove={handleApprove}
+          approving={approving}
+        />
+
+        <CouncilVotesSection
+          proposals={proposals}
+          onVote={handleVote}
+          voting={voting}
+        />
+
+        <ThemeSettings />
       </div>
     </div>
   );

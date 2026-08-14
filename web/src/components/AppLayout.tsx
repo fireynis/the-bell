@@ -7,7 +7,20 @@ import { useAuth } from "../context/AuthContext";
 import { NAV_ITEMS } from "../lib/nav";
 import BellLogo from "./BellLogo";
 
-export default function AppLayout() {
+interface AppLayoutProps {
+  /**
+   * Widens the content column past the reading measure.
+   *
+   * The default 600px is set for a column of posts, which is the whole app bar
+   * one page: Town Hall is a dashboard of counts and tables, and its four-across
+   * stat row was being crushed into two cramped columns at every width. Passed
+   * per route in routes.tsx rather than sniffed from the path, so the layout
+   * never has to know which pages exist.
+   */
+  wide?: boolean;
+}
+
+export default function AppLayout({ wide = false }: AppLayoutProps) {
   const { config } = useTheme();
   const { profileError, refreshSession } = useAuth();
 
@@ -61,7 +74,17 @@ export default function AppLayout() {
 
       {/* Main content */}
       <main className="pb-20 lg:pb-0 lg:pl-[var(--sidebar-width)]">
-        <div className="mx-auto px-4" style={{ maxWidth: "var(--content-max-width)" }}>
+        {/*
+          The one horizontal gutter in the app. Pages used to add their own
+          `mx-auto max-w-2xl p-4` inside this, which doubled the padding and
+          narrowed the column a second time.
+        */}
+        <div
+          className="mx-auto px-4"
+          style={{
+            maxWidth: wide ? "var(--content-max-width-wide)" : "var(--content-max-width)",
+          }}
+        >
           {/*
             Said once, at the top of every page, because the symptom shows up
             everywhere: the sidebar loses its user pill, the composer refuses,

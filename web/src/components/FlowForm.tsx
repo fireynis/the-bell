@@ -51,17 +51,7 @@ function InputNode({
           name={attrs.name}
           value={attrs.value ?? ""}
           disabled={attrs.disabled}
-          className="w-full rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium focus:ring-2 focus:ring-offset-2 focus:outline-none disabled:opacity-50"
-          style={{
-            backgroundColor: "var(--color-primary)",
-            color: "var(--color-text-inverse)",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.backgroundColor = "var(--color-primary-hover)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.backgroundColor = "var(--color-primary)";
-          }}
+          className="btn btn-primary w-full rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium disabled:opacity-50"
         >
           {node.meta.label?.text ?? "Submit"}
         </button>
@@ -92,22 +82,11 @@ function InputNode({
         disabled={attrs.disabled}
         autoComplete={attrs.autocomplete}
         pattern={attrs.pattern}
-        className="block w-full rounded-[var(--radius-sm)] px-3 py-2 text-sm shadow-sm focus:outline-none disabled:opacity-50"
-        style={{
-          borderWidth: "1px",
-          borderStyle: "solid",
-          borderColor: "var(--color-border)",
-          color: "var(--color-text)",
-          backgroundColor: "var(--color-surface)",
-        }}
-        onFocus={(e) => {
-          e.currentTarget.style.borderColor = "var(--color-primary)";
-          e.currentTarget.style.boxShadow = "0 0 0 1px var(--color-primary)";
-        }}
-        onBlur={(e) => {
-          e.currentTarget.style.borderColor = "var(--color-border)";
-          e.currentTarget.style.boxShadow = "none";
-        }}
+        // The focus ring is CSS on `.field`, not a pair of JS handlers writing
+        // an inline border. The old version could not be reached by
+        // :focus-visible, could not be themed, and left the input with no ring
+        // at all whenever a re-render dropped the inline style.
+        className="field block w-full rounded-[var(--radius-sm)] px-3 py-2 text-sm disabled:opacity-50"
       />
       <MessageList messages={node.messages} />
     </div>

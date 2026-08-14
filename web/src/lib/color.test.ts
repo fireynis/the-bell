@@ -141,4 +141,116 @@ describe("deriveThemeVars", () => {
     expect(vars["--color-primary"]).toBeUndefined();
     expect(vars["--color-accent"]).toBe("#f59e0b");
   });
+
+  it("treats the light scheme as the default, so existing callers are unchanged", () => {
+    expect(deriveThemeVars("#3b82f6", "#f59e0b")).toEqual(
+      deriveThemeVars("#3b82f6", "#f59e0b", "light"),
+    );
+  });
+});
+
+/**
+ * These land as inline properties on the root element, which outrank the
+ * stylesheet's own dark palette — so a dark scheme that only existed in CSS
+ * would be overruled the moment a town set any colour of its own. That is why
+ * the adaptation lives here rather than in a prefers-color-scheme block.
+ */
+describe("deriveThemeVars in the dark scheme", () => {
+  /** Pulls the lightness back out of an `hsl(h, s%, l%)` string. */
+  function lightnessOf(value: string): number {
+    const match = /hsl\(\s*[\d.]+\s*,\s*[\d.]+%\s*,\s*([\d.]+)%\s*\)/.exec(value);
+    expect(match, `not an hsl() value: ${value}`).not.toBeNull();
+    return Number(match![1]);
+  }
+
+  function saturationOf(value: string): number {
+    const match = /hsl\(\s*[\d.]+\s*,\s*([\d.]+)%/.exec(value);
+    return Number(match![1]);
+  }
+
+  function hueOf(value: string): number {
+    const match = /hsl\(\s*([\d.]+)/.exec(value);
+    return Number(match![1]);
+  }
+
+  // A brand navy at 20% lightness is simply not visible on an ink background,
+  // so the town's exact hex cannot be used as-is the way it is in light mode.
+  it("lifts a dark brand colour into a band that reads on ink", () => {
+    const vars = deriveThemeVars("#0a2e6b", undefined, "dark");
+    expect(lightnessOf(vars["--color-primary"])).toBeGreaterThanOrEqual(64);
+  });
+
+  it("pulls a near-white brand colour down so it does not glare", () => {
+    const vars = deriveThemeVars("#eef6ff", undefined, "dark");
+    expect(lightnessOf(vars["--color-primary"])).toBeLessThanOrEqual(78);
+  });
+
+  // The whole point of a town's colour is that it is still the town's colour.
+  it("keeps the town's hue while adapting its lightness", () => {
+    const vars = deriveThemeVars("#0a2e6b", undefined, "dark");
+    expect(hueOf(vars["--color-primary"])).toBe(hexToHSL("#0a2e6b")!.h);
+  });
+
+  // A colour already in the band comes through with its lightness untouched.
+  it("leaves a colour that is already readable where it is", () => {
+    const hsl = hexToHSL("#7fb2ff")!;
+    expect(hsl.l).toBeGreaterThanOrEqual(64);
+    expect(hsl.l).toBeLessThanOrEqual(78);
+    expect(lightnessOf(deriveThemeVars("#7fb2ff", undefined, "dark")["--color-primary"]))
+      .toBe(hsl.l);
+  });
+
+  // Hovering brightens on a dark background. Darkening, as the light scheme
+  // does, would make the button recede exactly when it should respond.
+  it("brightens the hover shade instead of darkening it", () => {
+    const vars = deriveThemeVars("#0a7aff", undefined, "dark");
+    expect(lightnessOf(vars["--color-primary-hover"]))
+      .toBeGreaterThan(lightnessOf(vars["--color-primary"]));
+  });
+
+  // These are backgrounds behind text. At the light scheme's 94% they would be
+  // near-white slabs in the middle of a dark page.
+  it("makes the tinted backgrounds dark rather than pale", () => {
+    const vars = deriveThemeVars("#0a7aff", undefined, "dark");
+    expect(lightnessOf(vars["--color-primary-light"])).toBeLessThan(25);
+    expect(lightnessOf(vars["--color-primary-subtle"]))
+      .toBeLessThan(lightnessOf(vars["--color-primary-light"]));
+  });
+
+  // A fully saturated hue behind body text vibrates; the tint is a surface,
+  // not a statement.
+  it("desaturates the tints so a vivid brand hue does not glow behind text", () => {
+    const vars = deriveThemeVars("#0a7aff", undefined, "dark");
+    expect(hexToHSL("#0a7aff")!.s).toBe(100);
+    expect(saturationOf(vars["--color-primary-light"])).toBeLessThanOrEqual(50);
+  });
+
+  it("adapts the accent the same way it adapts the primary", () => {
+    const vars = deriveThemeVars(undefined, "#6b4e00", "dark");
+    expect(lightnessOf(vars["--color-accent"])).toBeGreaterThanOrEqual(64);
+    expect(lightnessOf(vars["--color-accent-hover"]))
+      .toBeGreaterThan(lightnessOf(vars["--color-accent"]));
+    expect(lightnessOf(vars["--color-accent-light"])).toBeLessThan(25);
+  });
+
+  it("emits the same set of properties as the light scheme", () => {
+    expect(Object.keys(deriveThemeVars("#3b82f6", "#f59e0b", "dark")).sort()).toEqual(
+      Object.keys(deriveThemeVars("#3b82f6", "#f59e0b", "light")).sort(),
+    );
+  });
+
+  // The bad-colour rules do not change with the scheme.
+  it("still contributes nothing for an unparseable colour", () => {
+    expect(deriveThemeVars("nope", "also-nope", "dark")).toEqual({});
+  });
+
+  // Clamping is what makes the dark scheme's near-black --color-text-inverse
+  // safe: whatever a town picks, the filled button under the label is light.
+  it.each(["#000000", "#0a2e6b", "#3b82f6", "#ffffff", "#f59e0b"])(
+    "keeps %s light enough to carry dark button text",
+    (hex) => {
+      expect(lightnessOf(deriveThemeVars(hex, undefined, "dark")["--color-primary"]))
+        .toBeGreaterThanOrEqual(64);
+    },
+  );
 });

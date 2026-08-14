@@ -59,11 +59,9 @@ export default function EditProfileForm({
     }
   }
 
-  const inputClass =
-    "w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1";
-  const inputStyle = {
-    border: "1px solid var(--color-border)",
-  };
+  // The border, the colours and the focus ring all come from `.field`, which
+  // is where every other form in the app gets them.
+  const inputClass = "field w-full rounded-md px-3 py-2 text-sm";
 
   return (
     <form onSubmit={handleSubmit} className="mt-4 space-y-3">
@@ -81,13 +79,6 @@ export default function EditProfileForm({
           maxLength={100}
           required
           className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
         />
       </div>
       <div>
@@ -103,13 +94,6 @@ export default function EditProfileForm({
           maxLength={500}
           rows={3}
           className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
         />
         <p
           className="mt-1 text-right text-xs"
@@ -130,35 +114,20 @@ export default function EditProfileForm({
           onChange={(e) => setAvatarUrl(e.target.value)}
           type="url"
           className={inputClass}
-          style={inputStyle}
-          onFocus={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-primary)")
-          }
-          onBlur={(e) =>
-            (e.currentTarget.style.borderColor = "var(--color-border)")
-          }
         />
       </div>
       <div className="flex gap-2">
         <button
           type="submit"
           disabled={saving || !displayName.trim()}
-          className="rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          style={{
-            backgroundColor: "var(--color-primary)",
-            color: "var(--color-text-inverse)",
-          }}
+          className="btn btn-primary rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save"}
         </button>
         <button
           type="button"
           onClick={() => setEditing(false)}
-          className="rounded-md px-4 py-2 text-sm"
-          style={{
-            backgroundColor: "var(--color-surface-tertiary)",
-            color: "var(--color-text-secondary)",
-          }}
+          className="btn btn-quiet rounded-md px-4 py-2 text-sm"
         >
           Cancel
         </button>

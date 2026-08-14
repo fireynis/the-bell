@@ -27,14 +27,8 @@ export default function MuteToggle({ muted, arrivals, onToggle }: MuteToggleProp
     <button
       type="button"
       onClick={onToggle}
-      className="flex h-10 w-10 items-center justify-center rounded-lg transition-colors"
+      className="tint-on-hover flex h-10 w-10 items-center justify-center rounded-lg"
       style={{ color: "var(--color-text-secondary)" }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.backgroundColor = "var(--color-surface-hover)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.backgroundColor = "";
-      }}
       aria-pressed={muted}
       aria-label={label}
       title={label}

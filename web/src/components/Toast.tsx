@@ -30,9 +30,14 @@ export function Toast({ message, onDismiss, duration = 3000 }: ToastProps) {
   }, [duration, onDismiss]);
 
   return (
+    // `.toast` carries the colours and the position: this was the one component
+    // painting itself in literal white and grey, so it was the only thing on
+    // screen that stayed light when everything else went dark — and it sat on
+    // top of the bottom bar on a phone.
     <div
-      className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg
-                  bg-white border border-gray-200 text-sm text-gray-700
+      role="status"
+      aria-live="polite"
+      className={`toast z-50 rounded-[var(--radius-md)] px-4 py-3 text-sm
                   transition-all duration-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"}`}
     >
       {message}

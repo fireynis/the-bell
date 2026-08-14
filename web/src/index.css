@@ -1,6 +1,12 @@
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..700&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap');
-
 @import "tailwindcss";
+
+/*
+  Both faces are self-hosted (@fontsource) rather than fetched from Google. A
+  town's bell should not need a third party to be up before it can be read, and
+  a render-blocking cross-origin stylesheet is exactly that dependency. The
+  packages ship the variable "…Variable" family names, so every stack lists the
+  variable name first and the static name behind it.
+*/
 
 :root {
   /* Primary — warm sky blue */
@@ -23,43 +29,73 @@
   /* Text — rich slate */
   --color-text: #1A2332;
   --color-text-secondary: #5C6977;
-  --color-text-tertiary: #8B95A1;
+  /*
+    Timestamps, counts and other metadata. Darkened from #8B95A1, which was
+    3.04:1 on a white card — below AA for text this size, and this is the tier
+    that carries "when was this posted" and "who reported it". Quiet is a tone,
+    not a licence to be unreadable.
+  */
+  --color-text-tertiary: #69727E;
+  /* Text drawn on top of a filled primary/danger button. */
   --color-text-inverse: #FFFFFF;
 
   /* Borders */
   --color-border: #E2DED6;
   --color-border-light: #EBE8E2;
 
-  /* Semantic */
-  --color-success: #2D9F5B;
+  /*
+    Semantic colours.
+
+    Each of these is drawn as text on its own pale tint — "Settings updated
+    successfully" on success-light, a mute notice on warning-light. Every pair
+    was below AA at the original values (warning was 2.46:1), so the
+    foregrounds are darkened just far enough to clear 4.5:1 against their own
+    background. The hue and saturation are untouched, so the palette reads the
+    same; only the lightness moved.
+  */
+  --color-success: #247F49;
   --color-success-light: #E8F8EF;
-  --color-warning: #D4930D;
+  --color-warning: #976909;
   --color-warning-light: #FEF7E0;
-  --color-danger: #D93025;
+  --color-danger: #CC2D23;
+  --color-danger-hover: #B8271E;
   --color-danger-light: #FDE8E7;
-  --color-info: #0A7AFF;
+  --color-info: #0069E6;
   --color-info-light: #E8F4FD;
 
-  /* Role badge colors */
+  /* Role badge colors — same rule: each reads on the tint beside it. */
   --color-role-council: #7C3AED;
   --color-role-council-bg: #F3EEFE;
-  --color-role-moderator: #0A7AFF;
+  --color-role-moderator: #0069E6;
   --color-role-moderator-bg: #E8F4FD;
-  --color-role-member: #2D9F5B;
+  --color-role-member: #247F49;
   --color-role-member-bg: #E8F8EF;
-  --color-role-pending: #8B95A1;
+  --color-role-pending: #626D79;
   --color-role-pending-bg: #F0EDE8;
-  --color-role-banned: #D93025;
+  --color-role-banned: #CC2D23;
   --color-role-banned-bg: #FDE8E7;
 
   /* Typography */
-  --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
-  --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-body: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /*
+    What a neighbour actually said is set in the display serif at reading size,
+    while every piece of chrome around it stays in the sans. The town's voice
+    and the app's machinery should not look like the same thing.
+  */
+  --font-post: var(--font-display);
+  --text-post: 1.125rem;
+  --leading-post: 1.6;
 
   /* Spacing / Layout */
   --sidebar-width: 280px;
   --content-max-width: 600px;
+  /* For pages that are tables of numbers rather than a column of posts. */
+  --content-max-width-wide: 960px;
   --right-panel-width: 320px;
+  /* Icon + label + padding; the toast has to clear this on a phone. */
+  --bottom-nav-height: 62px;
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(26, 35, 50, 0.05);
@@ -71,11 +107,81 @@
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-full: 9999px;
+
+  /* Focus */
+  --color-focus-ring: color-mix(in srgb, var(--color-primary) 40%, transparent);
+
+  color-scheme: light;
+}
+
+/*
+  Evening in the same town, not a different one: the surfaces stay warm-neutral
+  and every token keeps its meaning, so no component needs to know which scheme
+  it is in.
+
+  The town's own primary and accent are NOT set here. Those arrive at runtime as
+  inline custom properties on the root element, which outrank any stylesheet
+  rule — see deriveThemeVars, which adapts them per scheme instead.
+*/
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary: #47A0FF;
+    --color-primary-hover: #70B5FF;
+    --color-primary-light: #172D45;
+    --color-primary-subtle: #142334;
+
+    --color-accent: #E9C25C;
+    --color-accent-hover: #F0D287;
+    --color-accent-light: #33270C;
+
+    --color-surface: #171A21;
+    --color-surface-secondary: #101319;
+    --color-surface-tertiary: #232733;
+    --color-surface-hover: #272C38;
+
+    --color-text: #E8EAED;
+    --color-text-secondary: #A6AEBB;
+    --color-text-tertiary: #8A93A1;
+    /* Primary is always lifted into a light band in this scheme, so the text
+       sitting on top of it has to go the other way. */
+    --color-text-inverse: #12151B;
+
+    --color-border: #2C3140;
+    --color-border-light: #232733;
+
+    --color-success: #4ECB84;
+    --color-success-light: #14301F;
+    --color-warning: #E5AE3F;
+    --color-warning-light: #33270C;
+    --color-danger: #FF7A6E;
+    --color-danger-hover: #FF9A90;
+    --color-danger-light: #3A1A18;
+    --color-info: #47A0FF;
+    --color-info-light: #172D45;
+
+    --color-role-council: #A78BFA;
+    --color-role-council-bg: #241B3D;
+    --color-role-moderator: #47A0FF;
+    --color-role-moderator-bg: #172D45;
+    --color-role-member: #4ECB84;
+    --color-role-member-bg: #14301F;
+    --color-role-pending: #98A1AF;
+    --color-role-pending-bg: #232733;
+    --color-role-banned: #FF7A6E;
+    --color-role-banned-bg: #3A1A18;
+
+    /* A cream-tinted shadow is invisible on ink; these carry the elevation. */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.55);
+
+    color-scheme: dark;
+  }
 }
 
 @theme {
-  --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
-  --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Newsreader Variable', 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-body: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 html {
@@ -84,6 +190,17 @@ html {
   background-color: var(--color-surface-secondary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/*
+  One visible focus ring for the whole app, in the town's own colour.
+  :where() holds the specificity at zero so a component can still opt out, and
+  :focus-visible rather than :focus keeps it off a mouse click.
+*/
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 /* Animations */
@@ -156,6 +273,190 @@ html {
 .stagger-children > *:nth-child(6) { animation: fade-in-up 0.3s ease-out 200ms both; }
 .stagger-children > *:nth-child(7) { animation: fade-in-up 0.3s ease-out 240ms both; }
 .stagger-children > *:nth-child(8) { animation: fade-in-up 0.3s ease-out 280ms both; }
+
+/*
+  Every animation above is decoration on something that is already legible, so
+  a reader who has asked for less motion loses nothing by having them collapse
+  to their end state. The delay has to go too: a staggered card holds opacity 0
+  for the length of its delay, which is the motion, just later.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+  Interaction states as CSS rather than onMouseEnter handlers. A JS hover sets
+  an inline style that nothing clears when a touch ends, so it stuck on phones,
+  and it left keyboard users with no equivalent at all — which is why every rule
+  below pairs :hover with :focus-visible.
+
+  In @layer components on purpose. Unlayered CSS outranks every Tailwind layer
+  regardless of specificity, so an unlayered `.btn` would quietly beat the
+  `rounded-full` sitting next to it in the same class list.
+*/
+@layer components {
+
+.btn {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+.btn-primary:hover:not(:disabled),
+.btn-primary:focus-visible:not(:disabled) {
+  background-color: var(--color-primary-hover);
+}
+
+.btn-quiet {
+  background-color: var(--color-surface-tertiary);
+  color: var(--color-text-secondary);
+}
+.btn-quiet:hover:not(:disabled),
+.btn-quiet:focus-visible:not(:disabled) {
+  background-color: var(--color-surface-hover);
+}
+
+.btn-danger {
+  background-color: var(--color-danger);
+  color: var(--color-text-inverse);
+}
+.btn-danger:hover:not(:disabled),
+.btn-danger:focus-visible:not(:disabled) {
+  background-color: var(--color-danger-hover);
+}
+
+/* A destructive action that is not the dialog's primary one. */
+.btn-danger-quiet {
+  background-color: var(--color-surface-tertiary);
+  color: var(--color-danger);
+}
+.btn-danger-quiet:hover:not(:disabled),
+.btn-danger-quiet:focus-visible:not(:disabled) {
+  background-color: var(--color-danger-light);
+}
+
+/* Icon buttons and menu rows that tint rather than fill. */
+.tint-on-hover {
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.tint-on-hover:hover:not(:disabled),
+.tint-on-hover:focus-visible:not(:disabled) {
+  background-color: var(--color-surface-hover);
+}
+
+.tint-danger-on-hover {
+  transition: color 0.15s ease;
+}
+.tint-danger-on-hover:hover:not(:disabled),
+.tint-danger-on-hover:focus-visible:not(:disabled) {
+  color: var(--color-danger);
+}
+
+/*
+  The reaction pill draws itself from aria-pressed, so the state a screen reader
+  is told and the state a reader sees cannot drift apart.
+*/
+.reaction-pill {
+  background-color: var(--color-surface-tertiary);
+  color: var(--color-text-secondary);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.reaction-pill:hover:not(:disabled),
+.reaction-pill:focus-visible:not(:disabled) {
+  background-color: var(--color-surface-hover);
+}
+.reaction-pill[aria-pressed="true"] {
+  background-color: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.reaction-pill[aria-pressed="true"]:hover:not(:disabled),
+.reaction-pill[aria-pressed="true"]:focus-visible:not(:disabled) {
+  background-color: var(--color-primary-subtle);
+}
+
+/* A sidebar or bottom-bar destination. */
+.nav-link {
+  color: var(--color-text);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.nav-link:hover,
+.nav-link:focus-visible {
+  background-color: var(--color-surface-hover);
+}
+.nav-link[aria-current="page"] {
+  background-color: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+/* Text inputs. :focus rather than :focus-visible — clicking into a field is a
+   moment where the ring is wanted, not suppressed. */
+.field {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: var(--color-text);
+}
+.field:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+/* What a neighbour said, set to be read rather than scanned. */
+.post-body {
+  font-family: var(--font-post);
+  font-size: var(--text-post);
+  line-height: var(--leading-post);
+  color: var(--color-text);
+}
+
+.post-card {
+  background-color: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.author-link {
+  color: var(--color-text);
+  transition: color 0.15s ease;
+}
+.author-link:hover,
+.author-link:focus-visible {
+  color: var(--color-primary);
+}
+
+/*
+  Clears the bottom bar and the home indicator beneath it. Anchored to the
+  viewport bottom only once the bar is gone at lg.
+*/
+.toast {
+  position: fixed;
+  right: 1rem;
+  bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) + 1rem);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  box-shadow: var(--shadow-lg);
+}
+@media (min-width: 1024px) {
+  .toast {
+    bottom: 1rem;
+  }
+}
+
+}
+/* end @layer components */
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {

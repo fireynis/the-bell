@@ -39,6 +39,15 @@ export const routes: RouteObject[] = [
               { path: "/moderation/users/:id", element: <UserHistory /> },
             ],
           },
+        ],
+      },
+      {
+        // Town Hall is a dashboard rather than a column of posts, so it gets
+        // the wide measure. A second layout branch rather than a flag the
+        // layout reads off the route: this keeps AppLayout free of any
+        // knowledge of which paths exist.
+        element: <AppLayout wide />,
+        children: [
           {
             element: <RequireRole minRole="council" />,
             children: [{ path: "/admin", element: <Admin /> }],

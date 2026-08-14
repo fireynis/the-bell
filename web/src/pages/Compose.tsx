@@ -15,6 +15,7 @@ import {
   validatePostBody,
 } from "../lib/post.ts";
 import { awaitingWelcome, postingBlockReason } from "../lib/gating.ts";
+import { RINGING, RING_THE_BELL } from "../lib/copy.ts";
 import PendingNotice from "../components/PendingNotice.tsx";
 
 export default function Compose() {
@@ -119,7 +120,7 @@ export default function Compose() {
         className="mb-5 text-xl font-bold"
         style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
       >
-        Ring the Bell
+        {RING_THE_BELL}
       </h1>
 
       {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
@@ -174,8 +175,12 @@ export default function Compose() {
             placeholder={
               postBlock ? "You cannot post yet" : "What's happening in town?"
             }
-            className="w-full resize-none border-0 bg-transparent leading-relaxed focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ color: "var(--color-text)", fontSize: "0.9375rem" }}
+            // Set in the same serif the post will be read in, so the composer
+            // shows the shape of what is about to be said rather than a
+            // different, smaller version of it. No focus:outline-none: the
+            // box is borderless, so the app's focus ring is the only thing
+            // that tells a keyboard user the caret landed here.
+            className="post-body w-full resize-none border-0 bg-transparent disabled:cursor-not-allowed disabled:opacity-60"
           />
 
           {/* Image preview */}
@@ -190,8 +195,11 @@ export default function Compose() {
               <button
                 type="button"
                 onClick={removeImage}
-                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-white shadow-md"
-                style={{ backgroundColor: "var(--color-danger)" }}
+                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shadow-md"
+                style={{
+                  backgroundColor: "var(--color-danger)",
+                  color: "var(--color-text-inverse)",
+                }}
                 aria-label="Remove image"
               >
                 &times;
@@ -251,22 +259,20 @@ export default function Compose() {
               </p>
             </div>
 
+            {/* The same words as the page title and the sidebar button: one
+                act, one name, all the way through. */}
             <button
               type="submit"
               disabled={!canSubmit}
-              className="rounded-full px-5 py-2 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
-              style={{
-                backgroundColor: "var(--color-primary)",
-                color: "var(--color-text-inverse)",
-              }}
+              className="btn btn-primary rounded-full px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
                   <Spinner size="sm" />
-                  Posting...
+                  {RINGING}
                 </span>
               ) : (
-                "Post"
+                RING_THE_BELL
               )}
             </button>
           </div>

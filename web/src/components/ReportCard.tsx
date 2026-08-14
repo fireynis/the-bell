@@ -112,12 +112,9 @@ export default function ReportCard({
                 View history
               </Link>
             </div>
-            <p
-              className="whitespace-pre-wrap break-words text-sm"
-              style={{ color: "var(--color-text)" }}
-            >
-              {post.body}
-            </p>
+            {/* The same treatment the feed gives it: a moderator is judging
+                what was actually said, so they should see it as the town did. */}
+            <p className="post-body whitespace-pre-wrap break-words">{post.body}</p>
           </>
         ) : (
           <div className="flex justify-center py-2">
@@ -145,17 +142,7 @@ export default function ReportCard({
         <button
           onClick={handleDismiss}
           disabled={dismissing}
-          className="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50"
-          style={{
-            backgroundColor: "var(--color-surface-tertiary)",
-            color: "var(--color-text-secondary)",
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.filter = "";
-          }}
+          className="btn btn-quiet rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50"
         >
           {dismissing ? "Dismissing..." : "Dismiss"}
         </button>
@@ -165,17 +152,7 @@ export default function ReportCard({
         {canRemovePost(post) && (
           <button
             onClick={() => onRemovePost(report, report.post_id)}
-            className="rounded-md px-3 py-1.5 text-sm font-medium"
-            style={{
-              backgroundColor: "var(--color-surface-tertiary)",
-              color: "var(--color-danger)",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.filter = "brightness(0.95)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.filter = "";
-            }}
+            className="btn btn-danger-quiet rounded-md px-3 py-1.5 text-sm font-medium"
           >
             Remove Post
           </button>
@@ -183,17 +160,7 @@ export default function ReportCard({
         {post && !isOwnPost && (
           <button
             onClick={() => onTakeAction(report, post.author_id)}
-            className="rounded-md px-3 py-1.5 text-sm font-medium"
-            style={{
-              backgroundColor: "var(--color-danger)",
-              color: "var(--color-text-inverse)",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.filter = "brightness(1.1)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.filter = "";
-            }}
+            className="btn btn-danger rounded-md px-3 py-1.5 text-sm font-medium"
           >
             Take Action
           </button>

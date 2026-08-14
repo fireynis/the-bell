@@ -13,9 +13,10 @@ interface OwnMuteNoticeProps {
  *
  * The lift half is the reason this exists. muted_until vanishes the moment a
  * moderator releases someone, so before it a member's profile simply stopped
- * saying they were muted — no record, no explanation, and nothing to check,
- * because the moderation audit trail is entirely behind the moderator-only
- * /v1/moderation routes.
+ * saying they were muted — no record, no explanation, and nothing to check.
+ * The member-facing history at GET /api/v1/users/me/moderation-history does
+ * not cover it either: a lift writes no action row, so this notice stays the
+ * one place an early release is visible to the person released.
  *
  * It renders nothing at all when there is neither a mute nor a lift, rather
  * than an empty panel: a member who has never been moderated should not be

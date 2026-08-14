@@ -4,10 +4,11 @@ import OwnMuteNotice from "./OwnMuteNotice";
 import type { User } from "../api/types";
 
 /**
- * A lifted mute used to leave a member with nothing: muted_until disappears the
- * instant a moderator releases them, and the moderation audit trail that would
- * have explained it sits entirely behind the moderator-only /v1/moderation
- * routes. These pin the half a member can actually see.
+ * A lifted mute leaves a member with nothing else to go on: muted_until
+ * disappears the instant a moderator releases them. Members can now read the
+ * actions against them at GET /api/v1/users/me/moderation-history, but a lift
+ * writes no action row, so it does not appear there either — this notice stays
+ * the only member-visible trace of an early release. These pin it.
  */
 
 function member(overrides: Partial<User> = {}): User {

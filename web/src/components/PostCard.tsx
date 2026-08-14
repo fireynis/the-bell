@@ -85,26 +85,13 @@ export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) 
 
   if (selfRemoved) return null;
 
+  // The card carries no hover treatment: it is not a link, and lifting it on
+  // hover promised a click that has never done anything.
   return (
-    <article
-      className="animate-fade-in-up p-5 transition-shadow"
-      style={{
-        backgroundColor: "var(--color-surface)",
-        boxShadow: "var(--shadow-sm)",
-        borderRadius: "var(--radius-lg)",
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "var(--shadow-md)")}
-      onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "var(--shadow-sm)")}
-    >
+    <article className="post-card animate-fade-in-up p-5">
       <div className="mb-3 flex items-center gap-2">
         <Avatar url={post.author_avatar_url || ""} name={authorName} size="sm" />
-        <Link
-          to={`/profile/${post.author_id}`}
-          className="text-sm font-semibold transition-colors"
-          style={{ color: "var(--color-text)" }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "var(--color-primary)")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "var(--color-text)")}
-        >
+        <Link to={`/profile/${post.author_id}`} className="author-link text-sm font-semibold">
           {authorName}
         </Link>
         <span style={{ color: "var(--color-text-tertiary)" }}>&middot;</span>
@@ -126,22 +113,31 @@ export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) 
         </div>
       </div>
 
-      <p
-        className="mb-4 whitespace-pre-wrap break-words leading-relaxed"
-        style={{ color: "var(--color-text)", fontSize: "0.9375rem" }}
-      >
-        {post.body}
-      </p>
+      {/*
+        The one thing on the page that is not the app talking. It is set in the
+        display serif at reading size so a post carries more weight than the
+        chrome around it — which used to be the same size and nearly the same
+        colour, leaving the town's own voice indistinguishable from a timestamp.
+      */}
+      <p className="post-body mb-4 whitespace-pre-wrap break-words">{post.body}</p>
 
       {post.image_path && (
         <>
-          <img
-            src={post.image_path}
-            alt=""
-            loading="lazy"
+          {/* A button, not a bare img with onClick: opening the full-size image
+              was reachable by mouse only. */}
+          <button
+            type="button"
             onClick={() => setLightbox(true)}
-            className="mb-4 mt-3 rounded-lg max-h-96 w-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-          />
+            aria-label={`View ${authorName}'s image full size`}
+            className="mb-4 mt-3 block w-full overflow-hidden rounded-lg"
+          >
+            <img
+              src={post.image_path}
+              alt=""
+              loading="lazy"
+              className="max-h-96 w-full object-cover transition-opacity hover:opacity-90"
+            />
+          </button>
           {lightbox && (
             <ImageLightbox src={post.image_path} onClose={() => setLightbox(false)} />
           )}

@@ -1,19 +1,16 @@
-import { useState } from "react";
 import { Link, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import BellLogo from "./BellLogo";
 import Avatar from "./Avatar";
 import { NAV_ITEMS, SIDEBAR_NAV_ITEMS, isActive, navItemLocked, visibleNavItems } from "../lib/nav";
+import { RING_THE_BELL, ringTheBellLockedLabel } from "../lib/copy";
 import LockGlyph from "./LockGlyph";
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
   const { config } = useTheme();
   const location = useLocation();
-  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
-  const [composeHovered, setComposeHovered] = useState(false);
-  const [signOutHovered, setSignOutHovered] = useState(false);
 
   const visibleItems = visibleNavItems(SIDEBAR_NAV_ITEMS, user);
   // The sidebar's composer is a button of its own rather than a nav item, but
@@ -45,19 +42,14 @@ export default function Sidebar() {
         {/* Compose button */}
         <Link
           to="/compose"
-          aria-label={composeLocked ? "Ring the Bell — you cannot post yet" : undefined}
-          className="flex items-center justify-center gap-2 rounded-full px-4 py-3 mb-4 text-sm font-semibold transition-colors"
+          aria-label={composeLocked ? ringTheBellLockedLabel() : undefined}
+          className="btn btn-primary mb-4 flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold"
           style={{
-            backgroundColor: composeHovered ? "var(--color-primary-hover)" : "var(--color-primary)",
-            color: "var(--color-text-inverse)",
-            borderRadius: "var(--radius-md)",
             // Kept in place and still followable — the composer is where the
             // reason lives — but visibly not the town's loudest button for
             // somebody who is not able to use it yet.
             opacity: composeLocked ? 0.65 : 1,
           }}
-          onMouseEnter={() => setComposeHovered(true)}
-          onMouseLeave={() => setComposeHovered(false)}
         >
           {composeLocked ? (
             <LockGlyph size={16} />
@@ -76,30 +68,22 @@ export default function Sidebar() {
               <path d="M13.73 21a2 2 0 0 1-3.46 0" />
             </svg>
           )}
-          Ring the Bell
+          {RING_THE_BELL}
         </Link>
 
         {/* Nav links */}
         <nav className="flex flex-col gap-1">
           {visibleItems.map((item) => {
             const active = isActive(item.path, location.pathname, item.exact);
-            const hovered = hoveredItem === item.path;
             return (
+              // aria-current is both the announcement and the styling hook: the
+              // active item's colours come from it in CSS, so a link that reads
+              // as current to a screen reader is the one that looks current.
               <Link
                 key={item.path}
                 to={item.path}
-                className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors"
-                style={{
-                  backgroundColor: active
-                    ? "var(--color-primary-light)"
-                    : hovered
-                      ? "var(--color-surface-hover)"
-                      : "transparent",
-                  color: active ? "var(--color-primary)" : "var(--color-text)",
-                  borderRadius: "var(--radius-md)",
-                }}
-                onMouseEnter={() => setHoveredItem(item.path)}
-                onMouseLeave={() => setHoveredItem(null)}
+                aria-current={active ? "page" : undefined}
+                className="nav-link flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium"
               >
                 <svg
                   width="20"
@@ -146,12 +130,9 @@ export default function Sidebar() {
           </div>
           <button
             onClick={logout}
-            className="flex-shrink-0 rounded-md p-1.5 transition-colors"
-            style={{
-              color: signOutHovered ? "var(--color-danger)" : "var(--color-text-tertiary)",
-            }}
-            onMouseEnter={() => setSignOutHovered(true)}
-            onMouseLeave={() => setSignOutHovered(false)}
+            className="tint-danger-on-hover flex-shrink-0 rounded-md p-1.5"
+            style={{ color: "var(--color-text-tertiary)" }}
+            aria-label="Sign out"
             title="Sign out"
           >
             <svg

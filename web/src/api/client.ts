@@ -7,6 +7,7 @@ import type {
   DirectoryResponse,
   ModerationQueueResponse,
   MuteStatus,
+  OwnModerationHistoryResponse,
   Post,
   Report,
   TakeActionRequest,
@@ -101,6 +102,22 @@ export const userApi = {
   listPosts: (userId: string, limit: number) =>
     api.get<UserPostsResponse>(`/users/${userId}/posts?limit=${limit}`),
   updateProfile: (req: UpdateProfileRequest) => api.put<User>("/users/me", req),
+
+  /**
+   * The moderation taken against the signed-in member, newest first: what was
+   * done, why, and what it cost them.
+   *
+   * The subject is the session, not a parameter — there is no id to pass, which
+   * is exactly why there is no way to ask this about anybody else. It names no
+   * moderator, and carries no penalty but the member's own.
+   *
+   * Unlike every other authenticated read here it is answered for a suspended
+   * or banned member, who is precisely the person that most needs to see it.
+   */
+  ownModerationHistory: (limit: number, offset: number) =>
+    api.get<OwnModerationHistoryResponse>(
+      `/users/me/moderation-history?limit=${limit}&offset=${offset}`,
+    ),
 
   /**
    * The member directory, newest arrival first. Open to any signed-in member

@@ -26,15 +26,22 @@ function stubApi() {
   );
 }
 
-function renderLayout() {
+function renderLayout(props: { wide?: boolean } = {}) {
   stubApi();
   return render(
     <MemoryRouter>
       <AuthProvider>
-        <AppLayout />
+        <AppLayout {...props} />
       </AuthProvider>
     </MemoryRouter>,
   );
+}
+
+/** The single centred column every page is mounted inside. */
+function contentColumn(container: HTMLElement) {
+  const column = container.querySelector("main > div");
+  expect(column).not.toBeNull();
+  return column as HTMLElement;
 }
 
 afterEach(() => {
@@ -68,5 +75,28 @@ describe("AppLayout mobile header", () => {
     expect(BOTTOM_NAV_ITEMS).not.toContain(NAV_ITEMS.settings);
     renderLayout();
     expect(header().getByRole("link", { name: NAV_ITEMS.settings.label })).toBeInTheDocument();
+  });
+});
+
+/**
+ * The layout owns the one horizontal gutter and the one measure. Pages used to
+ * add their own `mx-auto max-w-2xl p-4` inside it, doubling the padding and
+ * narrowing the column twice; Town Hall's four-across stat row was the visible
+ * cost, crushed into a 600px reading column.
+ */
+describe("AppLayout content column", () => {
+  it("holds pages to the reading measure by default", () => {
+    const { container } = renderLayout();
+    expect(contentColumn(container).style.maxWidth).toBe("var(--content-max-width)");
+  });
+
+  it("widens for a page that is a dashboard rather than a column of posts", () => {
+    const { container } = renderLayout({ wide: true });
+    expect(contentColumn(container).style.maxWidth).toBe("var(--content-max-width-wide)");
+  });
+
+  it("supplies the horizontal gutter itself, so pages do not add a second one", () => {
+    const { container } = renderLayout();
+    expect(contentColumn(container).className).toContain("px-4");
   });
 });

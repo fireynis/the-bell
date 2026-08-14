@@ -114,14 +114,8 @@ export default function PostMenu({ items, label, onOpen }: PostMenuProps) {
           onOpen?.();
           setOpen(true);
         }}
-        className="flex h-7 w-7 items-center justify-center rounded-full text-base leading-none transition-colors"
+        className="tint-on-hover flex h-7 w-7 items-center justify-center rounded-full text-base leading-none"
         style={{ color: "var(--color-text-tertiary)" }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = "var(--color-surface-hover)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = "";
-        }}
       >
         <span aria-hidden="true">&hellip;</span>
       </button>
@@ -146,16 +140,8 @@ export default function PostMenu({ items, label, onOpen }: PostMenuProps) {
               role="menuitem"
               disabled={item.disabled}
               onClick={() => select(item)}
-              className="block w-full px-4 py-2 text-left text-sm transition-colors disabled:cursor-default disabled:opacity-60"
+              className="tint-on-hover block w-full px-4 py-2 text-left text-sm disabled:cursor-default disabled:opacity-60"
               style={{ color: item.danger ? "var(--color-danger)" : "var(--color-text-secondary)" }}
-              onMouseEnter={(e) => {
-                if (!item.disabled) {
-                  e.currentTarget.style.backgroundColor = "var(--color-surface-hover)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "";
-              }}
             >
               {item.label}
             </button>
