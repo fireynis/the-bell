@@ -51,7 +51,7 @@ type Deps struct {
 	VouchService      *service.VouchService
 	ModerationService *service.ModerationActionService
 	ApprovalService   *service.ApprovalService
-	VotingService     *service.VotingService
+	ProposalService   *service.ProposalService
 	StatsService      *service.StatsService
 	ConfigRepo        service.ConfigRepository
 
@@ -106,6 +106,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	reactionRepo := postgres.NewReactionRepo(queries)
 	statsRepo := postgres.NewStatsRepo(queries)
 	voteRepo := postgres.NewVoteRepo(queries)
+	proposalRepo := postgres.NewProposalRepo(queries)
 	roleCheckerRepo := postgres.NewRoleCheckerRepo(queries)
 	ageQuerier := postgres.NewAGEQuerier(pool)
 
@@ -120,7 +121,13 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)
 	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, reliefRepo, nil)
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)
-	votingSvc := service.NewVotingService(voteRepo, nil)
+	// The proposal service reaches across four repositories because carrying a
+	// motion is a change to something real: proposals and votes for the ballot,
+	// users for the role it changes, role history for the record every other
+	// role change writes, and town config for bootstrap re-entry. The service
+	// it replaces needed only the votes, which is exactly why nothing it
+	// decided ever happened.
+	proposalSvc := service.NewProposalService(proposalRepo, voteRepo, userRepo, roleCheckerRepo, configRepo, logger, nil)
 	statsSvc := service.NewStatsService(statsRepo)
 	roleChecker := service.NewRoleChecker(roleCheckerRepo, logger, nil)
 	// The role checker must never judge a user by a score nobody has computed.
@@ -143,7 +150,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		VouchService:      vouchSvc,
 		ModerationService: modActionSvc,
 		ApprovalService:   approvalSvc,
-		VotingService:     votingSvc,
+		ProposalService:   proposalSvc,
 		StatsService:      statsSvc,
 		ConfigRepo:        configRepo,
 	}
@@ -215,7 +222,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		server.WithVouchService(vouchSvc),
 		server.WithModerationActionService(modActionSvc),
 		server.WithApprovalService(approvalSvc),
-		server.WithVotingService(votingSvc),
+		server.WithProposalService(proposalSvc),
 		server.WithReactionService(reactionSvc),
 		server.WithReactionRepo(reactionRepo),
 		server.WithStatsService(statsSvc),

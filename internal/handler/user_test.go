@@ -26,6 +26,13 @@ type stubProfileService struct {
 	gotBio         string
 	gotAvatarURL   string
 
+	// The residency claim the handler passed through, and an error to make it
+	// fail. claimSet records that the call happened at all, which is what
+	// distinguishes "cleared the claim" from "never reached the service".
+	gotClaim string
+	claimSet bool
+	claimErr error
+
 	// Directory listing. directory and total are what ListDirectory returns;
 	// the got* fields record what the handler asked for, which is where the
 	// query-string parsing is actually observable.
@@ -59,6 +66,11 @@ func (s *stubProfileService) UpdateProfile(_ context.Context, id, displayName, b
 		return nil, s.err
 	}
 	return s.user, nil
+}
+
+func (s *stubProfileService) UpdateResidencyClaim(_ context.Context, id, claim string) error {
+	s.gotID, s.gotClaim, s.claimSet = id, claim, true
+	return s.claimErr
 }
 
 type stubAuthorPosts struct {

@@ -25,6 +25,9 @@ type UserRepository interface {
 	// syntax is the implementation's job.
 	ListDirectoryUsers(ctx context.Context, query string, limit, offset int) ([]*domain.User, error)
 	CountDirectoryUsers(ctx context.Context, query string) (int64, error)
+	// SetUserResidencyClaim stores the resident's statement of where they live.
+	// The empty string clears it.
+	SetUserResidencyClaim(ctx context.Context, id, claim string) error
 }
 
 // UserService orchestrates user business logic.
@@ -103,6 +106,16 @@ func (s *UserService) GetByID(ctx context.Context, id string) (*domain.User, err
 const (
 	maxDisplayNameLength = 100
 	maxBioLength         = 500
+
+	// maxResidencyClaimLength bounds the residency claim, in runes.
+	//
+	// Three hundred is room for a street address with a unit number, a
+	// landmark, and a sentence of context ("the blue house behind the old
+	// mill") — which is the form a claim actually takes in a town where the
+	// council recognises places rather than validates them. It is counted in
+	// runes rather than bytes so a claim written in a non-Latin script gets the
+	// same three hundred characters as one written in English.
+	maxResidencyClaimLength = 300
 )
 
 const (
@@ -171,6 +184,36 @@ func (s *UserService) UpdateProfile(ctx context.Context, id, displayName, bio, a
 	}
 
 	return s.repo.UpdateUserProfile(ctx, id, displayName, bio, avatarURL)
+}
+
+// UpdateResidencyClaim stores what a resident says about where they live, for
+// the council to read while deciding whether to approve them.
+//
+// It is separate from UpdateProfile rather than a fourth field on it, because
+// the two have different readers. A profile is public: display name, bio and
+// avatar are what the town sees. A residency claim is for the reviewing council
+// alone, and folding it into the profile write would mean every profile edit
+// round-tripped an address through a form the whole town can read, and that a
+// resident updating their bio had to resend their address or lose it.
+//
+// The claim is trimmed and length-checked and nothing else. Nothing here — and
+// nothing anywhere in the codebase — tries to decide whether it is true: it is
+// an attestation a human reviews, so a validator that rejected "the blue house
+// behind the old mill" for not looking like an address would be refusing the
+// most useful thing a neighbour can say.
+//
+// An empty claim is not an error. Clearing what you said about where you live
+// has to be as easy as saying it, and a resident who is having second thoughts
+// about a pending application should not have to ask an administrator.
+func (s *UserService) UpdateResidencyClaim(ctx context.Context, id, claim string) error {
+	claim = strings.TrimSpace(claim)
+	if utf8.RuneCountInString(claim) > maxResidencyClaimLength {
+		return fmt.Errorf("%w: residency claim exceeds %d characters", ErrValidation, maxResidencyClaimLength)
+	}
+	if err := s.repo.SetUserResidencyClaim(ctx, id, claim); err != nil {
+		return fmt.Errorf("saving residency claim: %w", err)
+	}
+	return nil
 }
 
 // PendingUserLister and ActiveUserLister are the two rosters the backfill walks.

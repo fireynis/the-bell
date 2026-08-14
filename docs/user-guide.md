@@ -19,6 +19,28 @@ As a `pending` user you cannot post or vouch. To become a `member`:
 - **During bootstrap mode**: A council member can approve you directly from the admin dashboard
 - **After bootstrap mode**: An existing member or moderator with trust >= 60 must vouch for you. Your first vouch automatically promotes you to `member`
 
+### Saying where you live
+
+While you are waiting, you can tell the council where in town you live. It is
+one free-text field on your profile, and it is optional.
+
+It helps because the council is deciding whether you are a neighbour, and a
+street they recognise is often the thing that settles it — especially if nobody
+has vouched for you yet and your name alone means nothing to them. Write it
+however a neighbour would say it. "12 Mill Lane" works; so does "the blue house
+behind the old mill". Up to 300 characters.
+
+Two things worth knowing:
+
+- **Nobody verifies it.** The Bell does not check your address against anything.
+  It shows the council what you wrote and records who approved you on the
+  strength of it. What your town does with a claim it cannot place — ask around,
+  ask you, wait for a vouch — is up to your town.
+- **Only you and the reviewing council see it.** It is not on your public
+  profile, not in the member directory, and not visible to other residents. Your
+  own profile shows it back to you, so you can see what you said and change it or
+  clear it at any time.
+
 ## The Trust System
 
 Every user has a **trust score** from 0 to 100. The score is a weighted composite of four components:
@@ -300,14 +322,59 @@ This incentivizes careful vouching -- vouching for bad actors has consequences.
 
 Moderators can view the full moderation history for any user, including all actions taken and the trust penalties that resulted. Council members can additionally view a moderator's action history (actions they have taken) for audit purposes.
 
-## Council Voting
+## The Council
 
-Council members can vote on proposals from the admin dashboard. Each proposal requires a simple majority of council members to pass:
+The council is the town's standing body. Its members approve residents during
+bootstrap mode, change town configuration, and issue the heaviest moderation
+sanctions.
 
-- Vote options: `approve` or `reject`
-- Each council member can vote once per proposal
-- A proposal is approved when approve votes > total council / 2
-- A proposal is rejected when reject votes > total council / 2
+**The council is not fixed at setup, and a seat on it is not permanent.** It
+begins with whoever the operator named when the town was created, and after that
+it changes the same way anything else about the town changes: the council votes.
+
+### Proposals
+
+Any council member can raise a proposal from the admin dashboard. There are
+three kinds, and each one *does* something the moment it passes — there is no
+separate step where somebody applies the result:
+
+| Proposal | What it asks | What passing it does |
+|----------|--------------|----------------------|
+| Promote to council | That a moderator join the council | They become a council member |
+| Remove from council | That a council member step down | They return to being a `member` |
+| Re-enter bootstrap mode | That the town go back to admitting residents by council approval | Bootstrap mode is switched back on |
+
+Every proposal carries a rationale — the case the proposer is making to their
+colleagues — and that rationale is the record of why a seat changed hands.
+
+### How the vote works
+
+A proposal passes on a simple majority: strictly more than half of the council
+members entitled to vote on it. It is decided the moment either side reaches
+that majority, so a proposal does not wait for everyone.
+
+Each council member votes once, approve or reject. Changing your mind afterwards
+is not possible; abstaining is, and you do it by not voting.
+
+**On a removal, the person being removed does not vote and is not counted.** The
+majority is taken over the rest of the council. Nobody gets a say in whether
+they keep their own seat.
+
+Only a moderator can be proposed for the council — the moderator role is where
+the standing for it is earned — and the council cannot vote itself out of
+existence: a removal that would leave no council members is refused.
+
+### Re-entering bootstrap mode
+
+Bootstrap mode is how a new town admits its first residents, by council approval
+rather than by vouching, and it ends automatically at 20 active members. That
+used to be a one-way door: a town that grew past 20 and then shrank had no way
+back to the only mechanism that lets people in without a vouch.
+
+A council vote can now reopen it. The one restriction is that the town has to be
+below 20 active members at the time — above that the exit rule would switch the
+mode straight back off, so the proposal is refused rather than passed and
+quietly undone.
 
 ## Managing Your Profile
 

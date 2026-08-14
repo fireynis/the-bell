@@ -51,6 +51,7 @@ type profileService interface {
 	GetByID(ctx context.Context, id string) (*domain.User, error)
 	UpdateProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error)
 	ListDirectory(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error)
+	UpdateResidencyClaim(ctx context.Context, id, claim string) error
 }
 
 // authorPostLister abstracts listing a single author's posts.
@@ -109,6 +110,26 @@ type ownProfileResponse struct {
 	// a member released early cannot tell an early release from a suspension
 	// that ran its full course.
 	SuspensionLifts []suspensionLiftResponse `json:"suspension_lifts,omitempty"`
+	// ResidencyClaim is what this user told the council about where they live.
+	//
+	// It is here for one concrete reason: the field that collects it has to
+	// prefill with what they said last time. Without this a resident who
+	// returned to their profile in a new session saw an empty box and had to
+	// retype their address to change one word of it, or worse, assumed the
+	// claim had been lost.
+	//
+	// It appears on the self view and on the council's approval queue, and on
+	// nothing else. The two readers are the only two who have a reason to see
+	// it: the person who wrote it, and the people deciding whether to admit
+	// them. Note where it is NOT — it is on ownProfileResponse rather than on
+	// the embedded userProfileResponse, so the public profile and the directory
+	// cannot acquire it by sharing that type.
+	//
+	// Always present, empty string included, unlike the moderation fields above.
+	// Those use presence to mean something ("am I muted?"); this is a text box's
+	// contents, and a client prefilling it should not have to treat "absent" and
+	// "blank" as two cases.
+	ResidencyClaim string `json:"residency_claim"`
 }
 
 // muteLiftResponse is one mute lift as its subject sees it.
@@ -185,12 +206,17 @@ func toProfileResponse(u *domain.User) userProfileResponse {
 // toOwnProfileResponse builds the self view. A mute is between the user and the
 // moderators: the user must be able to see why they cannot post, and no other
 // caller has any business knowing, so muted_until appears here and in no other
-// response shape.
+// response shape. The residency claim is the same shape of thing from the other
+// direction — the user's own words, readable by them and by the council
+// reviewing them, and by nobody else.
 //
 // An expired mute is reported as no mute at all rather than as a past
 // timestamp, so the client needs no clock of its own to interpret the field.
 func toOwnProfileResponse(u *domain.User, now time.Time) ownProfileResponse {
-	resp := ownProfileResponse{userProfileResponse: toProfileResponse(u)}
+	resp := ownProfileResponse{
+		userProfileResponse: toProfileResponse(u),
+		ResidencyClaim:      u.ResidencyClaim,
+	}
 	if u.IsMuted(now) {
 		resp.MutedUntil = u.MutedUntil.Format(timestampFormat)
 	}
@@ -270,6 +296,45 @@ func (h *UserHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, resp)
+}
+
+type residencyClaimRequest struct {
+	Claim string `json:"claim"`
+}
+
+// UpdateResidencyClaim handles PUT /api/v1/users/me/residency-claim.
+//
+// It answers 204 with no body, and that is the whole contract. The claim is
+// never read back through the API by the person who wrote it, because there is
+// nothing to read back that the client did not just send — and it is never
+// returned to anyone else, because the only reader is the council's approval
+// queue. A response echoing the claim would create a second place it appears on
+// the wire for no benefit.
+//
+// The route is guarded by auth and RequireActive with no role floor, which is
+// exactly right for who uses it: a pending resident is active — that is what
+// makes their application reviewable — and a member who moves house has to be
+// able to correct what they said. Only banned and suspended accounts are shut
+// out, and neither has an application in front of the council.
+func (h *UserHandler) UpdateResidencyClaim(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req residencyClaimRequest
+	if err := Decode(r, &req); err != nil {
+		Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.users.UpdateResidencyClaim(r.Context(), user.ID, req.Claim); err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GetByID handles GET /api/v1/users/{id}.

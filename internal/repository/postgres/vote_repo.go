@@ -5,11 +5,11 @@ import (
 	"errors"
 
 	"github.com/fireynis/the-bell/internal/domain"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// VoteRepo adapts sqlc queries to service.VoteRepository.
 type VoteRepo struct {
 	q *Queries
 }
@@ -18,6 +18,14 @@ func NewVoteRepo(q *Queries) *VoteRepo {
 	return &VoteRepo{q: q}
 }
 
+// CreateVote records one council member's vote.
+//
+// Two schema constraints show up here as ordinary caller errors. The unique
+// index on (proposal_id, voter_id) is what actually stops a council member
+// voting twice — the service checks the ballot first, but two concurrent
+// requests both pass that check — and since migration 00021 the foreign key on
+// proposal_id catches a vote cast on a motion that was deleted or never
+// existed. Neither is a server fault.
 func (r *VoteRepo) CreateVote(ctx context.Context, vote *domain.CouncilVote) error {
 	_, err := r.q.CreateCouncilVote(ctx, CreateCouncilVoteParams{
 		ID:         vote.ID,
@@ -28,6 +36,9 @@ func (r *VoteRepo) CreateVote(ctx context.Context, vote *domain.CouncilVote) err
 	})
 	if isUniqueViolation(err) {
 		return domain.ErrValidation
+	}
+	if isForeignKeyViolation(err) {
+		return domain.ErrNotFound
 	}
 	return err
 }
@@ -56,20 +67,9 @@ func isForeignKeyViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
-func (r *VoteRepo) GetVoteByProposalAndVoter(ctx context.Context, proposalID, voterID string) (*domain.CouncilVote, error) {
-	row, err := r.q.GetVoteByProposalAndVoter(ctx, GetVoteByProposalAndVoterParams{
-		ProposalID: proposalID,
-		VoterID:    voterID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return councilVoteFromRow(row), nil
-}
-
+// ListVotesByProposal returns the whole ballot for one motion. Every tally is
+// computed from this — approvals, rejections and the caller's own vote — rather
+// than from a query per question; see queries/council_votes.sql.
 func (r *VoteRepo) ListVotesByProposal(ctx context.Context, proposalID string) ([]domain.CouncilVote, error) {
 	rows, err := r.q.ListVotesByProposal(ctx, proposalID)
 	if err != nil {
@@ -80,17 +80,6 @@ func (r *VoteRepo) ListVotesByProposal(ctx context.Context, proposalID string) (
 		votes[i] = *councilVoteFromRow(row)
 	}
 	return votes, nil
-}
-
-func (r *VoteRepo) CountVotes(ctx context.Context, proposalID string, vote domain.VoteChoice) (int64, error) {
-	return r.q.CountVotesByProposalAndVote(ctx, CountVotesByProposalAndVoteParams{
-		ProposalID: proposalID,
-		Vote:       string(vote),
-	})
-}
-
-func (r *VoteRepo) ListOpenProposalIDs(ctx context.Context) ([]string, error) {
-	return r.q.ListDistinctOpenProposals(ctx)
 }
 
 func (r *VoteRepo) CountCouncilMembers(ctx context.Context) (int64, error) {

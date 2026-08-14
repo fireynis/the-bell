@@ -105,7 +105,7 @@ func (q *Queries) CountUsersByMinRole(ctx context.Context) (int64, error) {
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at
 `
 
 type CreateUserParams struct {
@@ -152,6 +152,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.TrustBelowSince,
 		&i.MutedUntil,
 		&i.SuspendedUntil,
+		&i.ResidencyClaim,
+		&i.ResidencyClaimUpdatedAt,
 	)
 	return i, err
 }
@@ -170,7 +172,7 @@ func (q *Queries) DeactivateUser(ctx context.Context, id string) error {
 
 const getUserByID = `-- name: GetUserByID :one
 
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users WHERE id = $1
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users WHERE id = $1
 `
 
 // Every query below that asks for the active users means "active and not
@@ -198,12 +200,14 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.TrustBelowSince,
 		&i.MutedUntil,
 		&i.SuspendedUntil,
+		&i.ResidencyClaim,
+		&i.ResidencyClaimUpdatedAt,
 	)
 	return i, err
 }
 
 const getUserByKratosID = `-- name: GetUserByKratosID :one
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users WHERE kratos_identity_id = $1
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users WHERE kratos_identity_id = $1
 `
 
 func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string) (User, error) {
@@ -224,12 +228,14 @@ func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string
 		&i.TrustBelowSince,
 		&i.MutedUntil,
 		&i.SuspendedUntil,
+		&i.ResidencyClaim,
+		&i.ResidencyClaimUpdatedAt,
 	)
 	return i, err
 }
 
 const listActiveNonBannedUsers = `-- name: ListActiveNonBannedUsers :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users
 WHERE is_active = TRUE AND role NOT IN ('pending', 'banned')
   AND (suspended_until IS NULL OR suspended_until <= NOW())
 ORDER BY created_at
@@ -259,6 +265,8 @@ func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) 
 			&i.TrustBelowSince,
 			&i.MutedUntil,
 			&i.SuspendedUntil,
+			&i.ResidencyClaim,
+			&i.ResidencyClaimUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -272,7 +280,7 @@ func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) 
 
 const listDirectoryUsers = `-- name: ListDirectoryUsers :many
 
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users
 WHERE is_active = TRUE AND role <> 'banned'
   AND (suspended_until IS NULL OR suspended_until <= NOW())
   AND ($1::text = '' OR display_name ILIKE '%' || $1::text || '%')
@@ -325,6 +333,8 @@ func (q *Queries) ListDirectoryUsers(ctx context.Context, arg ListDirectoryUsers
 			&i.TrustBelowSince,
 			&i.MutedUntil,
 			&i.SuspendedUntil,
+			&i.ResidencyClaim,
+			&i.ResidencyClaimUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -337,7 +347,7 @@ func (q *Queries) ListDirectoryUsers(ctx context.Context, arg ListDirectoryUsers
 }
 
 const listPendingUsers = `-- name: ListPendingUsers :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users
 WHERE role = 'pending' AND is_active = TRUE
   AND (suspended_until IS NULL OR suspended_until <= NOW())
 ORDER BY created_at ASC
@@ -367,6 +377,8 @@ func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 			&i.TrustBelowSince,
 			&i.MutedUntil,
 			&i.SuspendedUntil,
+			&i.ResidencyClaim,
+			&i.ResidencyClaimUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -395,6 +407,30 @@ func (q *Queries) SetUserMutedUntil(ctx context.Context, arg SetUserMutedUntilPa
 	return err
 }
 
+const setUserResidencyClaim = `-- name: SetUserResidencyClaim :exec
+UPDATE users
+SET residency_claim            = $2,
+    residency_claim_updated_at = NOW(),
+    updated_at                 = NOW()
+WHERE id = $1
+`
+
+type SetUserResidencyClaimParams struct {
+	ID             string `json:"id"`
+	ResidencyClaim string `json:"residency_claim"`
+}
+
+// The resident's own statement of where they live, for the council's approval
+// queue. Writing the empty string clears it.
+//
+// residency_claim_updated_at is stamped on every write including a clear, so
+// "withdrew their claim last week" stays distinguishable from "never made one",
+// which is the whole reason the column is nullable while the claim is not.
+func (q *Queries) SetUserResidencyClaim(ctx context.Context, arg SetUserResidencyClaimParams) error {
+	_, err := q.db.Exec(ctx, setUserResidencyClaim, arg.ID, arg.ResidencyClaim)
+	return err
+}
+
 const setUserSuspendedUntil = `-- name: SetUserSuspendedUntil :exec
 UPDATE users SET suspended_until = $2, updated_at = NOW() WHERE id = $1
 `
@@ -415,7 +451,7 @@ const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET display_name = $2, bio = $3, avatar_url = $4, updated_at = NOW()
 WHERE id = $1
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at
 `
 
 type UpdateUserProfileParams struct {
@@ -448,6 +484,8 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.TrustBelowSince,
 		&i.MutedUntil,
 		&i.SuspendedUntil,
+		&i.ResidencyClaim,
+		&i.ResidencyClaimUpdatedAt,
 	)
 	return i, err
 }

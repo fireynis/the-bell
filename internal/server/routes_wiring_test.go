@@ -63,7 +63,8 @@ func (stubUserRepo) UpdateUserProfile(context.Context, string, string, string, s
 func (stubUserRepo) ListDirectoryUsers(context.Context, string, int, int) ([]*domain.User, error) {
 	return []*domain.User{{ID: "u1", DisplayName: "Stub", Role: domain.RoleMember, IsActive: true}}, nil
 }
-func (stubUserRepo) CountDirectoryUsers(context.Context, string) (int64, error) { return 1, nil }
+func (stubUserRepo) CountDirectoryUsers(context.Context, string) (int64, error)  { return 1, nil }
+func (stubUserRepo) SetUserResidencyClaim(context.Context, string, string) error { return nil }
 
 type stubVouchRepo struct{}
 
@@ -133,7 +134,7 @@ func newWiredServer(t *testing.T, cfg config.Config) *Server {
 		WithReportService(service.NewReportService(nil, nil, nil)),
 		WithModerationActionService(service.NewModerationActionService(nil, nil, nil, nil, nil, nil, nil)),
 		WithApprovalService(service.NewApprovalService(nil, nil)),
-		WithVotingService(service.NewVotingService(nil, nil)),
+		WithProposalService(service.NewProposalService(nil, nil, nil, nil, nil, nil, nil)),
 		WithReactionService(service.NewReactionService(nil, nil)),
 		WithStatsService(service.NewStatsService(nil)),
 		WithConfigRepo(stubConfigRepo{}),
@@ -210,8 +211,10 @@ func TestRoutesAreRegistered(t *testing.T) {
 		{"remove post", http.MethodPost, "/api/v1/moderation/posts/p1/remove", "/api/v1/moderation/posts/{id}/remove", http.StatusUnauthorized},
 		{"pending vouches", http.MethodGet, "/api/v1/vouches/pending", "/api/v1/vouches/pending", http.StatusUnauthorized},
 		{"approve vouch", http.MethodPost, "/api/v1/vouches/approve/v1", "/api/v1/vouches/approve/{id}", http.StatusUnauthorized},
-		{"cast vote", http.MethodPost, "/api/v1/admin/council/votes", "/api/v1/admin/council/votes", http.StatusUnauthorized},
-		{"list votes", http.MethodGet, "/api/v1/admin/council/votes", "/api/v1/admin/council/votes", http.StatusUnauthorized},
+		{"list proposals", http.MethodGet, "/api/v1/admin/proposals", "/api/v1/admin/proposals", http.StatusUnauthorized},
+		{"create proposal", http.MethodPost, "/api/v1/admin/proposals", "/api/v1/admin/proposals", http.StatusUnauthorized},
+		{"vote on proposal", http.MethodPost, "/api/v1/admin/proposals/p1/votes", "/api/v1/admin/proposals/{id}/votes", http.StatusUnauthorized},
+		{"set residency claim", http.MethodPut, "/api/v1/users/me/residency-claim", "/api/v1/users/me/residency-claim", http.StatusUnauthorized},
 		{"admin stats", http.MethodGet, "/api/v1/admin/stats", "/api/v1/admin/stats", http.StatusUnauthorized},
 		{"admin config", http.MethodPut, "/api/v1/admin/config", "/api/v1/admin/config", http.StatusUnauthorized},
 	}

@@ -2,6 +2,9 @@ package domain
 
 import "time"
 
+// VoteChoice is one council member's answer on one motion. There is no
+// abstention: not voting is how a council member abstains, and recording it
+// would make the tally count people who declined to decide.
 type VoteChoice string
 
 const (
@@ -9,27 +12,22 @@ const (
 	VoteReject  VoteChoice = "reject"
 )
 
-type CouncilVote struct {
-	ID         string     `json:"id"`
-	ProposalID string     `json:"proposal_id"`
-	VoterID    string     `json:"voter_id"`
-	Vote       VoteChoice `json:"vote"`
-	CreatedAt  time.Time  `json:"created_at"`
+// Valid reports whether c is one of the two recordable choices. A vote outside
+// this set would be stored and then counted by neither tally.
+func (c VoteChoice) Valid() bool {
+	return c == VoteApprove || c == VoteReject
 }
 
-type ProposalStatus string
-
-const (
-	ProposalPending  ProposalStatus = "pending"
-	ProposalApproved ProposalStatus = "approved"
-	ProposalRejected ProposalStatus = "rejected"
-)
-
-type ProposalSummary struct {
-	ProposalID   string         `json:"proposal_id"`
-	ApproveCount int64          `json:"approve_count"`
-	RejectCount  int64          `json:"reject_count"`
-	TotalCouncil int64          `json:"total_council"`
-	Status       ProposalStatus `json:"status"`
-	Votes        []CouncilVote  `json:"votes"`
+// CouncilVote is one vote on one proposal. The (proposal_id, voter_id) pair is
+// unique in the schema, which is what enforces one vote per council member.
+//
+// It carries no JSON tags any more. Votes are never serialized: the API
+// publishes tallies and the caller's own choice, not a roll call of who voted
+// which way, so nothing may accidentally put a named ballot on the wire.
+type CouncilVote struct {
+	ID         string
+	ProposalID string
+	VoterID    string
+	Vote       VoteChoice
+	CreatedAt  time.Time
 }

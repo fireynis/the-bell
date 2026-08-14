@@ -50,6 +50,17 @@ type Post struct {
 	RemovedBy     pgtype.Text        `json:"removed_by"`
 }
 
+type Proposal struct {
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	TargetUserID pgtype.Text        `json:"target_user_id"`
+	Rationale    string             `json:"rationale"`
+	CreatedBy    string             `json:"created_by"`
+	Status       string             `json:"status"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	DecidedAt    pgtype.Timestamptz `json:"decided_at"`
+}
+
 type Reaction struct {
 	ID           string             `json:"id"`
 	UserID       string             `json:"user_id"`
@@ -92,20 +103,22 @@ type TrustPenalty struct {
 }
 
 type User struct {
-	ID               string             `json:"id"`
-	KratosIdentityID string             `json:"kratos_identity_id"`
-	DisplayName      string             `json:"display_name"`
-	Bio              string             `json:"bio"`
-	AvatarUrl        string             `json:"avatar_url"`
-	TrustScore       float64            `json:"trust_score"`
-	Role             string             `json:"role"`
-	IsActive         bool               `json:"is_active"`
-	JoinedAt         pgtype.Timestamptz `json:"joined_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	TrustBelowSince  pgtype.Timestamptz `json:"trust_below_since"`
-	MutedUntil       pgtype.Timestamptz `json:"muted_until"`
-	SuspendedUntil   pgtype.Timestamptz `json:"suspended_until"`
+	ID                      string             `json:"id"`
+	KratosIdentityID        string             `json:"kratos_identity_id"`
+	DisplayName             string             `json:"display_name"`
+	Bio                     string             `json:"bio"`
+	AvatarUrl               string             `json:"avatar_url"`
+	TrustScore              float64            `json:"trust_score"`
+	Role                    string             `json:"role"`
+	IsActive                bool               `json:"is_active"`
+	JoinedAt                pgtype.Timestamptz `json:"joined_at"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	TrustBelowSince         pgtype.Timestamptz `json:"trust_below_since"`
+	MutedUntil              pgtype.Timestamptz `json:"muted_until"`
+	SuspendedUntil          pgtype.Timestamptz `json:"suspended_until"`
+	ResidencyClaim          string             `json:"residency_claim"`
+	ResidencyClaimUpdatedAt pgtype.Timestamptz `json:"residency_claim_updated_at"`
 }
 
 type Vouch struct {

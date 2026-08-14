@@ -194,6 +194,24 @@ type User struct {
 	// a secret — is_active already tells the caller they cannot act — but the
 	// date belongs to the moderators' view, not to every reader of a list.
 	SuspendedUntil *time.Time `json:"-"`
+
+	// ResidencyClaim is what the resident says about where they live, in their
+	// own words. It is an attestation the council reads while deciding whether
+	// to approve them, never a verified fact — nothing checks it against
+	// anything, and how hard to press on it is each town's own business.
+	//
+	// Untagged, and this is the strongest case of the three. A resident's home
+	// address is the most sensitive thing this struct carries, the struct is
+	// serialized wholesale by the council's approval queue, and the claim is
+	// for the reviewing council alone: not the directory, not a public profile,
+	// not the resident's own neighbours. The queue's response type opts in by
+	// naming the field; nothing else may.
+	ResidencyClaim string `json:"-"`
+
+	// ResidencyClaimUpdatedAt is when the claim was last written, including
+	// when it was cleared; nil means the resident has never set one. Untagged
+	// for the same reason as the claim itself.
+	ResidencyClaimUpdatedAt *time.Time `json:"-"`
 }
 
 // IsMuted reports whether a moderator's mute is still in force at now.

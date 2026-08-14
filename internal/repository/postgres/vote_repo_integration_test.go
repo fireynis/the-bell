@@ -16,19 +16,53 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Council votes decide promotions, so the tally has to be right and a council
-// member must not be able to vote twice. Both properties are enforced by the
-// schema (a unique index on proposal_id, voter_id) rather than by Go, so they
-// are checked against a real database.
+// Council votes decide promotions and removals, so the ballot has to be right
+// and a council member must not be able to vote twice. Both properties are
+// enforced by the schema — a unique index on (proposal_id, voter_id), and since
+// 00021 a foreign key from proposal_id to proposals — rather than by Go, so
+// they are checked against a real database.
+//
+// Every proposal id here belongs to a proposal that actually exists. Before
+// 00021 these tests voted on strings like "promote:user-1" that referred to
+// nothing, which is exactly the state the migration exists to end.
 
 var voteSeq int
+
+// seedProposal creates a real motion to vote on and returns its id.
+//
+// Each one gets a moderator of its own to be about. That is not incidental: the
+// partial unique index allows a single open motion per (type, target), so two
+// seeds sharing a target — or both leaving it NULL — would be the same question
+// asked twice and the second would be refused.
+func seedProposal(t *testing.T, pool *pgxpool.Pool, creator *domain.User) string {
+	t.Helper()
+
+	voteSeq++
+	id := fmt.Sprintf("proposal-%d-%d", time.Now().UnixNano(), voteSeq)
+	target := testsupport.TestUser(t, pool,
+		testsupport.UniqueKratosID("proposal-target"), domain.RoleModerator, 80)
+
+	p := &domain.Proposal{
+		ID:           id,
+		Type:         domain.ProposalCouncilPromotion,
+		TargetUserID: target.ID,
+		Rationale:    "seeded by a test",
+		CreatedBy:    creator.ID,
+		Status:       domain.ProposalOpen,
+		CreatedAt:    time.Now(),
+	}
+	if err := postgres.NewProposalRepo(postgres.New(pool)).CreateProposal(context.Background(), p); err != nil {
+		t.Fatalf("seeding proposal %s: %v", id, err)
+	}
+	return id
+}
 
 func castVote(t *testing.T, pool *pgxpool.Pool, proposalID, voterID string, choice domain.VoteChoice) *domain.CouncilVote {
 	t.Helper()
 
 	voteSeq++
 	vote := &domain.CouncilVote{
-		ID:         fmt.Sprintf("vote-%d", voteSeq),
+		ID:         fmt.Sprintf("vote-%d-%d", time.Now().UnixNano(), voteSeq),
 		ProposalID: proposalID,
 		VoterID:    voterID,
 		Vote:       choice,
@@ -45,55 +79,28 @@ func councilMember(t *testing.T, pool *pgxpool.Pool, suffix string) *domain.User
 	return testsupport.TestUser(t, pool, testsupport.UniqueKratosID("council-"+suffix), domain.RoleCouncil, 90)
 }
 
-func TestVoteRepo_CreateAndGet(t *testing.T) {
+func TestVoteRepo_CreateAndList(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 	repo := postgres.NewVoteRepo(postgres.New(pool))
 
 	voter := councilMember(t, pool, "a")
-	cast := castVote(t, pool, "promote:user-1", voter.ID, domain.VoteApprove)
+	proposal := seedProposal(t, pool, voter)
+	cast := castVote(t, pool, proposal, voter.ID, domain.VoteApprove)
 
-	got, err := repo.GetVoteByProposalAndVoter(ctx, "promote:user-1", voter.ID)
+	votes, err := repo.ListVotesByProposal(ctx, proposal)
 	if err != nil {
-		t.Fatalf("GetVoteByProposalAndVoter: %v", err)
+		t.Fatalf("ListVotesByProposal: %v", err)
 	}
+	if len(votes) != 1 {
+		t.Fatalf("got %d votes, want 1", len(votes))
+	}
+	got := votes[0]
 	if got.ID != cast.ID || got.Vote != domain.VoteApprove || got.VoterID != voter.ID {
 		t.Errorf("got %+v, want %+v", got, cast)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("created_at came back zero")
-	}
-}
-
-// A council member who has not voted is a normal state — the UI asks before it
-// renders the ballot — so it maps to ErrNotFound rather than a raw pgx error.
-func TestVoteRepo_GetVoteByProposalAndVoter_NotFound(t *testing.T) {
-	pool := testsupport.TestDB(t)
-	ctx := context.Background()
-	repo := postgres.NewVoteRepo(postgres.New(pool))
-
-	voter := councilMember(t, pool, "a")
-	castVote(t, pool, "promote:user-1", voter.ID, domain.VoteApprove)
-
-	tests := []struct {
-		name                string
-		proposalID, voterID string
-	}{
-		{"proposal this voter has not voted on", "promote:user-2", voter.ID},
-		{"a voter who has not voted", "promote:user-1", "no-such-voter"},
-		{"neither exists", "promote:nobody", "no-such-voter"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := repo.GetVoteByProposalAndVoter(ctx, tt.proposalID, tt.voterID)
-			if !errors.Is(err, service.ErrNotFound) {
-				t.Errorf("err = %v, want service.ErrNotFound", err)
-			}
-			if got != nil {
-				t.Errorf("got %+v, want nil", got)
-			}
-		})
 	}
 }
 
@@ -106,13 +113,14 @@ func TestVoteRepo_CreateVote_DuplicateIsValidationError(t *testing.T) {
 	repo := postgres.NewVoteRepo(postgres.New(pool))
 
 	voter := councilMember(t, pool, "a")
-	castVote(t, pool, "promote:user-1", voter.ID, domain.VoteApprove)
+	proposal := seedProposal(t, pool, voter)
+	castVote(t, pool, proposal, voter.ID, domain.VoteApprove)
 
 	// Same proposal and voter, new row id, and even the opposite choice: the
 	// index is on (proposal_id, voter_id), so this is still a duplicate.
 	second := &domain.CouncilVote{
 		ID:         "vote-duplicate",
-		ProposalID: "promote:user-1",
+		ProposalID: proposal,
 		VoterID:    voter.ID,
 		Vote:       domain.VoteReject,
 		CreatedAt:  time.Now(),
@@ -123,7 +131,7 @@ func TestVoteRepo_CreateVote_DuplicateIsValidationError(t *testing.T) {
 	}
 
 	// The original vote stands; the duplicate changed nothing.
-	votes, err := repo.ListVotesByProposal(ctx, "promote:user-1")
+	votes, err := repo.ListVotesByProposal(ctx, proposal)
 	if err != nil {
 		t.Fatalf("ListVotesByProposal: %v", err)
 	}
@@ -135,6 +143,29 @@ func TestVoteRepo_CreateVote_DuplicateIsValidationError(t *testing.T) {
 	}
 }
 
+// A vote on a motion that does not exist is the caller naming something gone,
+// not a server fault, so the foreign key added in 00021 must surface as
+// ErrNotFound. Before that migration this insert succeeded and the vote sat in
+// the table forever, counted by nothing.
+func TestVoteRepo_CreateVote_UnknownProposalIsNotFound(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewVoteRepo(postgres.New(pool))
+
+	voter := councilMember(t, pool, "a")
+
+	err := repo.CreateVote(ctx, &domain.CouncilVote{
+		ID:         "vote-on-nothing",
+		ProposalID: "no-such-proposal",
+		VoterID:    voter.ID,
+		Vote:       domain.VoteApprove,
+		CreatedAt:  time.Now(),
+	})
+	if !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("err = %v, want service.ErrNotFound", err)
+	}
+}
+
 // The same voter on a different proposal is not a duplicate.
 func TestVoteRepo_CreateVote_SameVoterDifferentProposal(t *testing.T) {
 	pool := testsupport.TestDB(t)
@@ -142,19 +173,25 @@ func TestVoteRepo_CreateVote_SameVoterDifferentProposal(t *testing.T) {
 	repo := postgres.NewVoteRepo(postgres.New(pool))
 
 	voter := councilMember(t, pool, "a")
-	castVote(t, pool, "promote:user-1", voter.ID, domain.VoteApprove)
-	castVote(t, pool, "promote:user-2", voter.ID, domain.VoteReject)
+	first := seedProposal(t, pool, voter)
+	second := seedProposal(t, pool, voter)
+
+	castVote(t, pool, first, voter.ID, domain.VoteApprove)
+	castVote(t, pool, second, voter.ID, domain.VoteReject)
 
 	for proposal, want := range map[string]domain.VoteChoice{
-		"promote:user-1": domain.VoteApprove,
-		"promote:user-2": domain.VoteReject,
+		first:  domain.VoteApprove,
+		second: domain.VoteReject,
 	} {
-		got, err := repo.GetVoteByProposalAndVoter(ctx, proposal, voter.ID)
+		votes, err := repo.ListVotesByProposal(ctx, proposal)
 		if err != nil {
-			t.Fatalf("GetVoteByProposalAndVoter(%s): %v", proposal, err)
+			t.Fatalf("ListVotesByProposal(%s): %v", proposal, err)
 		}
-		if got.Vote != want {
-			t.Errorf("%s: vote = %q, want %q", proposal, got.Vote, want)
+		if len(votes) != 1 {
+			t.Fatalf("%s: got %d votes, want 1", proposal, len(votes))
+		}
+		if votes[0].Vote != want {
+			t.Errorf("%s: vote = %q, want %q", proposal, votes[0].Vote, want)
 		}
 	}
 }
@@ -168,12 +205,15 @@ func TestVoteRepo_ListVotesByProposal(t *testing.T) {
 	b := councilMember(t, pool, "b")
 	c := councilMember(t, pool, "c")
 
-	castVote(t, pool, "promote:user-1", a.ID, domain.VoteApprove)
-	castVote(t, pool, "promote:user-1", b.ID, domain.VoteReject)
-	// A vote on a different proposal must not appear.
-	castVote(t, pool, "promote:user-2", c.ID, domain.VoteApprove)
+	subject := seedProposal(t, pool, a)
+	other := seedProposal(t, pool, a)
 
-	votes, err := repo.ListVotesByProposal(ctx, "promote:user-1")
+	castVote(t, pool, subject, a.ID, domain.VoteApprove)
+	castVote(t, pool, subject, b.ID, domain.VoteReject)
+	// A vote on a different proposal must not appear.
+	castVote(t, pool, other, c.ID, domain.VoteApprove)
+
+	votes, err := repo.ListVotesByProposal(ctx, subject)
 	if err != nil {
 		t.Fatalf("ListVotesByProposal: %v", err)
 	}
@@ -181,7 +221,7 @@ func TestVoteRepo_ListVotesByProposal(t *testing.T) {
 		t.Fatalf("got %d votes, want 2", len(votes))
 	}
 	for _, v := range votes {
-		if v.ProposalID != "promote:user-1" {
+		if v.ProposalID != subject {
 			t.Errorf("vote %s belongs to proposal %s", v.ID, v.ProposalID)
 		}
 		if v.VoterID == c.ID {
@@ -195,80 +235,6 @@ func TestVoteRepo_ListVotesByProposal(t *testing.T) {
 	}
 	if len(empty) != 0 {
 		t.Errorf("got %d votes for an unknown proposal, want 0", len(empty))
-	}
-}
-
-// The tally is what decides a promotion, so approve and reject must be counted
-// separately and scoped to their own proposal.
-func TestVoteRepo_CountVotes(t *testing.T) {
-	pool := testsupport.TestDB(t)
-	ctx := context.Background()
-	repo := postgres.NewVoteRepo(postgres.New(pool))
-
-	a := councilMember(t, pool, "a")
-	b := councilMember(t, pool, "b")
-	c := councilMember(t, pool, "c")
-
-	castVote(t, pool, "promote:user-1", a.ID, domain.VoteApprove)
-	castVote(t, pool, "promote:user-1", b.ID, domain.VoteApprove)
-	castVote(t, pool, "promote:user-1", c.ID, domain.VoteReject)
-	castVote(t, pool, "promote:user-2", a.ID, domain.VoteReject)
-
-	tests := []struct {
-		proposal string
-		choice   domain.VoteChoice
-		want     int64
-	}{
-		{"promote:user-1", domain.VoteApprove, 2},
-		{"promote:user-1", domain.VoteReject, 1},
-		{"promote:user-2", domain.VoteApprove, 0},
-		{"promote:user-2", domain.VoteReject, 1},
-		{"promote:nobody", domain.VoteApprove, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%s/%s", tt.proposal, tt.choice), func(t *testing.T) {
-			got, err := repo.CountVotes(ctx, tt.proposal, tt.choice)
-			if err != nil {
-				t.Fatalf("CountVotes: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("count = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestVoteRepo_ListOpenProposalIDs(t *testing.T) {
-	pool := testsupport.TestDB(t)
-	ctx := context.Background()
-	repo := postgres.NewVoteRepo(postgres.New(pool))
-
-	empty, err := repo.ListOpenProposalIDs(ctx)
-	if err != nil {
-		t.Fatalf("ListOpenProposalIDs: %v", err)
-	}
-	if len(empty) != 0 {
-		t.Errorf("got %v before any votes, want none", empty)
-	}
-
-	a := councilMember(t, pool, "a")
-	b := councilMember(t, pool, "b")
-	// Two votes on the same proposal must collapse to one id.
-	castVote(t, pool, "promote:user-1", a.ID, domain.VoteApprove)
-	castVote(t, pool, "promote:user-1", b.ID, domain.VoteReject)
-	castVote(t, pool, "promote:user-2", a.ID, domain.VoteApprove)
-
-	got, err := repo.ListOpenProposalIDs(ctx)
-	if err != nil {
-		t.Fatalf("ListOpenProposalIDs: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %v, want 2 distinct proposals", got)
-	}
-	// The query orders by proposal_id.
-	if got[0] != "promote:user-1" || got[1] != "promote:user-2" {
-		t.Errorf("got %v, want [promote:user-1 promote:user-2]", got)
 	}
 }
 

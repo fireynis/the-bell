@@ -34,6 +34,7 @@ func (q *Queries) CountActiveModeratorVouchesForUser(ctx context.Context, vouche
 }
 
 const countActiveVouchesWithAvgTrust = `-- name: CountActiveVouchesWithAvgTrust :one
+
 SELECT COUNT(*) AS vouch_count, COALESCE(AVG(u.trust_score), 0)::double precision AS avg_trust
 FROM vouches v
 JOIN users u ON u.id = v.voucher_id
@@ -45,6 +46,22 @@ type CountActiveVouchesWithAvgTrustRow struct {
 	AvgTrust   float64 `json:"avg_trust"`
 }
 
+// The voucher component of a member's trust score: how many people vouched for
+// them, weighted by how much those people are themselves trusted.
+//
+// Unlike every other query in this file, this one deliberately does NOT filter
+// the vouchers by role, is_active or suspension. It averages each voucher's
+// CURRENT standing whatever their status — including a banned voucher, whose
+// score has been driven to the floor by their own penalty. That average
+// dragging a member down is the graph working, not a bug to be filtered out:
+// being vouched for by someone the town later banned is exactly the signal the
+// trust graph exists to carry, and excluding them would let a member keep the
+// credit for a vouch the town has since repudiated. What decays is the weight,
+// not the edge — the vouch itself stays 'active' until revoked, and the
+// voucher's collapsed score is what reduces its worth.
+//
+// Decided 2026-08-14. Anyone tempted to add the is_active/suspended_until pair
+// here for consistency with its neighbours is removing the mechanism.
 func (q *Queries) CountActiveVouchesWithAvgTrust(ctx context.Context, voucheeID string) (CountActiveVouchesWithAvgTrustRow, error) {
 	row := q.db.QueryRow(ctx, countActiveVouchesWithAvgTrust, voucheeID)
 	var i CountActiveVouchesWithAvgTrustRow

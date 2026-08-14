@@ -174,6 +174,15 @@ func (r *UserRepo) SetUserSuspendedUntil(ctx context.Context, id string, until *
 	})
 }
 
+// SetUserResidencyClaim stores the resident's own statement of where they live.
+// An empty claim clears it; the query stamps when either way.
+func (r *UserRepo) SetUserResidencyClaim(ctx context.Context, id, claim string) error {
+	return r.q.SetUserResidencyClaim(ctx, SetUserResidencyClaimParams{
+		ID:             id,
+		ResidencyClaim: claim,
+	})
+}
+
 // userFromRow builds the domain user, folding a suspension that is still in
 // force into IsActive.
 //
@@ -200,6 +209,7 @@ func userFromRow(row User) *domain.User {
 		JoinedAt:         row.JoinedAt.Time,
 		CreatedAt:        row.CreatedAt.Time,
 		UpdatedAt:        row.UpdatedAt.Time,
+		ResidencyClaim:   row.ResidencyClaim,
 	}
 	if row.TrustBelowSince.Valid {
 		t := row.TrustBelowSince.Time
@@ -212,6 +222,10 @@ func userFromRow(row User) *domain.User {
 	if row.SuspendedUntil.Valid {
 		t := row.SuspendedUntil.Time
 		u.SuspendedUntil = &t
+	}
+	if row.ResidencyClaimUpdatedAt.Valid {
+		t := row.ResidencyClaimUpdatedAt.Time
+		u.ResidencyClaimUpdatedAt = &t
 	}
 	// time.Now() rather than an injected clock: the queries that filter on this
 	// same condition compare against the database's NOW(), and a second clock

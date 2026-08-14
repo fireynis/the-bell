@@ -214,9 +214,22 @@ Returns the authenticated user's profile. Does not require the user to be active
       "lifted_at": "2025-06-20T09:00:00Z",
       "previous_suspended_until": "2025-06-27T09:00:00Z"
     }
-  ]
+  ],
+  "residency_claim": "12 Mill Lane, behind the churchyard"
 }
 ```
+
+##### `residency_claim`
+
+What the caller told the council about where they live, set through
+[`PUT /api/v1/users/me/residency-claim`](#put-apiv1usersmeresidency-claim). It
+is on the three self views — this endpoint, `GET /api/v1/users/me` and the
+response to `PUT /api/v1/users/me` — so a client can prefill the field that
+edits it. The key is always present; a caller who has said nothing gets the
+empty string, so prefilling is one case rather than two.
+
+It is on **no other response** except the council's approval queue. See the
+endpoint that sets it for where the line is drawn and why.
 
 ##### `mute_lifts` and `suspension_lifts`
 
@@ -357,7 +370,7 @@ Returns the authenticated user's profile. Requires the user to be active.
 **Role**: Any active user
 
 **Response** `200 OK`: Same shape as `GET /api/v1/me`, including `muted_until`,
-`mute_lifts` and `suspension_lifts`.
+`mute_lifts`, `suspension_lifts` and `residency_claim`.
 
 ---
 
@@ -385,8 +398,10 @@ Updates the authenticated user's profile.
 | `avatar_url` | string | No | URL string |
 
 **Response** `200 OK`: Updated user profile, including `muted_until`,
-`mute_lifts` and `suspension_lifts` — this is a self view, so it carries the
-same fields `GET /api/v1/users/me` does.
+`mute_lifts`, `suspension_lifts` and `residency_claim` — this is a self view, so
+it carries the same fields `GET /api/v1/users/me` does. This request does not
+touch the residency claim; it is returned so that saving a profile does not hand
+the client back a response whose residency field looks empty.
 
 ```bash
 curl -X PUT https://bell.example.com/api/v1/users/me \
@@ -394,6 +409,89 @@ curl -X PUT https://bell.example.com/api/v1/users/me \
   -H "Cookie: ory_kratos_session=..." \
   -d '{"display_name":"Alice Smith","bio":"Hello!","avatar_url":""}'
 ```
+
+---
+
+#### `PUT /api/v1/users/me/residency-claim`
+
+Records what the authenticated resident says about where they live, for the
+council to read while deciding whether to approve them.
+
+**Auth**: Required
+**Role**: Any active user — including `pending`
+
+**Request**:
+
+```json
+{
+  "claim": "12 Mill Lane, behind the churchyard"
+}
+```
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `claim` | string | Yes | Trimmed; 0–300 characters. The empty string clears it |
+
+**Response** `204 No Content` — no body.
+
+```bash
+curl -X PUT https://bell.example.com/api/v1/users/me/residency-claim \
+  -H "Content-Type: application/json" \
+  -H "Cookie: ory_kratos_session=..." \
+  -d '{"claim":"12 Mill Lane, behind the churchyard"}'
+```
+
+##### It is an attestation, not a verified fact
+
+Nothing checks the claim against anything. There is no address service, no
+postcode table and no document upload behind this endpoint: a council member
+reads the string, recognises the street or does not, and approves or does not.
+What the platform records is that this person said X and that council member
+believed them — the approval is already attributed — which is the honest record
+and the only one available.
+
+How hard to press on a claim is each town's own business. A village where
+everyone knows everyone needs less than a commuter suburb, and encoding one
+town's rigour in the API would impose it on every other. Accordingly the
+endpoint accepts any text: "the blue house behind the old mill" is a better
+answer than a formatted address in many towns, and a validator demanding
+something address-shaped would refuse it along with most of the world's address
+formats.
+
+##### Who may set it
+
+Auth plus the ordinary active check, with no role floor. A `pending` resident is
+active — that is what makes their application reviewable — so this is reachable
+from exactly the state the field exists for, and a member who moves house can
+still correct what they said. Banned and suspended accounts are refused, and
+neither has an application before the council.
+
+##### Where it is readable
+
+Two readers, and they are the two who have a reason: the resident who wrote it,
+and the council reviewing them.
+
+- **The resident's own profile** — `GET /api/v1/me`, `GET /api/v1/users/me`, and
+  the response to `PUT /api/v1/users/me`. They wrote it, so there is no
+  disclosure in showing it back, and a client needs it to prefill the field that
+  edits the claim. Without that, changing one word of an address means retyping
+  it from memory into a box that looks like it lost the answer.
+- **The council's approval queue** —
+  [`GET /api/v1/vouches/pending`](#get-apiv1vouchespending).
+
+It is **not** on other residents' profiles, **not** in the member directory, and
+**not** on posts or vouch listings. It is also not returned by
+`POST /api/v1/vouches/approve/{id}`: approving somebody ends the review, and
+with it the reason the council could see the claim.
+
+The line is structural rather than a matter of remembering. `domain.User` tags
+the field so it cannot be serialized by default, and exactly two response types
+name it — the self view and the queue entry. The self view holds it on its own
+type rather than on the shared profile shape it embeds, so a public profile
+cannot pick it up by inheritance.
+
+Clearing is a normal request, not an error. Withdrawing what you said about
+where you live has to be as easy as saying it.
 
 ---
 
@@ -1622,11 +1720,31 @@ Returns all pending users awaiting council approval.
       "is_active": true,
       "joined_at": "2025-07-01T10:00:00Z",
       "created_at": "2025-07-01T10:00:00Z",
-      "updated_at": "2025-07-01T10:00:00Z"
+      "updated_at": "2025-07-01T10:00:00Z",
+      "residency_claim": "12 Mill Lane, behind the churchyard"
     }
   ]
 }
 ```
+
+##### `residency_claim`
+
+What the applicant said about where they live, set through
+[`PUT /api/v1/users/me/residency-claim`](#put-apiv1usersmeresidency-claim). The
+key is always present; an applicant who has said nothing gets the empty string,
+so the reviewing screen can tell "said nothing" from "not asked" without a
+second rule.
+
+**It is a claim the applicant made, not a fact the platform verified.** Nothing
+checks it against anything — see the endpoint that sets it. Treat it as one
+signal among the vouches and the display name, weigh it however your town
+weighs such things, and remember that the record the platform keeps is who
+approved on the strength of it.
+
+Besides the applicant's own profile, this is the only endpoint in the API that
+returns a residency claim — and the only one that returns somebody *else's*. It
+is deliberately absent from public profiles, the member directory, and the
+approved-user response below.
 
 ---
 
@@ -1648,14 +1766,86 @@ curl -X POST https://bell.example.com/api/v1/vouches/approve/0193a7b2-... \
 
 ---
 
-### Council Voting
+### Council Proposals
 
-#### `GET /api/v1/admin/council/votes`
+The council's Town Hall: a motion is raised, the council votes, and a motion
+that carries **executes immediately**. There is no separate step where somebody
+applies the result.
 
-Returns all open proposals with vote tallies.
+That last sentence is the whole of what changed. `GET`/`POST
+/api/v1/admin/council/votes` used to exist and are **gone**. They recorded votes
+against proposal ids that referred to nothing — there was no proposal entity, so
+a motion had no text, no proposer and no outcome, and no code path ever tallied
+or acted on one. Any client still calling them will get a `404`.
+
+#### Proposal types
+
+| `type` | Target | What passing it does |
+|--------|--------|----------------------|
+| `council_promotion` | An active `moderator` | Sets the target's role to `council` |
+| `council_removal` | A sitting `council` member | Sets the target's role to `member` |
+| `bootstrap_reentry` | None | Sets `bootstrap_mode` to `true` |
+
+Every type on the list changes something. That is a rule about what may be added
+to the list, not a coincidence: a type nothing executes would be a motion the
+council can pass and watch do nothing, which is the failure this feature exists
+to end.
+
+#### The electorate
+
+**A motion about a person is never decided with that person's own seat in the
+denominator.** A motion carries on a simple majority — strictly more than half —
+of its own electorate, and `council_size` in every response below is that
+electorate rather than the size of the council. A client rendering progress
+towards a majority must use it.
+
+- `council_promotion` and `bootstrap_reentry`: the whole council. (A promotion's
+  target is a moderator and holds no seat, so the rule above costs nothing until
+  the motion has carried; then it stops the seat the motion just created from
+  being counted against it.)
+- `council_removal`: the council **minus the target**. They do not vote on
+  whether they keep their seat — `POST .../votes` answers them `403` — and
+  counting them would raise the bar their colleagues have to clear. On a council
+  of four that is 2-of-3 rather than 3-of-4.
+
+An electorate of zero never decides anything, so an empty or miscounted council
+cannot carry motions unopposed.
+
+#### Execution, and what happens when it can no longer run
+
+A motion is decided the moment either side reaches its majority. On a pass the
+change is applied in the same request, and a role change writes a `role_history`
+row exactly as every other role change in the application does.
+
+Execution re-validates first, because a motion can outlive the state it was
+raised in. If the target is no longer eligible — a moderator demoted while the
+vote ran, a council member who has already left, a town that has grown past the
+bootstrap threshold — **the motion is recorded as `rejected`**. Nothing happened,
+and a `passed` motion that changed nothing would be a lie in the council's own
+record.
+
+A removal is also refused at execution if it would leave the council empty, on
+top of the same check when it is raised: two removals can be open at once, each
+legal when raised, and between them they must not leave the town with nobody who
+can approve a resident or vote a council back.
+
+If execution fails for an infrastructural reason, the vote still stands and the
+motion stays `open` with its majority intact. The next `GET
+/api/v1/admin/proposals?status=open` finishes it. Execution is idempotent, so a
+repair cannot promote somebody twice.
+
+---
+
+#### `GET /api/v1/admin/proposals`
+
+Lists motions as the calling council member sees them.
 
 **Auth**: Required
 **Role**: `council`
+
+| Query | Values | Default |
+|-------|--------|---------|
+| `status` | `open`, `decided` | `open` — anything that is not exactly `decided` lists the open queue |
 
 **Response** `200 OK`:
 
@@ -1663,30 +1853,50 @@ Returns all open proposals with vote tallies.
 {
   "proposals": [
     {
-      "proposal_id": "0193a7b2-...",
+      "id": "0193a7b2-...",
+      "type": "council_promotion",
+      "target_user_id": "0193a7b2-...",
+      "target_display_name": "Grace",
+      "rationale": "She has run the report queue for a year.",
+      "created_by": "0193a7b2-...",
+      "created_by_display_name": "Ada",
+      "status": "open",
+      "created_at": "2026-08-14T09:00:00Z",
       "approve_count": 2,
       "reject_count": 1,
-      "total_council": 5,
-      "status": "pending",
-      "votes": [
-        {
-          "id": "0193a7b2-...",
-          "proposal_id": "0193a7b2-...",
-          "voter_id": "0193a7b2-...",
-          "vote": "approve",
-          "created_at": "2025-07-01T17:00:00Z"
-        }
-      ]
+      "council_size": 5,
+      "my_vote": "approve"
     }
   ]
 }
 ```
 
+| Field | Notes |
+|-------|-------|
+| `target_user_id`, `target_display_name` | Omitted entirely for `bootstrap_reentry`. Their absence is the answer to "is this about somebody" |
+| `status` | `open`, `passed` or `rejected` |
+| `decided_at` | Present only once decided |
+| `council_size` | The electorate for **this** motion — see above |
+| `my_vote` | `"approve"`, `"reject"`, or `null` when the caller has not voted. Always present |
+
+`approve_count`, `reject_count` and `council_size` are the same for every
+council member; `my_vote` is not. The response is therefore built per caller and
+must not be cached across them.
+
+Listing the open queue also finishes any motion whose majority was reached but
+whose execution did not complete — see above. Such a motion leaves this listing
+and appears under `?status=decided`.
+
+```bash
+curl https://bell.example.com/api/v1/admin/proposals?status=open \
+  -H "Cookie: ory_kratos_session=..."
+```
+
 ---
 
-#### `POST /api/v1/admin/council/votes`
+#### `POST /api/v1/admin/proposals`
 
-Casts a vote on a proposal.
+Raises a motion.
 
 **Auth**: Required
 **Role**: `council`
@@ -1695,27 +1905,82 @@ Casts a vote on a proposal.
 
 ```json
 {
-  "proposal_id": "0193a7b2-...",
-  "vote": "approve"
+  "type": "council_promotion",
+  "target_user_id": "0193a7b2-...",
+  "rationale": "She has run the report queue for a year."
+}
+```
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| `type` | string | Yes | One of the three types above |
+| `target_user_id` | string | For the two targeted types | Must be absent or empty for `bootstrap_reentry` |
+| `rationale` | string | Yes | Trimmed; 1–1000 characters |
+
+Validation, all `400` unless noted:
+
+- `council_promotion` requires a target who is an **active moderator**. Promoting
+  straight from `member` would skip the standing the moderator role represents.
+- `council_removal` requires a target who is **on the council**, and requires the
+  council to have more than one member.
+- `bootstrap_reentry` takes **no target**, requires the town to be **out** of
+  bootstrap mode, and requires the active member count to be **below** the
+  threshold that ends bootstrap mode (20). Above it, the mode would be switched
+  straight back off by the next approval, so the council would have voted for
+  something the system undoes on its own; the refusal says so.
+- One open motion per `(type, target)`. A second is refused, because two open
+  motions on one question would split the council's votes between them and
+  neither would reach a majority. A **decided** motion blocks nothing — the
+  council may revisit a question next month.
+- An unknown `target_user_id` is `404`.
+
+**Response** `201 Created`: the new motion, in the shape above, with a zero
+tally and its electorate filled in.
+
+```bash
+curl -X POST https://bell.example.com/api/v1/admin/proposals \
+  -H "Content-Type: application/json" \
+  -H "Cookie: ory_kratos_session=..." \
+  -d '{"type":"council_promotion","target_user_id":"0193a7b2-...","rationale":"She has run the report queue for a year."}'
+```
+
+---
+
+#### `POST /api/v1/admin/proposals/{id}/votes`
+
+Casts the caller's vote.
+
+**Auth**: Required
+**Role**: `council`
+
+**Request**:
+
+```json
+{
+  "approve": true
 }
 ```
 
 | Field | Type | Required | Values |
 |-------|------|----------|--------|
-| `proposal_id` | string | Yes | Proposal UUID |
-| `vote` | string | Yes | `approve` or `reject` |
+| `approve` | boolean | Yes | `true` to approve, `false` to reject |
 
-Validation rules:
-- Cannot vote twice on the same proposal
-- Vote must be `approve` or `reject`
+- One vote per council member per motion. A second — including changing your
+  mind — is `400`.
+- A motion that is already decided is `400`.
+- The target of a `council_removal` voting on their own removal is `403`.
+- An unknown motion is `404`.
 
-**Response** `201 Created`: Updated proposal summary (same shape as in the list response). Status changes to `approved` when approve votes exceed half of total council, or `rejected` when reject votes exceed half.
+**Response** `200 OK`: the motion in the same shape as the listing, updated —
+including any decision and execution this vote just triggered. The council
+member who casts the deciding vote therefore sees the outcome, and any role
+change that has just taken effect, without reloading.
 
 ```bash
-curl -X POST https://bell.example.com/api/v1/admin/council/votes \
+curl -X POST https://bell.example.com/api/v1/admin/proposals/0193a7b2-.../votes \
   -H "Content-Type: application/json" \
   -H "Cookie: ory_kratos_session=..." \
-  -d '{"proposal_id":"0193a7b2-...","vote":"approve"}'
+  -d '{"approve":true}'
 ```
 
 ---

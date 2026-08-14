@@ -11,23 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countVotesByProposalAndVote = `-- name: CountVotesByProposalAndVote :one
-SELECT COUNT(*) FROM council_votes
-WHERE proposal_id = $1 AND vote = $2
-`
-
-type CountVotesByProposalAndVoteParams struct {
-	ProposalID string `json:"proposal_id"`
-	Vote       string `json:"vote"`
-}
-
-func (q *Queries) CountVotesByProposalAndVote(ctx context.Context, arg CountVotesByProposalAndVoteParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countVotesByProposalAndVote, arg.ProposalID, arg.Vote)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createCouncilVote = `-- name: CreateCouncilVote :one
 INSERT INTO council_votes (id, proposal_id, voter_id, vote, created_at)
 VALUES ($1, $2, $3, $4, $5)
@@ -61,60 +44,26 @@ func (q *Queries) CreateCouncilVote(ctx context.Context, arg CreateCouncilVotePa
 	return i, err
 }
 
-const getVoteByProposalAndVoter = `-- name: GetVoteByProposalAndVoter :one
-SELECT id, proposal_id, voter_id, vote, created_at FROM council_votes
-WHERE proposal_id = $1 AND voter_id = $2
-`
-
-type GetVoteByProposalAndVoterParams struct {
-	ProposalID string `json:"proposal_id"`
-	VoterID    string `json:"voter_id"`
-}
-
-func (q *Queries) GetVoteByProposalAndVoter(ctx context.Context, arg GetVoteByProposalAndVoterParams) (CouncilVote, error) {
-	row := q.db.QueryRow(ctx, getVoteByProposalAndVoter, arg.ProposalID, arg.VoterID)
-	var i CouncilVote
-	err := row.Scan(
-		&i.ID,
-		&i.ProposalID,
-		&i.VoterID,
-		&i.Vote,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const listDistinctOpenProposals = `-- name: ListDistinctOpenProposals :many
-SELECT DISTINCT proposal_id FROM council_votes
-ORDER BY proposal_id
-`
-
-func (q *Queries) ListDistinctOpenProposals(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, listDistinctOpenProposals)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var proposal_id string
-		if err := rows.Scan(&proposal_id); err != nil {
-			return nil, err
-		}
-		items = append(items, proposal_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listVotesByProposal = `-- name: ListVotesByProposal :many
+
 SELECT id, proposal_id, voter_id, vote, created_at FROM council_votes
 WHERE proposal_id = $1
 ORDER BY created_at ASC
 `
 
+// ListVotesByProposal is what every tally is computed from. Approvals,
+// rejections and whether the caller has already voted all come off this one
+// read, because a proposal's votes are bounded by the size of the council —
+// a handful of rows. It replaced a pair of COUNT-per-side queries plus a
+// targeted GetVoteByProposalAndVoter, which was three round trips to answer
+// three questions about the same few rows.
+//
+// There is deliberately no query listing proposals out of this table any more.
+// ListDistinctOpenProposals used to reconstruct the set of proposals from the
+// votes cast on them, which was the only way to enumerate them while no
+// proposals table existed — it could not see a proposal nobody had voted on
+// yet, and it called every proposal it found "open" regardless of outcome.
+// Migration 00021 gives proposals their own table; ask that.
 func (q *Queries) ListVotesByProposal(ctx context.Context, proposalID string) ([]CouncilVote, error) {
 	rows, err := q.db.Query(ctx, listVotesByProposal, proposalID)
 	if err != nil {

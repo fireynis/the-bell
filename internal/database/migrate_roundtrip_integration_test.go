@@ -29,7 +29,7 @@ import (
 
 // latestVersion is the highest migration version. Kept as a literal so that
 // adding a migration without considering its Down block trips this file.
-const latestVersion = int64(19)
+const latestVersion = int64(21)
 
 // testProvider builds a goose provider over the test's own database.
 //
@@ -68,6 +68,8 @@ var publicSchemaColumns = []struct{ table, column string }{
 	{"role_history", "new_role"},
 	{"trust_penalties", "moderation_action_id"},
 	{"moderation_reliefs", "relief_type"},
+	{"users", "residency_claim"},
+	{"proposals", "status"},
 }
 
 func assertColumnsInPublic(t *testing.T, pool *pgxpool.Pool, when string) {
@@ -129,7 +131,7 @@ func TestMigrations_FullDownAndUpRoundTrip(t *testing.T) {
 	}
 
 	// The application's tables are gone. goose_db_version stays; it is goose's.
-	for _, table := range []string{"users", "posts", "reports", "trust_penalties", "role_history", "moderation_reliefs"} {
+	for _, table := range []string{"users", "posts", "reports", "trust_penalties", "role_history", "moderation_reliefs", "proposals"} {
 		var exists bool
 		if err := pool.QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM information_schema.tables
@@ -180,7 +182,7 @@ func TestMigrations_RoundTripLeavesNothingInAgCatalog(t *testing.T) {
 		   AND table_name IN (
 		     'users', 'posts', 'reactions', 'reports', 'vouches', 'town_config',
 		     'council_votes', 'role_history', 'moderation_actions',
-		     'trust_penalties', 'goose_db_version'
+		     'trust_penalties', 'proposals', 'goose_db_version'
 		   )`)
 	if err != nil {
 		t.Fatalf("querying ag_catalog: %v", err)
@@ -358,5 +360,63 @@ func TestMigrations_Down7RestoresSearchPath(t *testing.T) {
 	if schema != "public" {
 		t.Errorf("after rolling 00007 back, a new table lands in schema %q, want public — "+
 			"the Down block left search_path pointing at ag_catalog and never reset it", schema)
+	}
+}
+
+// 00021's Up is the second destructive block in the repo: it DELETEs
+// council_votes whose proposal_id refers to no proposal, because until that
+// migration there was no proposals table for any of them to refer to and the
+// foreign key it adds could not otherwise be created.
+//
+// Running it against an empty table would prove nothing — the DELETE would be a
+// no-op and the ALTER would succeed with or without it — so an orphaned vote of
+// exactly the shape the old shell produced is seeded first, from below the
+// migration where the foreign key does not yet exist to prevent it.
+func TestMigrations_Up21DeletesOrphanedCouncilVotes(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+
+	voter := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("orphan-vote"), domain.RoleCouncil, 100)
+
+	provider, _ := testProvider(t, pool)
+
+	// Down to 20: proposals and the foreign key are gone, which is the state
+	// every existing deployment is in.
+	if _, err := provider.DownTo(ctx, 20); err != nil {
+		t.Fatalf("rolling back to 00020: %v", err)
+	}
+
+	// A vote on a proposal id that refers to nothing — the only kind of vote
+	// this table has ever held.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO council_votes (id, proposal_id, voter_id, vote, created_at)
+		 VALUES ($1, $2, $3, 'approve', NOW())`,
+		"vote-orphan", "a-proposal-that-never-existed", voter.ID); err != nil {
+		t.Fatalf("seeding an orphaned council vote: %v", err)
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("re-applying 00021: %v", err)
+	}
+
+	var remaining int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM council_votes WHERE id = 'vote-orphan'`).Scan(&remaining); err != nil {
+		t.Fatalf("counting the orphaned vote: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("the orphaned council vote survived 00021: %d rows, want 0", remaining)
+	}
+
+	// And the constraint is real, not merely declared: a fresh orphan must now
+	// be refused rather than silently accumulating for the next migration to
+	// clean up.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO council_votes (id, proposal_id, voter_id, vote, created_at)
+		 VALUES ($1, $2, $3, 'approve', NOW())`,
+		"vote-orphan-2", "still-not-a-proposal", voter.ID)
+	if err == nil {
+		t.Error("council_votes accepted a vote on a proposal that does not exist; " +
+			"the foreign key from 00021 is missing")
 	}
 }

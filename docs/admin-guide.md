@@ -568,3 +568,73 @@ Bootstrap mode is the initial phase of a new town deployment. During bootstrap m
 - Both endpoints require the `council` role
 
 Bootstrap mode automatically disables itself when the active member count reaches 20. After that, new users must be vouched for by existing members with a trust score >= 60 to be promoted from `pending` to `member`.
+
+It is no longer a one-way door. The council can vote the town back into
+bootstrap mode with a `bootstrap_reentry` proposal — see
+[The Town Hall](#the-town-hall) — which matters for a town that grew past 20 and
+then shrank, and had otherwise lost the only mechanism that admits residents
+without a vouch. The auto-exit at 20 is unchanged and still applies afterwards,
+so the proposal is refused while the town is at or above that count; it would
+otherwise pass and be undone by the next approval.
+
+### Reviewing residency claims
+
+A pending resident can state where they live, in their own words, and that claim
+appears against them in the approval queue as `residency_claim`. It is optional
+for them and it is up to 300 characters of free text.
+
+**The Bell does not verify it, and cannot.** There is no address service behind
+this field. What the platform records is that the applicant said X and that a
+particular council member approved them afterwards — the approval is already
+attributed, so the pair is the audit trail. That is a real record, and it is a
+different thing from a verified address; do not let a filled-in field read as a
+checked one.
+
+How hard to press on a claim is your town's decision, and deliberately so. A
+village where the council recognises every street may treat a plausible address
+as sufficient on its own. A commuter suburb where nobody knows their neighbours
+should probably treat it as one signal among the vouches, and may want a second
+one — a phone call, a known neighbour asked to vouch, a wait until somebody
+does. The platform holds the claim and the approval; the standard is yours.
+
+An empty claim is not a red flag by itself. Residents who registered before this
+field existed have none, and a claim can be cleared at any time.
+
+The claim is shown in the approval queue and on the applicant's own profile,
+where they can edit it, and nowhere else. It is not on public profiles or in the
+member directory, so council members should treat what they read in the queue as
+they would anything else told to them in confidence.
+
+## The Town Hall
+
+The council changes its own membership by vote, from the Town Hall on the admin
+dashboard. Any council member can raise a proposal; a simple majority of the
+electorate carries it, and **a proposal that carries takes effect immediately**
+— there is no separate step where an administrator applies the outcome, and
+nothing for you to do afterwards.
+
+| Proposal | Requires | Effect on passing |
+|----------|----------|-------------------|
+| `council_promotion` | Target is an active moderator | Target's role becomes `council` |
+| `council_removal` | Target is on the council; council has more than one member | Target's role becomes `member` |
+| `bootstrap_reentry` | No target; town out of bootstrap mode and below 20 active members | `bootstrap_mode` set to `true` |
+
+On a removal the target neither votes nor counts towards the majority, which is
+taken over the rest of the council. Every other proposal is decided by the whole
+council.
+
+Role changes made this way write a `role_history` row like every other role
+change, naming the proposal, so `role_history` remains the complete record of
+how somebody came to hold the role they hold.
+
+Two operational notes:
+
+- **There is no CLI equivalent and no override.** Council membership after setup
+  is decided by the council, not by whoever holds the shell. `bell setup` seats
+  the initial council and does not run again on a bootstrapped town.
+- **A proposal can outlive the situation it was raised in.** If the target is no
+  longer eligible when the vote completes — a moderator demoted by
+  `bell check-roles` in the meantime, a council member who already left — the
+  proposal is recorded as `rejected` rather than `passed`, because nothing
+  happened. If you see a rejected proposal that clearly had the votes, that is
+  what it means; the rationale and the target's `role_history` will show why.

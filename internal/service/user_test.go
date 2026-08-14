@@ -458,10 +458,15 @@ func (s *backfillStore) UpdateUserProfile(_ context.Context, id, displayName, bi
 	return u, nil
 }
 
-// The backfill never browses the directory; these satisfy UserRepository so the
-// store can still be handed to a UserService.
+// The backfill never browses the directory and never touches a residency
+// claim; these satisfy UserRepository so the store can still be handed to a
+// UserService.
 func (s *backfillStore) ListDirectoryUsers(_ context.Context, _ string, _, _ int) ([]*domain.User, error) {
 	return nil, nil
+}
+
+func (s *backfillStore) SetUserResidencyClaim(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func (s *backfillStore) CountDirectoryUsers(_ context.Context, _ string) (int64, error) {

@@ -28,7 +28,7 @@ type Server struct {
 	reportService           *service.ReportService
 	moderationActionService *service.ModerationActionService
 	approvalService         *service.ApprovalService
-	votingService           *service.VotingService
+	proposalService         *service.ProposalService
 	reactionService         *service.ReactionService
 	statsService            *service.StatsService
 	configRepo              service.ConfigRepository
@@ -75,9 +75,10 @@ func WithApprovalService(as *service.ApprovalService) Option {
 	return func(s *Server) { s.approvalService = as }
 }
 
-// WithVotingService sets the VotingService used by council vote handlers.
-func WithVotingService(vs *service.VotingService) Option {
-	return func(s *Server) { s.votingService = vs }
+// WithProposalService sets the ProposalService behind the council's Town Hall
+// routes: raising motions, voting on them, and reading the queue.
+func WithProposalService(ps *service.ProposalService) Option {
+	return func(s *Server) { s.proposalService = ps }
 }
 
 // WithReactionService sets the ReactionService used by reaction handlers.

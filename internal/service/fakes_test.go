@@ -180,6 +180,18 @@ func (f *fakeUserStore) UpdateUserRole(_ context.Context, id string, role domain
 	return nil
 }
 
+// SetUserResidencyClaim stores the claim on the user, which is what lets a test
+// assert both the trimming the service does and the non-disclosure the queue's
+// response type is responsible for.
+func (f *fakeUserStore) SetUserResidencyClaim(_ context.Context, id, claim string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	u.ResidencyClaim = claim
+	return nil
+}
+
 // Compile-time proof that one fake covers every user-shaped dependency.
 var (
 	_ UserRepository         = (*fakeUserStore)(nil)

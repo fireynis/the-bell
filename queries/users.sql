@@ -57,6 +57,19 @@ UPDATE users SET muted_until = $2, updated_at = NOW() WHERE id = $1;
 -- suspension, and a new one overwrites rather than extends.
 UPDATE users SET suspended_until = $2, updated_at = NOW() WHERE id = $1;
 
+-- name: SetUserResidencyClaim :exec
+-- The resident's own statement of where they live, for the council's approval
+-- queue. Writing the empty string clears it.
+--
+-- residency_claim_updated_at is stamped on every write including a clear, so
+-- "withdrew their claim last week" stays distinguishable from "never made one",
+-- which is the whole reason the column is nullable while the claim is not.
+UPDATE users
+SET residency_claim            = $2,
+    residency_claim_updated_at = NOW(),
+    updated_at                 = NOW()
+WHERE id = $1;
+
 -- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE

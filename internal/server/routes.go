@@ -287,6 +287,13 @@ func (s *Server) apiRoutes(r chi.Router) {
 				r.Get("/", uh.ListDirectory)
 				r.Get("/me", uh.GetMe)
 				r.Put("/me", uh.UpdateMe)
+				// Stating where you live is a pending resident's half of the
+				// approval conversation, so it sits with the rest of the
+				// self-service profile routes under the same guard: signed in
+				// and active, no role floor. A pending user is active, which
+				// is what makes their application reviewable in the first
+				// place.
+				r.Put("/me/residency-claim", uh.UpdateResidencyClaim)
 			})
 
 			// A member's own moderation record: what was done to them, why, and
@@ -427,12 +434,19 @@ func (s *Server) apiRoutes(r chi.Router) {
 		})
 	}
 
-	if s.votingService != nil {
-		vh := handler.NewVotingHandler(s.votingService)
-		r.Route("/v1/admin/council/votes", func(r chi.Router) {
+	// The council's Town Hall. These replace GET/POST
+	// /v1/admin/council/votes, which recorded votes against proposal ids that
+	// referred to nothing: there was no proposal entity, so nothing could be
+	// raised, read back or acted on. The routes are gone rather than deprecated
+	// because nothing but the old admin screen ever called them and no data
+	// they produced was ever meaningful.
+	if s.proposalService != nil {
+		ph := handler.NewProposalHandler(s.proposalService)
+		r.Route("/v1/admin/proposals", func(r chi.Router) {
 			r.Use(s.protected(guard{role: domain.RoleCouncil})...)
-			r.Post("/", vh.CastVote)
-			r.Get("/", vh.ListPending)
+			r.Get("/", ph.List)
+			r.Post("/", ph.Create)
+			r.Post("/{id}/votes", ph.Vote)
 		})
 	}
 
