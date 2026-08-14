@@ -23,4 +23,19 @@ type Vouch struct {
 	Status    VouchStatus `json:"status"`
 	CreatedAt time.Time   `json:"created_at"`
 	RevokedAt *time.Time  `json:"revoked_at,omitempty"`
+
+	// VoucherDisplayName and VoucheeDisplayName name both parties, joined in by
+	// the profile listing queries. Without them a vouch list is a column of
+	// UUIDs: the endorsement is the whole point of the trust graph, and it means
+	// nothing rendered as "0193a7b2...".
+	//
+	// They follow Post.AuthorDisplayName exactly — omitempty, and populated by
+	// the list reads alone. The vouch a POST /v1/vouches response echoes back
+	// carries neither, because the create path knows both people by id only.
+	//
+	// The profile listing does not serialize this struct: it builds vouchEntry,
+	// which always populates both names and so sends both keys unconditionally,
+	// empty string included.
+	VoucherDisplayName string `json:"voucher_display_name,omitempty"`
+	VoucheeDisplayName string `json:"vouchee_display_name,omitempty"`
 }

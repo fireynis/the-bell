@@ -54,7 +54,7 @@ func (r *ModerationActionRepo) ListActionsByTarget(ctx context.Context, targetUs
 
 	actions := make([]*domain.ModerationAction, len(rows))
 	for i, row := range rows {
-		actions[i] = moderationActionFromRow(row)
+		actions[i] = namedAction(row.ModerationAction, row.TargetDisplayName, row.ModeratorDisplayName)
 	}
 	return actions, nil
 }
@@ -71,9 +71,18 @@ func (r *ModerationActionRepo) ListActionsByModerator(ctx context.Context, moder
 
 	actions := make([]*domain.ModerationAction, len(rows))
 	for i, row := range rows {
-		actions[i] = moderationActionFromRow(row)
+		actions[i] = namedAction(row.ModerationAction, row.TargetDisplayName, row.ModeratorDisplayName)
 	}
 	return actions, nil
+}
+
+// namedAction converts a joined audit-trail row, attaching both parties' names.
+// An empty name is a member who has not set one and is passed through as "".
+func namedAction(row ModerationAction, targetName, moderatorName string) *domain.ModerationAction {
+	a := moderationActionFromRow(row)
+	a.TargetDisplayName = targetName
+	a.ModeratorDisplayName = moderatorName
+	return a
 }
 
 func moderationActionFromRow(row ModerationAction) *domain.ModerationAction {

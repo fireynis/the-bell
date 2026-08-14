@@ -45,9 +45,9 @@ func TestModerationReliefRepo_RoundTrip(t *testing.T) {
 		t.Fatalf("CreateModerationRelief: %v", err)
 	}
 
-	got, err := repo.ListMuteLiftsInForce(ctx, target.ID, 10)
+	got, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefMuteLift, 10)
 	if err != nil {
-		t.Fatalf("ListMuteLiftsInForce: %v", err)
+		t.Fatalf("ListLiftsInForce: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("%d reliefs, want 1", len(got))
@@ -104,7 +104,7 @@ func TestModerationReliefRepo_NullPreviousExpiryIsNotZeroTime(t *testing.T) {
 		t.Fatalf("CreateModerationRelief: %v", err)
 	}
 
-	// Read straight from the table: ListMuteLiftsInForce deliberately excludes
+	// Read straight from the table: ListLiftsInForce deliberately excludes
 	// this row, and what is under test is what was persisted.
 	var (
 		previous   *time.Time
@@ -126,9 +126,9 @@ func TestModerationReliefRepo_NullPreviousExpiryIsNotZeroTime(t *testing.T) {
 
 	// And it is excluded from the member's view: they were never muted, so they
 	// must not be told they were released.
-	got, err := repo.ListMuteLiftsInForce(ctx, target.ID, 10)
+	got, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefMuteLift, 10)
 	if err != nil {
-		t.Fatalf("ListMuteLiftsInForce: %v", err)
+		t.Fatalf("ListLiftsInForce: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("%d lifts in the member's view, want none", len(got))
@@ -173,9 +173,9 @@ func TestModerationReliefRepo_NoOpLiftsCannotHideARealOne(t *testing.T) {
 		}
 	}
 
-	got, err := repo.ListMuteLiftsInForce(ctx, target.ID, 3)
+	got, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefMuteLift, 3)
 	if err != nil {
-		t.Fatalf("ListMuteLiftsInForce: %v", err)
+		t.Fatalf("ListLiftsInForce: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("%d lifts, want the 1 that actually released them", len(got))
@@ -212,9 +212,9 @@ func TestModerationReliefRepo_ListsNewestFirstWithinTheLimit(t *testing.T) {
 		}
 	}
 
-	got, err := repo.ListMuteLiftsInForce(ctx, target.ID, 2)
+	got, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefMuteLift, 2)
 	if err != nil {
-		t.Fatalf("ListMuteLiftsInForce: %v", err)
+		t.Fatalf("ListLiftsInForce: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("%d reliefs, want the limit of 2", len(got))
@@ -245,11 +245,103 @@ func TestModerationReliefRepo_ScopedToTheTarget(t *testing.T) {
 		t.Fatalf("CreateModerationRelief: %v", err)
 	}
 
-	got, err := repo.ListMuteLiftsInForce(ctx, mine.ID, 10)
+	got, err := repo.ListLiftsInForce(ctx, mine.ID, domain.ReliefMuteLift, 10)
 	if err != nil {
-		t.Fatalf("ListMuteLiftsInForce: %v", err)
+		t.Fatalf("ListLiftsInForce: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("%d reliefs on a member who was never released", len(got))
+	}
+}
+
+// Mute lifts and suspension lifts share one table, discriminated by
+// relief_type. The type filter in the query is the only thing keeping them
+// apart, and getting it wrong is not a silent bug: a member released from a
+// suspension would be shown a mute lift, telling them a mute they never had was
+// ended.
+func TestModerationReliefRepo_ReliefTypesDoNotCross(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewModerationReliefRepo(postgres.New(pool))
+
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("relief-types"), domain.RoleMember, 50)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("relief-types-mod"), domain.RoleModerator, 90)
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	muteExpiry := base.Add(time.Hour)
+	suspensionExpiry := base.Add(7 * 24 * time.Hour)
+
+	err := repo.CreateModerationRelief(ctx, &domain.ModerationRelief{
+		ID: uuid.NewString(), TargetUserID: target.ID, ModeratorID: mod.ID,
+		Type: domain.ReliefMuteLift, PreviousExpiresAt: &muteExpiry,
+		WasInForce: true, CreatedAt: base,
+	})
+	if err != nil {
+		t.Fatalf("CreateModerationRelief (mute): %v", err)
+	}
+	err = repo.CreateModerationRelief(ctx, &domain.ModerationRelief{
+		ID: uuid.NewString(), TargetUserID: target.ID, ModeratorID: mod.ID,
+		Type: domain.ReliefSuspensionLift, PreviousExpiresAt: &suspensionExpiry,
+		WasInForce: true, CreatedAt: base.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateModerationRelief (suspension): %v", err)
+	}
+
+	mutes, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefMuteLift, 10)
+	if err != nil {
+		t.Fatalf("ListLiftsInForce (mute): %v", err)
+	}
+	if len(mutes) != 1 {
+		t.Fatalf("%d mute lifts, want 1", len(mutes))
+	}
+	if mutes[0].Type != domain.ReliefMuteLift {
+		t.Errorf("type = %q, want %q", mutes[0].Type, domain.ReliefMuteLift)
+	}
+	if mutes[0].PreviousExpiresAt == nil || !mutes[0].PreviousExpiresAt.Equal(muteExpiry) {
+		t.Errorf("mute lift previous_expires_at = %v, want %v", mutes[0].PreviousExpiresAt, muteExpiry)
+	}
+
+	suspensions, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefSuspensionLift, 10)
+	if err != nil {
+		t.Fatalf("ListLiftsInForce (suspension): %v", err)
+	}
+	if len(suspensions) != 1 {
+		t.Fatalf("%d suspension lifts, want 1", len(suspensions))
+	}
+	if suspensions[0].Type != domain.ReliefSuspensionLift {
+		t.Errorf("type = %q, want %q", suspensions[0].Type, domain.ReliefSuspensionLift)
+	}
+	if suspensions[0].PreviousExpiresAt == nil || !suspensions[0].PreviousExpiresAt.Equal(suspensionExpiry) {
+		t.Errorf("suspension lift previous_expires_at = %v, want %v",
+			suspensions[0].PreviousExpiresAt, suspensionExpiry)
+	}
+}
+
+// A suspension lift against somebody who was not suspended is excluded from
+// their own view for the reason the mute's no-op lifts are: the endpoint is
+// idempotent and accepts a lift against anyone.
+func TestModerationReliefRepo_SuspensionLiftThatFreedNobodyIsHidden(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewModerationReliefRepo(postgres.New(pool))
+
+	target := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("relief-susp-noop"), domain.RoleMember, 50)
+	mod := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("relief-susp-noop-mod"), domain.RoleModerator, 90)
+
+	err := repo.CreateModerationRelief(ctx, &domain.ModerationRelief{
+		ID: uuid.NewString(), TargetUserID: target.ID, ModeratorID: mod.ID,
+		Type: domain.ReliefSuspensionLift, WasInForce: false, CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateModerationRelief: %v", err)
+	}
+
+	got, err := repo.ListLiftsInForce(ctx, target.ID, domain.ReliefSuspensionLift, 10)
+	if err != nil {
+		t.Fatalf("ListLiftsInForce: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("%d suspension lifts shown to a member who was never suspended", len(got))
 	}
 }

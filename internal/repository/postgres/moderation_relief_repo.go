@@ -36,16 +36,22 @@ func (r *ModerationReliefRepo) CreateModerationRelief(ctx context.Context, relie
 	return err
 }
 
-// ListMuteLiftsInForce returns the lifts that released this user from a live
-// mute, newest first.
+// ListLiftsInForce returns the lifts of the given type that released this user
+// from a live restriction, newest first.
+//
+// The relief type is a parameter so that mute lifts and suspension lifts share
+// one read: they are the same row shape distinguished by relief_type, and a
+// second copy of this method would be a second place for the filter below to be
+// got wrong.
 //
 // The was_in_force filter is in SQL, not applied to the result here: a lift
-// against somebody who was not muted is still a recorded event, and filtering
-// after LIMIT would let a run of those hide the release that actually freed
-// them.
-func (r *ModerationReliefRepo) ListMuteLiftsInForce(ctx context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error) {
-	rows, err := r.q.ListMuteLiftsInForceByTarget(ctx, ListMuteLiftsInForceByTargetParams{
+// against somebody who was not restricted is still a recorded event, and
+// filtering after LIMIT would let a run of those hide the release that actually
+// freed them.
+func (r *ModerationReliefRepo) ListLiftsInForce(ctx context.Context, targetUserID string, reliefType domain.ReliefType, limit int) ([]domain.ModerationRelief, error) {
+	rows, err := r.q.ListLiftsInForceByTarget(ctx, ListLiftsInForceByTargetParams{
 		TargetUserID: targetUserID,
+		ReliefType:   string(reliefType),
 		Limit:        int32(limit),
 	})
 	if err != nil {

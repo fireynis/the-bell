@@ -263,13 +263,17 @@ func TestPlanEnforcement_BanIsBothRoleAndTrust(t *testing.T) {
 	}
 }
 
-// --- Lifting a mute ---
+// --- Lifting a restriction ---
 
 // The route group already carries a moderator guard, so these cases are the
 // ones that reach the service anyway: a caller who arrived by another route, a
 // moderator whose role changed mid-session, and — the one no route guard can
 // see — a moderator lifting the mute a colleague placed on them.
-func TestCanLiftMute(t *testing.T) {
+//
+// One check for both lifts, because both call it: a rule that let somebody
+// release themselves from a suspension but not a mute would be the same hole
+// with a different name.
+func TestCanLiftRestriction(t *testing.T) {
 	tests := []struct {
 		name      string
 		moderator *domain.User
@@ -289,7 +293,7 @@ func TestCanLiftMute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := canLiftMute(tt.moderator, tt.target)
+			err := canLiftRestriction(tt.moderator, tt.target)
 			if tt.wantErr == nil {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -307,10 +311,10 @@ func TestCanLiftMute(t *testing.T) {
 // validateActionRequest's ordering: a muted member who somehow reaches this is
 // told the specific thing that is wrong rather than being sent to acquire a
 // role that still would not let them do it.
-func TestCanLiftMute_SelfIsRefusedEvenWithoutTheRole(t *testing.T) {
+func TestCanLiftRestriction_SelfIsRefusedEvenWithoutTheRole(t *testing.T) {
 	member := &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}
 
-	err := canLiftMute(member, member.ID)
+	err := canLiftRestriction(member, member.ID)
 
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("error = %v, want %v", err, ErrValidation)

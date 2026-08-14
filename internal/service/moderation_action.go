@@ -204,7 +204,7 @@ type PenaltyLister interface {
 // has no severity, which is what makes it safe to show the member it concerns.
 type ModerationReliefRepository interface {
 	CreateModerationRelief(ctx context.Context, relief *domain.ModerationRelief) error
-	ListMuteLiftsInForce(ctx context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error)
+	ListLiftsInForce(ctx context.Context, targetUserID string, reliefType domain.ReliefType, limit int) ([]domain.ModerationRelief, error)
 }
 
 // ActionUserLookup retrieves a user by ID for moderation action validation.
@@ -357,7 +357,8 @@ func (s *ModerationActionService) TakeAction(
 	return result, errors.Join(enforceErr, propagateErr)
 }
 
-// canLiftMute reports whether moderator may lift targetUserID's mute.
+// canLiftRestriction reports whether moderator may lift targetUserID's mute or
+// suspension. Both lifts ask the same question, so both ask it here.
 //
 // The route group carrying this already requires the moderator role, and this
 // deliberately re-checks it: a single line in routes.go is otherwise all that
@@ -371,7 +372,12 @@ func (s *ModerationActionService) TakeAction(
 // validateActionRequest refuses self-moderation for the same reason, and
 // checking it first gives the caller the specific answer rather than sending
 // them off to acquire a role that still would not permit it.
-func canLiftMute(moderator *domain.User, targetUserID string) error {
+//
+// A suspended moderator is a different case that arrives at the same answer:
+// RequireActive does stop them, because IsActive reads false while a suspension
+// is in force, but the refusal must not rest on that — the check belongs to the
+// operation, not to the middleware chain in front of it.
+func canLiftRestriction(moderator *domain.User, targetUserID string) error {
 	if moderator == nil {
 		return fmt.Errorf("%w: moderator role required", ErrForbidden)
 	}
@@ -384,8 +390,8 @@ func canLiftMute(moderator *domain.User, targetUserID string) error {
 	return requireModerator(moderator)
 }
 
-// requireModerator is the role floor both mute operations re-check for
-// themselves, so neither depends on the route group alone.
+// requireModerator is the role floor every read and lift re-checks for itself,
+// so none of them depends on the route group alone.
 func requireModerator(moderator *domain.User) error {
 	if moderator == nil || !moderator.CanModerate() {
 		return fmt.Errorf("%w: moderator role required", ErrForbidden)
@@ -427,6 +433,57 @@ func (s *ModerationActionService) authorizeAction(ctx context.Context, req actio
 	return requireCouncil(moderator)
 }
 
+// restriction describes one time-boxed moderator restriction on a member: how
+// to tell whether it is in force, when it ends, and how to clear it.
+//
+// It exists so the mute and the suspension share one implementation of reading
+// and lifting. The two differ in nothing else — each is an expiry column on the
+// user row, each is read by comparing that column to the clock, and each is
+// lifted by writing NULL over it — so two hand-written copies would be two
+// chances for the idempotence, the relief record or the self-lift refusal to
+// drift apart. That drift is not hypothetical here: a lift that skipped its
+// relief row would release somebody with no record the member could ever see.
+type restriction struct {
+	// noun names the restriction in log lines and error messages.
+	noun string
+	// relief is the row type a lift of it is filed as.
+	relief domain.ReliefType
+	// expiry reads the value a lift destroys, and is nil when there is none.
+	expiry func(*domain.User) *time.Time
+	// inForce reports whether it still binds the user at that moment. This is
+	// not derived from expiry, because an expiry in the past is a lapsed
+	// restriction rather than a live one.
+	inForce func(*domain.User, time.Time) bool
+	// clear removes it.
+	clear func(context.Context, UserEnforcer, string) error
+}
+
+var (
+	muteRestriction = restriction{
+		noun:    "mute",
+		relief:  domain.ReliefMuteLift,
+		expiry:  func(u *domain.User) *time.Time { return u.MutedUntil },
+		inForce: (*domain.User).IsMuted,
+		clear: func(ctx context.Context, e UserEnforcer, id string) error {
+			return e.SetUserMutedUntil(ctx, id, nil)
+		},
+	}
+
+	// Clearing suspended_until is the whole operation, exactly as it is for the
+	// mute. is_active is deliberately not touched: 00019 took suspension off
+	// that flag precisely because nothing ever set it back to TRUE, and writing
+	// it here would hand that trap straight back.
+	suspensionRestriction = restriction{
+		noun:    "suspension",
+		relief:  domain.ReliefSuspensionLift,
+		expiry:  func(u *domain.User) *time.Time { return u.SuspendedUntil },
+		inForce: (*domain.User).IsSuspended,
+		clear: func(ctx context.Context, e UserEnforcer, id string) error {
+			return e.SetUserSuspendedUntil(ctx, id, nil)
+		},
+	}
+)
+
 // MuteStatus reports when a user's mute expires, or nil when they are not
 // muted.
 //
@@ -444,6 +501,34 @@ func (s *ModerationActionService) authorizeAction(ctx context.Context, req actio
 // An expired mute is reported as no mute, matching the self view: the client
 // then needs no clock of its own to interpret the answer.
 func (s *ModerationActionService) MuteStatus(ctx context.Context, moderator *domain.User, targetUserID string) (*time.Time, error) {
+	return s.restrictionStatus(ctx, moderator, targetUserID, muteRestriction)
+}
+
+// SuspensionStatus reports when a user's suspension expires, or nil when they
+// are not suspended.
+//
+// The mute's argument applies unchanged: suspended_until is untagged on
+// domain.User and appears on no profile response, so without this a moderator
+// deciding whether to release somebody would be reading the audit trail — where
+// the original suspend action keeps its original expires_at forever, whether or
+// not the suspension was lifted or has lapsed.
+//
+// is_active is not a substitute either. It reads false while a suspension is in
+// force, but it is also false for an account deactivated for any other reason,
+// and it says nothing about when the suspension ends.
+func (s *ModerationActionService) SuspensionStatus(ctx context.Context, moderator *domain.User, targetUserID string) (*time.Time, error) {
+	return s.restrictionStatus(ctx, moderator, targetUserID, suspensionRestriction)
+}
+
+// restrictionStatus answers when a restriction expires, or nil when it is not
+// in force. A lapsed restriction is reported as none at all, so the client
+// needs no clock of its own.
+func (s *ModerationActionService) restrictionStatus(
+	ctx context.Context,
+	moderator *domain.User,
+	targetUserID string,
+	r restriction,
+) (*time.Time, error) {
 	if err := requireModerator(moderator); err != nil {
 		return nil, err
 	}
@@ -452,10 +537,10 @@ func (s *ModerationActionService) MuteStatus(ctx context.Context, moderator *dom
 	if err != nil {
 		return nil, err
 	}
-	if !target.IsMuted(s.now()) {
+	if !r.inForce(target, s.now()) {
 		return nil, nil
 	}
-	return target.MutedUntil, nil
+	return r.expiry(target), nil
 }
 
 // LiftMute ends a mute before its duration runs out, for a mute applied in
@@ -499,23 +584,62 @@ func (s *ModerationActionService) MuteStatus(ctx context.Context, moderator *dom
 // reaction that was never left. A user who does not exist IS an error — a
 // mistyped id must not report that somebody was released.
 func (s *ModerationActionService) LiftMute(ctx context.Context, moderator *domain.User, targetUserID string) error {
-	if err := canLiftMute(moderator, targetUserID); err != nil {
+	return s.liftRestriction(ctx, moderator, targetUserID, muteRestriction)
+}
+
+// LiftSuspension ends a suspension before its duration runs out, for a
+// suspension applied in error or one a moderator agrees to shorten after an
+// appeal.
+//
+// It is the mute lift one severity up, and every argument in LiftMute's comment
+// above holds here word for word: clearing suspended_until is the whole
+// operation because IsSuspended is a comparison against the clock; no trust is
+// touched, because releasing somebody is mercy rather than a reward; and no
+// moderation_actions row is written, because that table's severity is CHECK
+// (severity BETWEEN 1 AND 5) with every value naming a real trust penalty, so a
+// release filed there would punish the person released and everyone who vouched
+// for them.
+//
+// Until now a suspension could only end by lapsing. 00019 made that possible at
+// all — before it, is_active was the enforcement and no query ever set it back
+// to TRUE — but a moderator who suspended the wrong person still had nothing to
+// undo it with short of waiting out the duration they had chosen.
+//
+// is_active is deliberately left alone. It reads false while the suspension is
+// in force and reverts on its own once suspended_until is cleared, so writing
+// it here would be redundant at best and, at worst, would reactivate an account
+// that was deactivated for some entirely separate reason.
+//
+// A user who is not suspended is not an error, and a user who does not exist
+// is — the same split as the mute, for the same reason.
+func (s *ModerationActionService) LiftSuspension(ctx context.Context, moderator *domain.User, targetUserID string) error {
+	return s.liftRestriction(ctx, moderator, targetUserID, suspensionRestriction)
+}
+
+// liftRestriction is the lift both LiftMute and LiftSuspension perform.
+func (s *ModerationActionService) liftRestriction(
+	ctx context.Context,
+	moderator *domain.User,
+	targetUserID string,
+	r restriction,
+) error {
+	if err := canLiftRestriction(moderator, targetUserID); err != nil {
 		return err
 	}
-	// Checked before the lookup: without an enforcer nothing can clear
-	// muted_until, so there is no request this service could honour. TakeAction
+	// Checked before the lookup: without an enforcer nothing can clear the
+	// expiry, so there is no request this service could honour. TakeAction
 	// tolerates a nil one because it still has an action row to write; here the
 	// write is the entire operation, and answering nil would report a wiring
 	// fault as a released user.
 	if s.enforcer == nil {
-		return fmt.Errorf("lifting mute: service has no user enforcer")
+		return fmt.Errorf("lifting %s: service has no user enforcer", r.noun)
 	}
 	// Checked here for the same reason, one step further on: a deployment that
-	// can clear muted_until but cannot record why would release members with no
+	// can clear the expiry but cannot record why would release members with no
 	// durable trace, which is the state moderation_reliefs was added to end.
 	// Better to refuse the lift than to perform an unrecorded one.
 	if s.reliefs == nil {
-		return fmt.Errorf("lifting mute: service has no moderation relief repository")
+		return fmt.Errorf("lifting %s: service has no moderation relief repository", r.noun)
 	}
 
 	target, err := s.users.GetUserByID(ctx, targetUserID)
@@ -523,38 +647,36 @@ func (s *ModerationActionService) LiftMute(ctx context.Context, moderator *domai
 		return err
 	}
 
-	// Captured before the write: muted_until is about to be destroyed, and this
+	// Captured before the write: the expiry is about to be destroyed, and this
 	// is the only moment its value exists to be recorded.
 	now := s.now()
-	previous := target.MutedUntil
-	wasMuted := target.IsMuted(now)
+	previous := r.expiry(target)
+	wasInForce := r.inForce(target, now)
 
-	if err := s.enforcer.SetUserMutedUntil(ctx, target.ID, nil); err != nil {
-		return fmt.Errorf("lifting mute: %w", err)
+	if err := r.clear(ctx, s.enforcer, target.ID); err != nil {
+		return fmt.Errorf("lifting %s: %w", r.noun, err)
 	}
 
-	s.logger.Info("mute lifted by moderator",
+	s.logger.Info(r.noun+" lifted by moderator",
 		"moderator_id", moderator.ID,
 		"target_user_id", target.ID,
-		"previous_muted_until", previous,
-		"was_muted", wasMuted,
+		"previous_expires_at", previous,
+		"was_in_force", wasInForce,
 	)
 
-	// Recorded after the mute is cleared, not before: the release is what the
-	// member asked for and what the moderator decided, so it must not be held
-	// hostage to the bookkeeping. The cost is that a failure here leaves a lift
-	// that happened with no durable record of it, which is why the error is
+	// Recorded after the restriction is cleared, not before: the release is what
+	// the member asked for and what the moderator decided, so it must not be
+	// held hostage to the bookkeeping. The cost is that a failure here leaves a
+	// lift that happened with no durable record of it, which is why the error is
 	// returned rather than logged — reporting success would recreate exactly the
 	// state this table exists to prevent.
-	if err := s.recordRelief(ctx, moderator.ID, target.ID, previous, wasMuted, now); err != nil {
-		return err
-	}
-	return nil
+	return s.recordRelief(ctx, r, moderator.ID, target.ID, previous, wasInForce, now)
 }
 
 // recordRelief writes the durable, member-visible record of a lift.
 func (s *ModerationActionService) recordRelief(
 	ctx context.Context,
+	r restriction,
 	moderatorID, targetUserID string,
 	previous *time.Time,
 	wasInForce bool,
@@ -562,20 +684,20 @@ func (s *ModerationActionService) recordRelief(
 ) error {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return fmt.Errorf("mute lifted but not recorded: generating relief id: %w", err)
+		return fmt.Errorf("%s lifted but not recorded: generating relief id: %w", r.noun, err)
 	}
 
 	relief := &domain.ModerationRelief{
 		ID:                id.String(),
 		TargetUserID:      targetUserID,
 		ModeratorID:       moderatorID,
-		Type:              domain.ReliefMuteLift,
+		Type:              r.relief,
 		PreviousExpiresAt: previous,
 		WasInForce:        wasInForce,
 		CreatedAt:         now,
 	}
 	if err := s.reliefs.CreateModerationRelief(ctx, relief); err != nil {
-		return fmt.Errorf("mute lifted but not recorded: %w", err)
+		return fmt.Errorf("%s lifted but not recorded: %w", r.noun, err)
 	}
 	return nil
 }
@@ -590,13 +712,36 @@ func (s *ModerationActionService) recordRelief(
 // here — filtering a limited result set would let a run of no-op lifts push the
 // release that actually freed them out of the window.
 func (s *ModerationActionService) MuteLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error) {
+	return s.liftsInForce(ctx, userID, muteRestriction, limit)
+}
+
+// SuspensionLifts is the same self view for suspensions, and it matters more
+// than the mute's: a member released early has no other way to find out. A
+// suspension shows up in the API as is_active being false, and once it is
+// lifted that simply reverts, leaving nothing behind that says a moderator
+// chose to end it.
+func (s *ModerationActionService) SuspensionLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error) {
+	return s.liftsInForce(ctx, userID, suspensionRestriction, limit)
+}
+
+// liftsInForce reads one relief type for the member it concerns.
+//
+// A nil repository yields no lifts rather than an error, matching the rest of
+// the optional wiring: a deployment that never recorded any cannot have any to
+// show.
+func (s *ModerationActionService) liftsInForce(
+	ctx context.Context,
+	userID string,
+	r restriction,
+	limit int,
+) ([]domain.ModerationRelief, error) {
 	if s.reliefs == nil {
 		return nil, nil
 	}
 
-	lifts, err := s.reliefs.ListMuteLiftsInForce(ctx, userID, limit)
+	lifts, err := s.reliefs.ListLiftsInForce(ctx, userID, r.relief, limit)
 	if err != nil {
-		return nil, fmt.Errorf("listing mute lifts: %w", err)
+		return nil, fmt.Errorf("listing %s lifts: %w", r.noun, err)
 	}
 	return lifts, nil
 }

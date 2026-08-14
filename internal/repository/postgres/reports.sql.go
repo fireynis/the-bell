@@ -88,9 +88,12 @@ func (q *Queries) GetReportByReporterAndPost(ctx context.Context, arg GetReportB
 }
 
 const listPendingReports = `-- name: ListPendingReports :many
-SELECT id, reporter_id, post_id, reason, status, created_at FROM reports
-WHERE status = 'pending'
-ORDER BY created_at ASC
+SELECT r.id, r.reporter_id, r.post_id, r.reason, r.status, r.created_at,
+       u.display_name AS reporter_display_name
+FROM reports r
+JOIN users u ON u.id = r.reporter_id
+WHERE r.status = 'pending'
+ORDER BY r.created_at ASC
 LIMIT $1 OFFSET $2
 `
 
@@ -99,22 +102,33 @@ type ListPendingReportsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListPendingReports(ctx context.Context, arg ListPendingReportsParams) ([]Report, error) {
+type ListPendingReportsRow struct {
+	Report              Report `json:"report"`
+	ReporterDisplayName string `json:"reporter_display_name"`
+}
+
+// The reporter is joined by name: this is the moderation queue, and a moderator
+// weighing a report has to know who filed it, which a raw id does not tell
+// them. reporter_id is a NOT NULL reference to users, so the inner join can
+// drop no pending report. Only the queue joins — the single-report reads serve
+// the reporter's own submission, where the name is already known.
+func (q *Queries) ListPendingReports(ctx context.Context, arg ListPendingReportsParams) ([]ListPendingReportsRow, error) {
 	rows, err := q.db.Query(ctx, listPendingReports, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Report{}
+	items := []ListPendingReportsRow{}
 	for rows.Next() {
-		var i Report
+		var i ListPendingReportsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ReporterID,
-			&i.PostID,
-			&i.Reason,
-			&i.Status,
-			&i.CreatedAt,
+			&i.Report.ID,
+			&i.Report.ReporterID,
+			&i.Report.PostID,
+			&i.Report.Reason,
+			&i.Report.Status,
+			&i.Report.CreatedAt,
+			&i.ReporterDisplayName,
 		); err != nil {
 			return nil, err
 		}

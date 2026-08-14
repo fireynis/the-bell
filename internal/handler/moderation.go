@@ -163,6 +163,68 @@ func (h *ModerationHandler) LiftMute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// suspensionStatusResponse is the suspension's counterpart to
+// muteStatusResponse, field-for-field: the expiry when one is in force, and an
+// empty object otherwise.
+type suspensionStatusResponse struct {
+	SuspendedUntil string `json:"suspended_until,omitempty"`
+}
+
+// SuspensionStatus handles GET /api/v1/moderation/users/{user_id}/suspension.
+//
+// The moderator's view of whether somebody is suspended right now.
+// GET /api/v1/users/{id} carries is_active, which does read false during a
+// suspension — but it reads false for a deactivated account too, and it never
+// says when the suspension ends, so it cannot tell a moderator whether an early
+// lift is worth offering or how much time it would actually save.
+//
+// Like MuteStatus and unlike the DELETE below, this does not refuse a
+// self-query.
+func (h *ModerationHandler) SuspensionStatus(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	until, err := h.actions.SuspensionStatus(r.Context(), user, chi.URLParam(r, "user_id"))
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	var resp suspensionStatusResponse
+	if until != nil {
+		resp.SuspendedUntil = until.Format(timestampFormat)
+	}
+	JSON(w, http.StatusOK, resp)
+}
+
+// LiftSuspension handles DELETE /api/v1/moderation/users/{user_id}/suspension.
+//
+// A DELETE of the suspension for the reason LiftMute is a DELETE of the mute:
+// the suspension is a value on the user (suspended_until) and this removes it.
+// Modelling it as an action would imply a moderation_actions row, which the
+// service deliberately does not write.
+//
+// It answers 204 with no body, including for a user who was not suspended.
+func (h *ModerationHandler) LiftSuspension(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	if err := h.actions.LiftSuspension(r.Context(), user, chi.URLParam(r, "user_id")); err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type listActionsResponse struct {
 	Actions []service.ActionHistoryEntry `json:"actions"`
 }

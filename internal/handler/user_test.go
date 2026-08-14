@@ -85,21 +85,34 @@ func (s *stubVouchLister) ListGivenVouches(_ context.Context, _ string) ([]*doma
 
 var vouchedAt = time.Date(2026, 3, 1, 12, 30, 45, 0, time.UTC)
 
-type stubMuteLiftLister struct {
-	lifts []domain.ModerationRelief
-	err   error
-
-	gotUserID string
-	calls     int
+// stubReliefLister serves both self-view lists. The two are kept separate so a
+// handler that read one and rendered it under the other's key would fail here
+// rather than tell a member their mute was lifted when it was their suspension.
+type stubReliefLister struct {
+	lifts            []domain.ModerationRelief
+	suspensionLifts  []domain.ModerationRelief
+	err              error
+	suspensionErr    error
+	gotUserID        string
+	gotSuspensionFor string
+	calls            int
 }
 
-func (s *stubMuteLiftLister) MuteLifts(_ context.Context, userID string, _ int) ([]domain.ModerationRelief, error) {
+func (s *stubReliefLister) MuteLifts(_ context.Context, userID string, _ int) ([]domain.ModerationRelief, error) {
 	s.calls++
 	s.gotUserID = userID
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.lifts, nil
+}
+
+func (s *stubReliefLister) SuspensionLifts(_ context.Context, userID string, _ int) ([]domain.ModerationRelief, error) {
+	s.gotSuspensionFor = userID
+	if s.suspensionErr != nil {
+		return nil, s.suspensionErr
+	}
+	return s.suspensionLifts, nil
 }
 
 // ownProfileResponse decoded far enough to check the moderation half.
@@ -111,6 +124,11 @@ type ownProfileBody struct {
 		PreviousMutedUntil string `json:"previous_muted_until"`
 		ModeratorID        string `json:"moderator_id"`
 	} `json:"mute_lifts"`
+	SuspensionLifts []struct {
+		LiftedAt               string `json:"lifted_at"`
+		PreviousSuspendedUntil string `json:"previous_suspended_until"`
+		ModeratorID            string `json:"moderator_id"`
+	} `json:"suspension_lifts"`
 }
 
 // --- mute lifts on the self profile ---
@@ -121,13 +139,13 @@ type ownProfileBody struct {
 func TestUserHandler_GetMe_ShowsMuteLifts(t *testing.T) {
 	previous := time.Date(2026, 3, 2, 14, 0, 0, 0, time.UTC)
 	lifted := time.Date(2026, 3, 1, 14, 0, 0, 0, time.UTC)
-	lifts := &stubMuteLiftLister{lifts: []domain.ModerationRelief{{
+	lifts := &stubReliefLister{lifts: []domain.ModerationRelief{{
 		ID: "relief-1", TargetUserID: "user-1", ModeratorID: "mod-1",
 		Type: domain.ReliefMuteLift, PreviousExpiresAt: &previous,
 		WasInForce: true, CreatedAt: lifted,
 	}}}
 	h := handler.NewUserHandler(nil, nil, nil)
-	h.SetMuteLiftLister(lifts)
+	h.SetReliefLister(lifts)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req = withUser(req, testUser())
@@ -167,7 +185,7 @@ func TestUserHandler_GetMe_ShowsMuteLifts(t *testing.T) {
 // released sees nothing rather than an empty section.
 func TestUserHandler_GetMe_OmitsMuteLiftsWhenThereAreNone(t *testing.T) {
 	h := handler.NewUserHandler(nil, nil, nil)
-	h.SetMuteLiftLister(&stubMuteLiftLister{})
+	h.SetReliefLister(&stubReliefLister{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req = withUser(req, testUser())
@@ -188,7 +206,7 @@ func TestUserHandler_GetMe_OmitsMuteLiftsWhenThereAreNone(t *testing.T) {
 // truth is unknown is the silent wrong answer this record exists to replace.
 func TestUserHandler_GetMe_ReportsAFailedLiftRead(t *testing.T) {
 	h := handler.NewUserHandler(nil, nil, nil)
-	h.SetMuteLiftLister(&stubMuteLiftLister{err: errors.New("db unavailable")})
+	h.SetReliefLister(&stubReliefLister{err: errors.New("db unavailable")})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	req = withUser(req, testUser())
@@ -721,5 +739,185 @@ func TestDomainUser_DoesNotSerializeMutedUntil(t *testing.T) {
 	}
 	if strings.Contains(string(data), "muted") {
 		t.Errorf("domain.User serializes its mute: %s", data)
+	}
+}
+
+// --- display names on the vouch list ---
+
+// vouchNamesResponse decodes only the names, which is what this half of the DTO
+// exists for.
+type vouchNamesResponse struct {
+	Received []struct {
+		VoucherID          string `json:"voucher_id"`
+		VoucherDisplayName string `json:"voucher_display_name"`
+		VoucheeID          string `json:"vouchee_id"`
+		VoucheeDisplayName string `json:"vouchee_display_name"`
+	} `json:"received"`
+	Given []struct {
+		VoucherDisplayName string `json:"voucher_display_name"`
+		VoucheeDisplayName string `json:"vouchee_display_name"`
+	} `json:"given"`
+}
+
+// A vouch list rendered from ids alone is a column of UUID prefixes. Both names
+// travel with the row from the query's joins, and both sides of the list carry
+// both — the page shows the pair, not just the counterpart.
+func TestUserHandler_ListVouches_CarriesBothDisplayNames(t *testing.T) {
+	vouches := &stubVouchLister{
+		received: []*domain.Vouch{{
+			ID: "vouch-1", VoucherID: "user-1", VoucheeID: "user-2",
+			Status: domain.VouchActive, CreatedAt: vouchedAt,
+			VoucherDisplayName: "Alice", VoucheeDisplayName: "Bob",
+		}},
+		given: []*domain.Vouch{{
+			ID: "vouch-2", VoucherID: "user-2", VoucheeID: "user-3",
+			Status: domain.VouchActive, CreatedAt: vouchedAt,
+			VoucherDisplayName: "Bob", VoucheeDisplayName: "Carol",
+		}},
+	}
+	h := handler.NewUserHandler(nil, nil, vouches)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/user-2/vouches", nil)
+	req = withChiURLParam(req, "id", "user-2")
+	rec := httptest.NewRecorder()
+
+	h.ListVouches(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp vouchNamesResponse
+	decodeBody(t, rec, &resp)
+	if len(resp.Received) != 1 || len(resp.Given) != 1 {
+		t.Fatalf("got %d received and %d given, want 1 and 1", len(resp.Received), len(resp.Given))
+	}
+	got := resp.Received[0]
+	if got.VoucherDisplayName != "Alice" || got.VoucheeDisplayName != "Bob" {
+		t.Errorf("received names = %q/%q, want Alice/Bob", got.VoucherDisplayName, got.VoucheeDisplayName)
+	}
+	// The ids stay: the list links to profiles by id, so replacing them with
+	// names would break every row's link.
+	if got.VoucherID != "user-1" || got.VoucheeID != "user-2" {
+		t.Errorf("received ids = %q/%q, want user-1/user-2", got.VoucherID, got.VoucheeID)
+	}
+	if resp.Given[0].VoucherDisplayName != "Bob" || resp.Given[0].VoucheeDisplayName != "Carol" {
+		t.Errorf("given names = %q/%q, want Bob/Carol",
+			resp.Given[0].VoucherDisplayName, resp.Given[0].VoucheeDisplayName)
+	}
+}
+
+// A member who has set no display name yet sends the empty string rather than
+// dropping the key: the list always renders both parties, so the client falls
+// back to the id and needs no separate rule for an absent field.
+func TestUserHandler_ListVouches_MissingNameIsAnEmptyString(t *testing.T) {
+	vouches := &stubVouchLister{
+		received: []*domain.Vouch{{
+			ID: "vouch-1", VoucherID: "user-1", VoucheeID: "user-2",
+			Status: domain.VouchActive, CreatedAt: vouchedAt,
+		}},
+	}
+	h := handler.NewUserHandler(nil, nil, vouches)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/user-2/vouches", nil)
+	req = withChiURLParam(req, "id", "user-2")
+	rec := httptest.NewRecorder()
+
+	h.ListVouches(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `"voucher_display_name":""`) {
+		t.Errorf("body = %s, want voucher_display_name present and empty", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"vouchee_display_name":""`) {
+		t.Errorf("body = %s, want vouchee_display_name present and empty", rec.Body.String())
+	}
+}
+
+// --- suspension lifts on the self profile ---
+
+// A suspension shows to the member as is_active being false; lifting it just
+// makes that revert. Without this record a member released early cannot tell
+// that from a suspension that ran its full course.
+func TestUserHandler_GetMe_ShowsSuspensionLifts(t *testing.T) {
+	previous := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
+	lifted := time.Date(2026, 3, 1, 14, 0, 0, 0, time.UTC)
+	lifts := &stubReliefLister{suspensionLifts: []domain.ModerationRelief{{
+		ID: "relief-2", TargetUserID: "user-1", ModeratorID: "mod-1",
+		Type: domain.ReliefSuspensionLift, PreviousExpiresAt: &previous,
+		WasInForce: true, CreatedAt: lifted,
+	}}}
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetReliefLister(lifts)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if lifts.gotSuspensionFor != "user-1" {
+		t.Errorf("suspension lifts read for %q, want the session user %q", lifts.gotSuspensionFor, "user-1")
+	}
+
+	var body ownProfileBody
+	decodeBody(t, rec, &body)
+	if len(body.SuspensionLifts) != 1 {
+		t.Fatalf("%d suspension lifts in the response, want 1; body: %s", len(body.SuspensionLifts), rec.Body.String())
+	}
+	got := body.SuspensionLifts[0]
+	if got.LiftedAt != "2026-03-01T14:00:00Z" {
+		t.Errorf("lifted_at = %q, want %q", got.LiftedAt, "2026-03-01T14:00:00Z")
+	}
+	if got.PreviousSuspendedUntil != "2026-03-08T14:00:00Z" {
+		t.Errorf("previous_suspended_until = %q, want %q", got.PreviousSuspendedUntil, "2026-03-08T14:00:00Z")
+	}
+	// The moderator is not named here either, for the same policy reason.
+	if got.ModeratorID != "" {
+		t.Errorf("moderator_id = %q; the member view must not name the moderator", got.ModeratorID)
+	}
+	// Both lists come from one table, so a lift landing under the wrong key is
+	// the failure worth pinning: it would tell this member a mute they never had
+	// was ended.
+	if len(body.MuteLifts) != 0 {
+		t.Errorf("%d mute lifts for a member who only had a suspension lifted", len(body.MuteLifts))
+	}
+}
+
+func TestUserHandler_GetMe_OmitsSuspensionLiftsWhenThereAreNone(t *testing.T) {
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetReliefLister(&stubReliefLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "suspension_lifts") {
+		t.Errorf("suspension_lifts is present for a member with no lifts: %s", rec.Body.String())
+	}
+}
+
+// A failed suspension read is reported rather than rendered as "no lifts", the
+// same rule the mute read follows: an empty list is a definite answer, and
+// giving it when the truth is unknown is the silent wrong answer.
+func TestUserHandler_GetMe_ReportsAFailedSuspensionLiftRead(t *testing.T) {
+	h := handler.NewUserHandler(nil, nil, nil)
+	h.SetReliefLister(&stubReliefLister{suspensionErr: errors.New("db unavailable")})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.GetMe(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 }

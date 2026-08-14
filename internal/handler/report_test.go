@@ -556,3 +556,69 @@ func TestReportHandler_ListQueue_FiltersDismissed(t *testing.T) {
 		t.Errorf("got %d reports, want 1 (only pending)", len(resp.Reports))
 	}
 }
+
+// The queue is the one place a report is shown to somebody other than the person
+// who filed it, so it is the one place the reporter's name matters: a moderator
+// weighing a report cannot judge "0193a7b2..." for pattern or credibility.
+func TestReportHandler_ListQueue_CarriesTheReporterDisplayName(t *testing.T) {
+	reportRepo := newMockReportRepo()
+	reportRepo.reports["r1"] = &domain.Report{
+		ID: "r1", ReporterID: "user-1", PostID: "post-1",
+		Reason: "spam", Status: "pending", CreatedAt: fixedNow,
+		ReporterDisplayName: "Alice",
+	}
+	h := handler.NewReportHandler(newTestReportService(reportRepo, newMockPostGetter()))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/queue", nil)
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.ListQueue(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Reports []struct {
+			ReporterID          string `json:"reporter_id"`
+			ReporterDisplayName string `json:"reporter_display_name"`
+		} `json:"reports"`
+	}
+	decodeBody(t, rec, &resp)
+	if len(resp.Reports) != 1 {
+		t.Fatalf("got %d reports, want 1", len(resp.Reports))
+	}
+	if resp.Reports[0].ReporterDisplayName != "Alice" {
+		t.Errorf("reporter_display_name = %q, want Alice", resp.Reports[0].ReporterDisplayName)
+	}
+	// The id stays alongside it: moderator views link to a profile by id.
+	if resp.Reports[0].ReporterID != "user-1" {
+		t.Errorf("reporter_id = %q, want user-1", resp.Reports[0].ReporterID)
+	}
+}
+
+// A submitted report is echoed back to the person who filed it, so it carries no
+// name at all — naming them to themselves is noise, and an always-present ""
+// would be indistinguishable from a member who has set no name.
+func TestReportHandler_SubmitReport_OmitsTheReporterDisplayName(t *testing.T) {
+	postGetter := newMockPostGetter()
+	postGetter.posts["post-1"] = &domain.Post{
+		ID: "post-1", AuthorID: "author-1", Status: domain.PostVisible, CreatedAt: fixedNow,
+	}
+	h := handler.NewReportHandler(newTestReportService(newMockReportRepo(), postGetter))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts/post-1/report", strings.NewReader(`{"reason":"spam"}`))
+	req = withUser(req, testUser())
+	req = withChiURLParam(req, "id", "post-1")
+	rec := httptest.NewRecorder()
+
+	h.SubmitReport(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "reporter_display_name") {
+		t.Errorf("body = %s, want no reporter_display_name key", rec.Body.String())
+	}
+}

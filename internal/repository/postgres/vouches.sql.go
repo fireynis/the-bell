@@ -145,27 +145,46 @@ func (q *Queries) GetVouchByPair(ctx context.Context, arg GetVouchByPairParams) 
 }
 
 const listActiveVouchesByVouchee = `-- name: ListActiveVouchesByVouchee :many
-SELECT id, voucher_id, vouchee_id, status, created_at, revoked_at FROM vouches
-WHERE vouchee_id = $1 AND status = 'active'
-ORDER BY created_at
+SELECT v.id, v.voucher_id, v.vouchee_id, v.status, v.created_at, v.revoked_at,
+       voucher.display_name AS voucher_display_name,
+       vouchee.display_name AS vouchee_display_name
+FROM vouches v
+JOIN users voucher ON voucher.id = v.voucher_id
+JOIN users vouchee ON vouchee.id = v.vouchee_id
+WHERE v.vouchee_id = $1 AND v.status = 'active'
+ORDER BY v.created_at
 `
 
-func (q *Queries) ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]Vouch, error) {
+type ListActiveVouchesByVoucheeRow struct {
+	Vouch              Vouch  `json:"vouch"`
+	VoucherDisplayName string `json:"voucher_display_name"`
+	VoucheeDisplayName string `json:"vouchee_display_name"`
+}
+
+// Both parties are joined by name because a vouch list is about people, and the
+// id alone is unreadable: the profile rendered "0193a7b2..." for every row.
+// Inner joins are safe on both sides — voucher_id and vouchee_id are NOT NULL
+// references to users — so no row can be dropped by the join. Following the
+// feed's convention (posts.sql), the name travels with the row rather than
+// being fetched per id afterwards.
+func (q *Queries) ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]ListActiveVouchesByVoucheeRow, error) {
 	rows, err := q.db.Query(ctx, listActiveVouchesByVouchee, voucheeID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Vouch{}
+	items := []ListActiveVouchesByVoucheeRow{}
 	for rows.Next() {
-		var i Vouch
+		var i ListActiveVouchesByVoucheeRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.VoucherID,
-			&i.VoucheeID,
-			&i.Status,
-			&i.CreatedAt,
-			&i.RevokedAt,
+			&i.Vouch.ID,
+			&i.Vouch.VoucherID,
+			&i.Vouch.VoucheeID,
+			&i.Vouch.Status,
+			&i.Vouch.CreatedAt,
+			&i.Vouch.RevokedAt,
+			&i.VoucherDisplayName,
+			&i.VoucheeDisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -178,27 +197,41 @@ func (q *Queries) ListActiveVouchesByVouchee(ctx context.Context, voucheeID stri
 }
 
 const listActiveVouchesByVoucher = `-- name: ListActiveVouchesByVoucher :many
-SELECT id, voucher_id, vouchee_id, status, created_at, revoked_at FROM vouches
-WHERE voucher_id = $1 AND status = 'active'
-ORDER BY created_at
+SELECT v.id, v.voucher_id, v.vouchee_id, v.status, v.created_at, v.revoked_at,
+       voucher.display_name AS voucher_display_name,
+       vouchee.display_name AS vouchee_display_name
+FROM vouches v
+JOIN users voucher ON voucher.id = v.voucher_id
+JOIN users vouchee ON vouchee.id = v.vouchee_id
+WHERE v.voucher_id = $1 AND v.status = 'active'
+ORDER BY v.created_at
 `
 
-func (q *Queries) ListActiveVouchesByVoucher(ctx context.Context, voucherID string) ([]Vouch, error) {
+type ListActiveVouchesByVoucherRow struct {
+	Vouch              Vouch  `json:"vouch"`
+	VoucherDisplayName string `json:"voucher_display_name"`
+	VoucheeDisplayName string `json:"vouchee_display_name"`
+}
+
+// The other direction of the same list, joined the same way.
+func (q *Queries) ListActiveVouchesByVoucher(ctx context.Context, voucherID string) ([]ListActiveVouchesByVoucherRow, error) {
 	rows, err := q.db.Query(ctx, listActiveVouchesByVoucher, voucherID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Vouch{}
+	items := []ListActiveVouchesByVoucherRow{}
 	for rows.Next() {
-		var i Vouch
+		var i ListActiveVouchesByVoucherRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.VoucherID,
-			&i.VoucheeID,
-			&i.Status,
-			&i.CreatedAt,
-			&i.RevokedAt,
+			&i.Vouch.ID,
+			&i.Vouch.VoucherID,
+			&i.Vouch.VoucheeID,
+			&i.Vouch.Status,
+			&i.Vouch.CreatedAt,
+			&i.Vouch.RevokedAt,
+			&i.VoucherDisplayName,
+			&i.VoucheeDisplayName,
 		); err != nil {
 			return nil, err
 		}

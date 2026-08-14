@@ -124,12 +124,13 @@ func (m *mockReliefRepo) CreateModerationRelief(_ context.Context, relief *domai
 	return nil
 }
 
-// Mirrors the query: the was_in_force filter is applied before the limit, not
-// after, so this mock cannot pass a service that filters in the wrong order.
-func (m *mockReliefRepo) ListMuteLiftsInForce(_ context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error) {
+// Mirrors the query: the relief type and the was_in_force filter are both
+// applied before the limit, not after, so this mock cannot pass a service that
+// filters in the wrong order or that reads the wrong relief type.
+func (m *mockReliefRepo) ListLiftsInForce(_ context.Context, targetUserID string, reliefType domain.ReliefType, limit int) ([]domain.ModerationRelief, error) {
 	var out []domain.ModerationRelief
 	for _, r := range m.reliefs {
-		if r.TargetUserID != targetUserID || r.Type != domain.ReliefMuteLift || !r.WasInForce {
+		if r.TargetUserID != targetUserID || r.Type != reliefType || !r.WasInForce {
 			continue
 		}
 		if len(out) == limit {
@@ -1380,5 +1381,469 @@ func TestModerationActionService_MuteStatus_TargetNotFound(t *testing.T) {
 
 	if _, err := svc.MuteStatus(context.Background(), testLiftingModerator(), "nobody"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// --- LiftSuspension ---
+
+// suspendedTestUser is a user carrying a suspension that still has a day to run
+// at fixedNow, which is the only state LiftSuspension exists to change.
+//
+// IsActive is false because that is what a suspended user looks like coming out
+// of the repository: the column itself is untouched by a suspension, and the
+// adapter folds suspended_until into the field. Nothing in the lift reads it,
+// which is the point of the assertions below.
+func suspendedTestUser(id string) *domain.User {
+	until := fixedNow.Add(24 * time.Hour)
+	return &domain.User{ID: id, IsActive: false, TrustScore: 50.0, SuspendedUntil: &until}
+}
+
+// Until now a suspension could only end by lapsing. 00019 gave it an expiry to
+// lapse from — before that it was is_active, which no query ever set back to
+// TRUE — but a moderator who suspended the wrong person still had to wait out
+// the duration they had chosen.
+func TestModerationActionService_LiftSuspension_ClearsTheSuspension(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	until, called := enforcer.suspensions["target-1"]
+	if !called {
+		t.Fatal("the suspension was never touched")
+	}
+	if until != nil {
+		t.Errorf("suspended_until = %v, want nil", *until)
+	}
+}
+
+// The same answer for a user who is not suspended, matching the mute lift and
+// the reaction DELETE: the caller asked for a state and the state holds.
+func TestModerationActionService_LiftSuspension_IsIdempotent(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(&domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0})
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	mod := testLiftingModerator()
+	for i := range 2 {
+		if err := svc.LiftSuspension(context.Background(), mod, "target-1"); err != nil {
+			t.Fatalf("call %d on a user who is not suspended: %v", i+1, err)
+		}
+	}
+
+	if until, called := enforcer.suspensions["target-1"]; !called || until != nil {
+		t.Errorf("suspended_until = %v (called %v), want a nil write", until, called)
+	}
+}
+
+// Releasing somebody is mercy, not a reward: no penalty is created, no score is
+// written, and no recalculation is queued. The suspend action's own severity-4
+// penalty stays exactly where it was and decays on its own schedule.
+//
+// is_active is checked too, and it is the specific trap here. Suspension used to
+// be enforced by writing that flag, so a lift that "helpfully" set it back to
+// TRUE would reactivate an account deactivated for some entirely separate
+// reason — the failure 00019 was written to end, arriving from the other side.
+func TestModerationActionService_LiftSuspension_LeavesTrustAndIsActiveAlone(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	penalties := newMockPenaltyRepo()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, penalties, newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(enforcer.trustUpdates) != 0 {
+		t.Errorf("trust was written: %v", enforcer.trustUpdates)
+	}
+	if len(penalties.penalties) != 0 {
+		t.Errorf("%d trust penalties were created by lifting a suspension", len(penalties.penalties))
+	}
+	if users.users["target-1"].TrustScore != 50.0 {
+		t.Errorf("trust score = %v, want it unchanged at 50", users.users["target-1"].TrustScore)
+	}
+	if len(enforcer.roleUpdates) != 0 || len(enforcer.mutes) != 0 {
+		t.Error("lifting a suspension changed the role or the mute")
+	}
+	if users.users["target-1"].IsActive {
+		t.Error("is_active was written; clearing suspended_until is the whole operation")
+	}
+}
+
+// No moderation_actions row, for the reason the mute lift has none: every
+// severity in that table names a trust penalty, so filing a release there would
+// punish the person released and everyone who vouched for them.
+func TestModerationActionService_LiftSuspension_WritesNoModerationAction(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	actions := newMockActionRepo()
+	svc := newTestModerationActionService(
+		actions, users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(actions.actions) != 0 {
+		t.Errorf("%d moderation actions were written; lifting a suspension carries no severity", len(actions.actions))
+	}
+}
+
+// The relief is filed under its own type. Sharing the table with mute lifts is
+// only safe if the discriminator is right: a suspension lift recorded as a mute
+// lift would appear in the member's mute_lifts and tell them a mute they never
+// had was ended.
+func TestModerationActionService_LiftSuspension_RecordsARelief(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	reliefs := newMockReliefRepo()
+	svc := newTestModerationActionServiceWithReliefs(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(),
+		newMockUserEnforcer(), reliefs)
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(reliefs.reliefs) != 1 {
+		t.Fatalf("%d reliefs recorded, want 1", len(reliefs.reliefs))
+	}
+	got := reliefs.reliefs[0]
+	if got.Type != domain.ReliefSuspensionLift {
+		t.Errorf("type = %q, want %q", got.Type, domain.ReliefSuspensionLift)
+	}
+	if got.TargetUserID != "target-1" {
+		t.Errorf("target = %q, want target-1", got.TargetUserID)
+	}
+	if got.ModeratorID != "mod-1" {
+		t.Errorf("moderator = %q, want mod-1", got.ModeratorID)
+	}
+	if !got.WasInForce {
+		t.Error("was_in_force is false for a suspension that had a day left to run")
+	}
+	// The suspended_until being destroyed: after the write it exists nowhere
+	// else, and the original action's expires_at is what the moderator first
+	// decided rather than what was in force when the lift landed.
+	want := fixedNow.Add(24 * time.Hour)
+	if got.PreviousExpiresAt == nil {
+		t.Fatal("previous_expires_at is nil; the destroyed suspension expiry was not recorded")
+	}
+	if !got.PreviousExpiresAt.Equal(want) {
+		t.Errorf("previous_expires_at = %v, want %v", *got.PreviousExpiresAt, want)
+	}
+	if got.ID == "" {
+		t.Error("relief has no id")
+	}
+	if !got.CreatedAt.Equal(fixedNow) {
+		t.Errorf("created_at = %v, want %v", got.CreatedAt, fixedNow)
+	}
+}
+
+// A lift against someone who is not suspended is a real request that succeeded,
+// recorded but flagged, so the member-facing view can show only the releases
+// that actually freed them.
+func TestModerationActionService_LiftSuspension_RecordsALiftThatFreedNobody(t *testing.T) {
+	tests := []struct {
+		name        string
+		user        *domain.User
+		wantPrevSet bool
+	}{
+		{
+			name: "never suspended",
+			user: &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0},
+		},
+		{
+			name:        "suspension already lapsed",
+			user:        &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0, SuspendedUntil: ptrTime(fixedNow.Add(-time.Hour))},
+			wantPrevSet: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(tt.user)
+			reliefs := newMockReliefRepo()
+			svc := newTestModerationActionServiceWithReliefs(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(),
+				newMockUserEnforcer(), reliefs)
+
+			if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(reliefs.reliefs) != 1 {
+				t.Fatalf("%d reliefs recorded, want 1", len(reliefs.reliefs))
+			}
+			if reliefs.reliefs[0].WasInForce {
+				t.Error("was_in_force is true for a user who was not suspended")
+			}
+			if gotSet := reliefs.reliefs[0].PreviousExpiresAt != nil; gotSet != tt.wantPrevSet {
+				t.Errorf("previous_expires_at set = %v, want %v", gotSet, tt.wantPrevSet)
+			}
+		})
+	}
+}
+
+// The suspension is cleared before the relief is written, so a failed record
+// cannot be swallowed: this is the only trace of the release the member will
+// ever see, and is_active reverting on its own says nothing about who decided.
+func TestModerationActionService_LiftSuspension_ReportsAFailedReliefRecord(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	reliefs := newMockReliefRepo()
+	reliefs.createErr = errors.New("db unavailable")
+	svc := newTestModerationActionServiceWithReliefs(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer, reliefs)
+
+	err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1")
+	if err == nil {
+		t.Fatal("expected an error when the relief record fails")
+	}
+	if until, called := enforcer.suspensions["target-1"]; !called || until != nil {
+		t.Errorf("suspended_until = %v (called %v), want the suspension cleared regardless", until, called)
+	}
+}
+
+// The role floor is re-checked here and not merely at the route. Self-release is
+// the case that matters most for a suspension: the middleware would in fact stop
+// a suspended moderator, because IsActive reads false while one is in force, but
+// the refusal must belong to the operation rather than to the chain in front of
+// it.
+func TestModerationActionService_LiftSuspension_RefusesCallersWhoCannotModerate(t *testing.T) {
+	tests := []struct {
+		name    string
+		caller  *domain.User
+		target  string
+		wantErr error
+	}{
+		{"a member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}, "target-1", ErrForbidden},
+		{"nobody", nil, "target-1", ErrForbidden},
+		{"a moderator on themselves", &domain.User{ID: "target-1", Role: domain.RoleModerator, IsActive: true}, "target-1", ErrValidation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(suspendedTestUser("target-1"))
+			enforcer := newMockUserEnforcer()
+			svc := newTestModerationActionService(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+			err := svc.LiftSuspension(context.Background(), tt.caller, tt.target)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if len(enforcer.suspensions) != 0 {
+				t.Errorf("the suspension was lifted anyway: %v", enforcer.suspensions)
+			}
+		})
+	}
+}
+
+// Idempotence covers a user who is not suspended; it does not cover a user who
+// does not exist.
+func TestModerationActionService_LiftSuspension_TargetNotFound(t *testing.T) {
+	enforcer := newMockUserEnforcer()
+	svc := newTestModerationActionService(
+		newMockActionRepo(), newFakeUserStore(), newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "nobody")
+
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want %v", err, ErrNotFound)
+	}
+	if len(enforcer.suspensions) != 0 {
+		t.Errorf("a suspension was written for a user who does not exist: %v", enforcer.suspensions)
+	}
+}
+
+// A failed write is a suspension still in force, and a moderator told otherwise
+// would stop chasing it.
+func TestModerationActionService_LiftSuspension_ReportsAFailedWrite(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	enforcer := newMockUserEnforcer()
+	enforcer.suspendErr = errors.New("db unavailable")
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err == nil {
+		t.Fatal("a failed write was reported as a lifted suspension")
+	}
+}
+
+// Without an enforcer nothing can clear suspended_until, so answering nil would
+// report a wiring fault as a released user.
+func TestModerationActionService_LiftSuspension_WithoutAnEnforcerIsAnError(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), nil)
+
+	if err := svc.LiftSuspension(context.Background(), testLiftingModerator(), "target-1"); err == nil {
+		t.Fatal("a service with no enforcer reported the suspension lifted")
+	}
+}
+
+// --- SuspensionStatus ---
+
+// is_active does read false during a suspension, but it reads false for a
+// deactivated account too and never says when the suspension ends — so without
+// this a moderator cannot tell how much time an early lift would actually save.
+func TestModerationActionService_SuspensionStatus_ReportsALiveSuspension(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(suspendedTestUser("target-1"))
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	until, err := svc.SuspensionStatus(context.Background(), testLiftingModerator(), "target-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if until == nil {
+		t.Fatal("suspended_until = nil, want the live suspension")
+	}
+	if !until.Equal(fixedNow.Add(24 * time.Hour)) {
+		t.Errorf("suspended_until = %v, want %v", *until, fixedNow.Add(24*time.Hour))
+	}
+}
+
+// A lapsed suspension reads as none at all: the comparison against the clock is
+// the whole mechanism, so the caller needs no clock of its own.
+func TestModerationActionService_SuspensionStatus_LapsedAndAbsentBothReadAsUnsuspended(t *testing.T) {
+	lapsed := fixedNow.Add(-time.Minute)
+	tests := []struct {
+		name string
+		user *domain.User
+	}{
+		{"never suspended", &domain.User{ID: "target-1", IsActive: true}},
+		{"suspension already lapsed", &domain.User{ID: "target-1", IsActive: true, SuspendedUntil: &lapsed}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newFakeUserStore()
+			users.add(tt.user)
+			svc := newTestModerationActionService(
+				newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+			until, err := svc.SuspensionStatus(context.Background(), testLiftingModerator(), "target-1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if until != nil {
+				t.Errorf("suspended_until = %v, want nil", *until)
+			}
+		})
+	}
+}
+
+func TestModerationActionService_SuspensionStatus_RefusesCallersWhoCannotModerate(t *testing.T) {
+	for _, caller := range []*domain.User{
+		nil,
+		{ID: "u-1", Role: domain.RoleMember, IsActive: true},
+		{ID: "u-1", Role: domain.RoleModerator, IsActive: false},
+	} {
+		users := newFakeUserStore()
+		users.add(suspendedTestUser("target-1"))
+		svc := newTestModerationActionService(
+			newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+		if _, err := svc.SuspensionStatus(context.Background(), caller, "target-1"); !errors.Is(err, ErrForbidden) {
+			t.Errorf("caller %+v: error = %v, want %v", caller, err, ErrForbidden)
+		}
+	}
+}
+
+func TestModerationActionService_SuspensionStatus_TargetNotFound(t *testing.T) {
+	svc := newTestModerationActionService(
+		newMockActionRepo(), newFakeUserStore(), newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+	if _, err := svc.SuspensionStatus(context.Background(), testLiftingModerator(), "nobody"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+// --- the two self views do not bleed into each other ---
+
+// Both lift kinds live in one table, so the only thing keeping a member's
+// suspension lift out of their mute_lifts is the relief type reaching the query.
+// A service that read the table without it would tell somebody released from a
+// suspension that a mute they never had was ended.
+func TestModerationActionService_LiftsAreReadPerType(t *testing.T) {
+	users := newFakeUserStore()
+	users.add(mutedTestUser("target-1"))
+	users.add(suspendedTestUser("target-2"))
+	reliefs := newMockReliefRepo()
+	svc := newTestModerationActionServiceWithReliefs(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(),
+		newMockUserEnforcer(), reliefs)
+
+	mod := testLiftingModerator()
+	if err := svc.LiftMute(context.Background(), mod, "target-1"); err != nil {
+		t.Fatalf("LiftMute: %v", err)
+	}
+	if err := svc.LiftSuspension(context.Background(), mod, "target-2"); err != nil {
+		t.Fatalf("LiftSuspension: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		userID   string
+		muteLen  int
+		suspLen  int
+		wantType domain.ReliefType
+	}{
+		{"the muted member sees only their mute lift", "target-1", 1, 0, domain.ReliefMuteLift},
+		{"the suspended member sees only their suspension lift", "target-2", 0, 1, domain.ReliefSuspensionLift},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutes, err := svc.MuteLifts(context.Background(), tt.userID, 10)
+			if err != nil {
+				t.Fatalf("MuteLifts: %v", err)
+			}
+			suspensions, err := svc.SuspensionLifts(context.Background(), tt.userID, 10)
+			if err != nil {
+				t.Fatalf("SuspensionLifts: %v", err)
+			}
+			if len(mutes) != tt.muteLen {
+				t.Errorf("%d mute lifts, want %d", len(mutes), tt.muteLen)
+			}
+			if len(suspensions) != tt.suspLen {
+				t.Errorf("%d suspension lifts, want %d", len(suspensions), tt.suspLen)
+			}
+		})
+	}
+}
+
+// A deployment that never wired the relief repository has no lifts to show,
+// which is not an error — matching the rest of the optional wiring.
+func TestModerationActionService_SuspensionLifts_WithoutARepositoryIsEmpty(t *testing.T) {
+	svc := NewModerationActionService(
+		newMockActionRepo(), newFakeUserStore(),
+		NewModerationService(newMockPenaltyRepo(), newMockPenaltyGraph(), fixedClock),
+		newMockUserEnforcer(), nil, nil, fixedClock)
+
+	lifts, err := svc.SuspensionLifts(context.Background(), "target-1", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(lifts) != 0 {
+		t.Errorf("%d lifts from a service with no relief repository", len(lifts))
 	}
 }

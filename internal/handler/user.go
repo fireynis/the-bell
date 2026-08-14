@@ -21,27 +21,28 @@ type UserHandler struct {
 	users   profileService
 	posts   authorPostLister
 	vouches VouchLister
-	lifts   muteLiftLister
+	lifts   reliefLister
 }
 
-// muteLiftLister abstracts reading the mute lifts a member is entitled to see
-// about themselves.
-type muteLiftLister interface {
+// reliefLister abstracts reading the lifts a member is entitled to see about
+// themselves — mutes and suspensions a moderator ended early.
+type reliefLister interface {
 	MuteLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error)
+	SuspensionLifts(ctx context.Context, userID string, limit int) ([]domain.ModerationRelief, error)
 }
 
-// SetMuteLiftLister supplies the moderation relief reader.
+// SetReliefLister supplies the moderation relief reader.
 //
 // A setter rather than a constructor parameter, matching
 // VouchService.SetPenaltyRepository: the handler predates this and every other
 // field is independent of it, so a deployment that never wires one still serves
 // profiles rather than failing to construct.
-func (h *UserHandler) SetMuteLiftLister(l muteLiftLister) { h.lifts = l }
+func (h *UserHandler) SetReliefLister(l reliefLister) { h.lifts = l }
 
-// maxOwnMuteLifts bounds the self view. This is a member's own record of being
-// released, not an audit log — enough to answer "was my mute lifted?" without
-// making the profile read unbounded.
-const maxOwnMuteLifts = 10
+// maxOwnLifts bounds the self view, per relief type. This is a member's own
+// record of being released, not an audit log — enough to answer "was my mute
+// lifted?" without making the profile read unbounded.
+const maxOwnLifts = 10
 
 // profileService abstracts the user profile reads and writes the handler needs.
 type profileService interface {
@@ -99,6 +100,12 @@ type ownProfileResponse struct {
 	// them is a policy question in its own right — but a release had to be
 	// visible to the person released, or it may as well not have happened.
 	MuteLifts []muteLiftResponse `json:"mute_lifts,omitempty"`
+	// SuspensionLifts is the same record for suspensions, and it is the only
+	// trace of one a member can ever see. A suspension surfaces to them as
+	// is_active being false; lifting it just makes that revert, so without this
+	// a member released early cannot tell an early release from a suspension
+	// that ran its full course.
+	SuspensionLifts []suspensionLiftResponse `json:"suspension_lifts,omitempty"`
 }
 
 // muteLiftResponse is one mute lift as its subject sees it.
@@ -115,6 +122,20 @@ type muteLiftResponse struct {
 	PreviousMutedUntil string `json:"previous_muted_until,omitempty"`
 }
 
+// suspensionLiftResponse is one suspension lift as its subject sees it. It
+// names no moderator either, and for the same reason.
+//
+// The field is previous_suspended_until rather than a shared name because the
+// member's profile already speaks in muted_until and suspended_until, and a
+// single previous_expires_at across both lists would make the reader work out
+// which restriction each entry came from.
+type suspensionLiftResponse struct {
+	LiftedAt string `json:"lifted_at"`
+	// PreviousSuspendedUntil is when the suspension would have ended had it run
+	// its course. Omitted when the record has none.
+	PreviousSuspendedUntil string `json:"previous_suspended_until,omitempty"`
+}
+
 func toMuteLiftResponses(reliefs []domain.ModerationRelief) []muteLiftResponse {
 	if len(reliefs) == 0 {
 		return nil
@@ -124,6 +145,21 @@ func toMuteLiftResponses(reliefs []domain.ModerationRelief) []muteLiftResponse {
 		lift := muteLiftResponse{LiftedAt: r.CreatedAt.Format(timestampFormat)}
 		if r.PreviousExpiresAt != nil {
 			lift.PreviousMutedUntil = r.PreviousExpiresAt.Format(timestampFormat)
+		}
+		out = append(out, lift)
+	}
+	return out
+}
+
+func toSuspensionLiftResponses(reliefs []domain.ModerationRelief) []suspensionLiftResponse {
+	if len(reliefs) == 0 {
+		return nil
+	}
+	out := make([]suspensionLiftResponse, 0, len(reliefs))
+	for _, r := range reliefs {
+		lift := suspensionLiftResponse{LiftedAt: r.CreatedAt.Format(timestampFormat)}
+		if r.PreviousExpiresAt != nil {
+			lift.PreviousSuspendedUntil = r.PreviousExpiresAt.Format(timestampFormat)
 		}
 		out = append(out, lift)
 	}
@@ -158,13 +194,13 @@ func toOwnProfileResponse(u *domain.User, now time.Time) ownProfileResponse {
 	return resp
 }
 
-// ownProfileWithLifts builds the self view and attaches the member's mute
-// lifts.
+// ownProfileWithLifts builds the self view and attaches the member's mute and
+// suspension lifts.
 //
 // A failed read is an error rather than an empty list. "No lifts" is a definite
 // answer to "was I ever released?", and returning it when the truth is unknown
 // is the same silent wrong answer that made a log-line-only record inadequate
-// in the first place. The read is one indexed lookup on a small table, so a
+// in the first place. Each read is one indexed lookup on a small table, so a
 // failure here means the database is unavailable and the rest of the profile is
 // in no better shape.
 func (h *UserHandler) ownProfileWithLifts(ctx context.Context, u *domain.User) (ownProfileResponse, error) {
@@ -173,11 +209,16 @@ func (h *UserHandler) ownProfileWithLifts(ctx context.Context, u *domain.User) (
 		return resp, nil
 	}
 
-	reliefs, err := h.lifts.MuteLifts(ctx, u.ID, maxOwnMuteLifts)
+	muteLifts, err := h.lifts.MuteLifts(ctx, u.ID, maxOwnLifts)
 	if err != nil {
 		return ownProfileResponse{}, err
 	}
-	resp.MuteLifts = toMuteLiftResponses(reliefs)
+	suspensionLifts, err := h.lifts.SuspensionLifts(ctx, u.ID, maxOwnLifts)
+	if err != nil {
+		return ownProfileResponse{}, err
+	}
+	resp.MuteLifts = toMuteLiftResponses(muteLifts)
+	resp.SuspensionLifts = toSuspensionLiftResponses(suspensionLifts)
 	return resp, nil
 }
 
@@ -263,12 +304,21 @@ func (h *UserHandler) ListPosts(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, listUserPostsResponse{Posts: posts})
 }
 
+// vouchEntry is one vouch on a profile's list.
+//
+// The display names are sent as the empty string rather than omitted when a
+// member has not set one: the list renders both parties, so the key is always
+// meaningful, and a client falling back to the id needs no separate rule for
+// "absent" and "blank". This is the one place the two names are shown together,
+// which is why it carries both rather than only the counterpart's.
 type vouchEntry struct {
-	ID        string `json:"id"`
-	VoucherID string `json:"voucher_id"`
-	VoucheeID string `json:"vouchee_id"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ID                 string `json:"id"`
+	VoucherID          string `json:"voucher_id"`
+	VoucherDisplayName string `json:"voucher_display_name"`
+	VoucheeID          string `json:"vouchee_id"`
+	VoucheeDisplayName string `json:"vouchee_display_name"`
+	Status             string `json:"status"`
+	CreatedAt          string `json:"created_at"`
 }
 
 type listVouchesResponse struct {
@@ -278,11 +328,13 @@ type listVouchesResponse struct {
 
 func toVouchEntry(v *domain.Vouch) vouchEntry {
 	return vouchEntry{
-		ID:        v.ID,
-		VoucherID: v.VoucherID,
-		VoucheeID: v.VoucheeID,
-		Status:    string(v.Status),
-		CreatedAt: v.CreatedAt.Format(timestampFormat),
+		ID:                 v.ID,
+		VoucherID:          v.VoucherID,
+		VoucherDisplayName: v.VoucherDisplayName,
+		VoucheeID:          v.VoucheeID,
+		VoucheeDisplayName: v.VoucheeDisplayName,
+		Status:             string(v.Status),
+		CreatedAt:          v.CreatedAt.Format(timestampFormat),
 	}
 }
 

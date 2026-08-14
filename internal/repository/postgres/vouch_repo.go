@@ -76,6 +76,9 @@ func (r *VouchRepo) CountActiveVouchesWithAvgTrust(ctx context.Context, voucheeI
 	return row.VouchCount, row.AvgTrust, nil
 }
 
+// ListActiveVouchesByVouchee returns the vouches this user has received, each
+// naming both parties. The names come from the query's joins rather than a
+// lookup per row, so a profile with twenty vouches is still one round trip.
 func (r *VouchRepo) ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]*domain.Vouch, error) {
 	rows, err := r.q.ListActiveVouchesByVouchee(ctx, voucheeID)
 	if err != nil {
@@ -84,11 +87,12 @@ func (r *VouchRepo) ListActiveVouchesByVouchee(ctx context.Context, voucheeID st
 
 	vouches := make([]*domain.Vouch, len(rows))
 	for i, row := range rows {
-		vouches[i] = vouchFromRow(row)
+		vouches[i] = namedVouch(row.Vouch, row.VoucherDisplayName, row.VoucheeDisplayName)
 	}
 	return vouches, nil
 }
 
+// ListActiveVouchesByVoucher is the same list from the other side.
 func (r *VouchRepo) ListActiveVouchesByVoucher(ctx context.Context, voucherID string) ([]*domain.Vouch, error) {
 	rows, err := r.q.ListActiveVouchesByVoucher(ctx, voucherID)
 	if err != nil {
@@ -97,9 +101,19 @@ func (r *VouchRepo) ListActiveVouchesByVoucher(ctx context.Context, voucherID st
 
 	vouches := make([]*domain.Vouch, len(rows))
 	for i, row := range rows {
-		vouches[i] = vouchFromRow(row)
+		vouches[i] = namedVouch(row.Vouch, row.VoucherDisplayName, row.VoucheeDisplayName)
 	}
 	return vouches, nil
+}
+
+// namedVouch converts a joined row, attaching the names of both parties. An
+// empty name is a member who has not set one and is passed through as "" — the
+// callers that render it fall back to the id.
+func namedVouch(row Vouch, voucherName, voucheeName string) *domain.Vouch {
+	v := vouchFromRow(row)
+	v.VoucherDisplayName = voucherName
+	v.VoucheeDisplayName = voucheeName
+	return v
 }
 
 func (r *VouchRepo) RevokeVouch(ctx context.Context, id string) error {

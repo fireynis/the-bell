@@ -25,6 +25,22 @@ export interface MuteLift {
   previous_muted_until?: string;
 }
 
+/**
+ * One entry in a member's own record of being released from a suspension early.
+ *
+ * Separate from MuteLift, and not merged with it, because the two carry
+ * different "would have ended" fields and mean different things to the member.
+ * It names no moderator either, for the same reason MuteLift does not.
+ */
+export interface SuspensionLift {
+  lifted_at: string;
+  /**
+   * When the suspension would have ended had it run its course; absent if
+   * unknown.
+   */
+  previous_suspended_until?: string;
+}
+
 export interface User {
   id: string;
   display_name: string;
@@ -50,6 +66,16 @@ export interface User {
    * it a member released early has no way to learn that it happened.
    */
   mute_lifts?: MuteLift[];
+  /**
+   * Suspensions a moderator ended early, newest first, and only on the caller's
+   * own profile. Absent rather than empty when there are none.
+   *
+   * This is the only trace of an early release a member can see. A suspension
+   * reaches them as `is_active` being false, and lifting it simply makes that
+   * revert — so without this there is nothing to tell an early release from a
+   * suspension that ran its full course.
+   */
+  suspension_lifts?: SuspensionLift[];
 }
 
 export interface FeedResponse {
@@ -66,6 +92,15 @@ export interface Vouch {
   id: string;
   voucher_id: string;
   vouchee_id: string;
+  /**
+   * Both parties by name, on the profile listing only. The create response
+   * (POST /api/v1/vouches) carries neither, which is why these are optional
+   * rather than required — and a member who has set no display name sends the
+   * empty string, so fall back to the id for anything falsy, not just for
+   * `undefined`.
+   */
+  voucher_display_name?: string;
+  vouchee_display_name?: string;
   status: string;
   created_at: string;
   /**
@@ -136,6 +171,12 @@ export interface ProposalsResponse {
 export interface Report {
   id: string;
   reporter_id: string;
+  /**
+   * Who filed the report, on the moderation queue only — the report echoed back
+   * to its own reporter carries no name. Also absent for a member who has set
+   * no display name, so fall back to the id for anything falsy.
+   */
+  reporter_display_name?: string;
   post_id: string;
   reason: string;
   status: string;
@@ -159,7 +200,15 @@ export interface TrustPenalty {
 export interface ModerationAction {
   id: string;
   target_user_id: string;
+  /**
+   * Both parties by name, on the audit-trail listing only. The action echoed
+   * back by POST /api/v1/moderation/actions carries neither. Also absent for a
+   * member who has set no display name, so fall back to the id for anything
+   * falsy.
+   */
+  target_display_name?: string;
   moderator_id: string;
+  moderator_display_name?: string;
   action: string;
   severity: number;
   reason: string;
@@ -187,6 +236,21 @@ export interface ActionHistoryResponse {
  */
 export interface MuteStatus {
   muted_until?: string;
+}
+
+/**
+ * What GET /api/v1/moderation/users/{id}/suspension answers with.
+ *
+ * Same shape and same rule as MuteStatus one severity up: suspended_until is
+ * absent — never null — for a user who is not suspended, and for one whose
+ * suspension has lapsed, so the field's presence is the answer.
+ *
+ * Ask this rather than reading `is_active` on a profile. That flag does read
+ * false during a suspension, but it reads false for a deactivated account too
+ * and never says when the suspension ends.
+ */
+export interface SuspensionStatus {
+  suspended_until?: string;
 }
 
 export interface TakeActionRequest {

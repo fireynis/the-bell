@@ -50,26 +50,35 @@ func (q *Queries) CreateModerationRelief(ctx context.Context, arg CreateModerati
 	return i, err
 }
 
-const listMuteLiftsInForceByTarget = `-- name: ListMuteLiftsInForceByTarget :many
+const listLiftsInForceByTarget = `-- name: ListLiftsInForceByTarget :many
 SELECT id, target_user_id, moderator_id, relief_type, previous_expires_at, was_in_force, created_at FROM moderation_reliefs
 WHERE target_user_id = $1
-  AND relief_type = 'mute_lift'
+  AND relief_type = $2
   AND was_in_force = TRUE
 ORDER BY created_at DESC
-LIMIT $2
+LIMIT $3
 `
 
-type ListMuteLiftsInForceByTargetParams struct {
+type ListLiftsInForceByTargetParams struct {
 	TargetUserID string `json:"target_user_id"`
+	ReliefType   string `json:"relief_type"`
 	Limit        int32  `json:"limit"`
 }
 
-// The member's own view of being released. was_in_force is filtered here rather
-// than after the read: the lift endpoint is idempotent and accepts a lift
-// against anyone, so filtering in Go after LIMIT would let a run of no-op lifts
-// push the release that actually freed somebody out of the window.
-func (q *Queries) ListMuteLiftsInForceByTarget(ctx context.Context, arg ListMuteLiftsInForceByTargetParams) ([]ModerationRelief, error) {
-	rows, err := q.db.Query(ctx, listMuteLiftsInForceByTarget, arg.TargetUserID, arg.Limit)
+// The member's own view of being released, one relief type at a time.
+//
+// relief_type is a parameter rather than a literal because mute lifts and
+// suspension lifts are the same read against the same table — the discriminator
+// is what 00018 added the column for. A second near-identical query would be
+// free to drift from this one in exactly the way the was_in_force filter below
+// cannot afford.
+//
+// was_in_force is filtered here rather than after the read: the lift endpoints
+// are idempotent and accept a lift against anyone, so filtering in Go after
+// LIMIT would let a run of no-op lifts push the release that actually freed
+// somebody out of the window.
+func (q *Queries) ListLiftsInForceByTarget(ctx context.Context, arg ListLiftsInForceByTargetParams) ([]ModerationRelief, error) {
+	rows, err := q.db.Query(ctx, listLiftsInForceByTarget, arg.TargetUserID, arg.ReliefType, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

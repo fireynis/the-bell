@@ -1242,3 +1242,40 @@ func TestVouchService_Revoke_PenaltyWriteFailureDoesNotFailTheRevocation(t *test
 		t.Error("vouch was not revoked")
 	}
 }
+
+// The names come from the query's joins and the service is a pass-through, so
+// what this pins is that it stays one: a service that rebuilt the domain.Vouch
+// on the way out — to drop a field, or to normalize one — would silently return
+// the profile to a column of UUID prefixes.
+func TestVouchService_ListVouches_CarriesDisplayNames(t *testing.T) {
+	repo := newMockVouchRepo()
+	repo.seedVouch("alice", "bob", fixedNow)
+	repo.vouches["alice->bob"].VoucherDisplayName = "Alice"
+	repo.vouches["alice->bob"].VoucheeDisplayName = "Bob"
+
+	svc := NewVouchService(repo, newMockGraph(), newMockUserGetter(), fixedClock)
+
+	given, err := svc.ListGivenVouches(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("ListGivenVouches() unexpected error: %v", err)
+	}
+	if len(given) != 1 {
+		t.Fatalf("%d vouches, want 1", len(given))
+	}
+	if given[0].VoucherDisplayName != "Alice" || given[0].VoucheeDisplayName != "Bob" {
+		t.Errorf("names = %q/%q, want Alice/Bob",
+			given[0].VoucherDisplayName, given[0].VoucheeDisplayName)
+	}
+
+	received, err := svc.ListReceivedVouches(context.Background(), "bob")
+	if err != nil {
+		t.Fatalf("ListReceivedVouches() unexpected error: %v", err)
+	}
+	if len(received) != 1 {
+		t.Fatalf("%d vouches, want 1", len(received))
+	}
+	if received[0].VoucherDisplayName != "Alice" || received[0].VoucheeDisplayName != "Bob" {
+		t.Errorf("names = %q/%q, want Alice/Bob",
+			received[0].VoucherDisplayName, received[0].VoucheeDisplayName)
+	}
+}

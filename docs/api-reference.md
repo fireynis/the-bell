@@ -138,9 +138,48 @@ Returns the authenticated user's profile. Does not require the user to be active
   "role": "member",
   "is_active": true,
   "joined_at": "2025-06-15T10:30:00Z",
-  "muted_until": "2025-07-02T16:00:00Z"
+  "muted_until": "2025-07-02T16:00:00Z",
+  "mute_lifts": [
+    {
+      "lifted_at": "2025-07-01T09:00:00Z",
+      "previous_muted_until": "2025-07-05T09:00:00Z"
+    }
+  ],
+  "suspension_lifts": [
+    {
+      "lifted_at": "2025-06-20T09:00:00Z",
+      "previous_suspended_until": "2025-06-27T09:00:00Z"
+    }
+  ]
 }
 ```
+
+##### `mute_lifts` and `suspension_lifts`
+
+Restrictions a moderator ended early, newest first, and **only on the caller's
+own profile** — the three self views listed under `muted_until` below. They are
+omitted entirely rather than sent as `[]` when there are none, on the same
+principle as `muted_until`, and each is capped at the ten most recent.
+
+This is the only moderation history a member sees about themselves. Everything
+else sits behind `/api/v1/moderation`, which requires the moderator role. The
+asymmetry is deliberate: showing a member their own severities, penalties and
+the moderators who applied them is a policy question in its own right, but a
+release had to be visible to the person released or it may as well not have
+happened.
+
+`suspension_lifts` matters more than its counterpart. A mute at least shows to
+the member as `muted_until` while it runs; a suspension only ever shows as
+`is_active` being `false`, and lifting it just makes that revert — so without
+this entry there is nothing to distinguish an early release from a suspension
+that ran its full course.
+
+Neither list names the moderator who acted. Which moderator handled a case
+appears on no member-facing response.
+
+Only lifts that actually released the member appear. Both `DELETE` endpoints are
+idempotent and accept a lift against anyone, and a no-op lift is recorded but
+excluded here — a member must not be told a mute they never had was ended.
 
 ##### `muted_until`
 
@@ -172,7 +211,8 @@ Returns the authenticated user's profile. Requires the user to be active.
 **Auth**: Required
 **Role**: Any active user
 
-**Response** `200 OK`: Same shape as `GET /api/v1/me`, including `muted_until`.
+**Response** `200 OK`: Same shape as `GET /api/v1/me`, including `muted_until`,
+`mute_lifts` and `suspension_lifts`.
 
 ---
 
@@ -199,8 +239,9 @@ Updates the authenticated user's profile.
 | `bio` | string | No | Max 500 characters |
 | `avatar_url` | string | No | URL string |
 
-**Response** `200 OK`: Updated user profile, including `muted_until` — this is
-a self view, so it carries the same fields `GET /api/v1/users/me` does.
+**Response** `200 OK`: Updated user profile, including `muted_until`,
+`mute_lifts` and `suspension_lifts` — this is a self view, so it carries the
+same fields `GET /api/v1/users/me` does.
 
 ```bash
 curl -X PUT https://bell.example.com/api/v1/users/me \
@@ -219,8 +260,8 @@ Returns a public user profile by ID.
 **Role**: None
 
 **Response** `200 OK`: User profile object. This response **never** includes
-`muted_until`, whether or not the user is muted — see the note under
-`GET /api/v1/me`.
+`muted_until`, `mute_lifts` or `suspension_lifts`, whether or not the user is
+muted — see the notes under `GET /api/v1/me`.
 
 ---
 
@@ -274,7 +315,9 @@ Returns vouches given and received by a user.
     {
       "id": "0193a7b2-...",
       "voucher_id": "0193a7b2-...",
+      "voucher_display_name": "Alice",
       "vouchee_id": "0193a7b2-...",
+      "vouchee_display_name": "Bob",
       "status": "active",
       "created_at": "2025-07-01T12:00:00Z"
     }
@@ -282,6 +325,20 @@ Returns vouches given and received by a user.
   "given": []
 }
 ```
+
+##### Display names
+
+Both parties are named on every row, on both lists, because the list shows the
+pair. The ids stay alongside them: the names are for reading, the ids are what
+a client links to a profile with.
+
+A member who has not set a display name is sent as the **empty string**, not
+omitted — the key is always present on this response, so a client falls back to
+the id for anything falsy and needs no separate rule for an absent field.
+
+The names come only from this listing. `POST /api/v1/vouches` echoes back the
+vouch it created and carries neither, because the create path knows both people
+by id alone.
 
 ---
 
@@ -658,6 +715,7 @@ Returns pending reports for moderator review.
     {
       "id": "0193a7b2-...",
       "reporter_id": "0193a7b2-...",
+      "reporter_display_name": "Alice",
       "post_id": "0193a7b2-...",
       "reason": "Spam content",
       "status": "pending",
@@ -666,6 +724,16 @@ Returns pending reports for moderator review.
   ]
 }
 ```
+
+`reporter_display_name` appears **only here**. This is the one read that shows a
+report to somebody other than the person who filed it, and a moderator weighing
+a report has to know who filed it. `POST /api/v1/posts/{id}/report` returns the
+report to its own reporter and omits the field entirely.
+
+A reporter who has set no display name has the key **omitted**, the same as on
+the submit response — the field cannot distinguish "not looked up" from "no name
+set", so treat any falsy value as "fall back to the id". Their report is still
+in the queue either way: the name is missing, not the row.
 
 ```bash
 curl https://bell.example.com/api/v1/moderation/queue \
@@ -811,7 +879,7 @@ indefinite mute is a suspension, and suspend is the action for that.
 |--------|------------------|
 | `warn` | None. The penalty is the whole action |
 | `mute` | Sets `muted_until` to the action's `expires_at`, blocking `POST /api/v1/posts` until then. **Does not change the trust score** |
-| `suspend` | Sets `suspended_until` to the action's `expires_at`. The `is_active` column is not touched; the API's `is_active` field reads `false` while the suspension is in force and reverts to `true` on its own once it lapses |
+| `suspend` | Sets `suspended_until` to the action's `expires_at`. The `is_active` column is not touched; the API's `is_active` field reads `false` while the suspension is in force and reverts to `true` on its own once it lapses. A moderator can end it early with `DELETE /api/v1/moderation/users/{user_id}/suspension` |
 | `ban` | Sets the role to `banned` and the trust score to 0 |
 
 The mute's end time is the one the moderator chose: `users.muted_until` and the
@@ -820,11 +888,13 @@ applies even to a user already below the posting threshold — their score may
 recover before the mute expires.
 
 A mute can be ended early by a moderator with
-`DELETE /api/v1/moderation/users/{user_id}/mute`. Doing so clears `muted_until`
-and **leaves this action row exactly as written** — its `expires_at` still shows
-the original end time. The audit trail records what was decided at the time, so
-it is not the place to ask whether a mute is still in force; use
-`GET /api/v1/moderation/users/{user_id}/mute` for that.
+`DELETE /api/v1/moderation/users/{user_id}/mute`, and a suspension with
+`DELETE /api/v1/moderation/users/{user_id}/suspension`. Either clears the
+expiry on the user row and **leaves this action row exactly as written** — its
+`expires_at` still shows the original end time. The audit trail records what was
+decided at the time, so it is not the place to ask whether a restriction is
+still in force; use `GET /api/v1/moderation/users/{user_id}/mute` or
+`GET /api/v1/moderation/users/{user_id}/suspension` for that.
 
 **Response** `201 Created`:
 
@@ -894,7 +964,9 @@ Returns moderation action history for a user, including associated trust penalti
       "action": {
         "id": "0193a7b2-...",
         "target_user_id": "0193a7b2-...",
+        "target_display_name": "Alice",
         "moderator_id": "0193a7b2-...",
+        "moderator_display_name": "Mallory",
         "action": "warn",
         "severity": 1,
         "reason": "Minor issue",
@@ -917,6 +989,22 @@ Returns moderation action history for a user, including associated trust penalti
   ]
 }
 ```
+
+##### Display names
+
+`target_display_name` and `moderator_display_name` are on this listing only.
+`POST /api/v1/moderation/actions` echoes back the action it created and carries
+neither: the create path knows both people by id alone, and two empty strings
+there would read as two nameless members rather than as "not looked up".
+
+A member who has set no display name has their key **omitted** rather than sent
+as `""` — the field cannot distinguish that from "not looked up", so treat any
+falsy value as "fall back to the id". The ids stay alongside the names, and the
+moderator views link by id.
+
+This does **not** widen who may see which moderator handled a case. The
+`role=moderator` view is still council-only, exactly as it was when the id alone
+was carried.
 
 ---
 
@@ -1013,13 +1101,114 @@ mercy would be shown to them as a sanction. This is the same wall
 
 The consequence for readers: **the original mute action stays in the audit trail
 exactly as written**, with its original `expires_at`, and nothing there marks it
-as lifted. A durable member-visible record of the lift would need storage of its
-own. What exists today is a server log line.
+as lifted. Do not read that row to decide whether somebody is muted now.
+
+##### It is recorded, and the member sees it
+
+The lift is written to `moderation_reliefs`, a table with **no severity column
+at all** — which is what makes it safe to show the member. They read it back as
+`mute_lifts` on their own profile (`GET /api/v1/me`, `GET /api/v1/users/me`,
+`PUT /api/v1/users/me`) and nowhere else.
+
+Lifts issued against somebody who was **not** muted are recorded but excluded
+from that view. The endpoint is idempotent and accepts a lift against anyone, so
+showing them would tell a member their mute was lifted when they never had one.
+
+The record names no moderator. Which moderator acted appears on no member-facing
+response, and changing that is a policy decision rather than a property of this
+record.
 
 ```bash
 curl -X DELETE https://bell.example.com/api/v1/moderation/users/0193a7b2-.../mute \
   -H "Cookie: ory_kratos_session=..."
 ```
+
+---
+
+#### `GET /api/v1/moderation/users/{user_id}/suspension`
+
+Reports whether a user is currently suspended, and until when.
+
+**Auth**: Required
+**Role**: `moderator` or higher
+
+**Response** `200 OK`, user is suspended:
+
+```json
+{"suspended_until": "2025-07-08T16:00:00Z"}
+```
+
+**Response** `200 OK`, user is **not** suspended:
+
+```json
+{}
+```
+
+**Response** `404 Not Found`: no user with that id.
+
+Same rule as the mute status above: the field is **omitted entirely** rather
+than sent as `null`, so its presence is the whole answer, and a suspension whose
+time has already passed is reported as no suspension at all.
+
+##### Why not just read `is_active`?
+
+`is_active` on a user profile does read `false` while a suspension is in force.
+But it also reads `false` for an account deactivated for any other reason, and
+it never says **when** the suspension ends — so a moderator reading it cannot
+tell whether an early lift is worth offering or how much time it would save.
+
+The audit trail is not a substitute either: the original `suspend` action keeps
+its original `expires_at` forever, whether or not the suspension was lifted or
+has since lapsed.
+
+Like the mute status and unlike the `DELETE` below, this does **not** refuse a
+self-query.
+
+---
+
+#### `DELETE /api/v1/moderation/users/{user_id}/suspension`
+
+Ends a suspension before its duration runs out — for a suspension applied in
+error, or one a moderator agrees to shorten after an appeal.
+
+**Auth**: Required
+**Role**: `moderator` or higher
+
+**Response** `204 No Content`
+**Response** `400 Bad Request`: `validation error: cannot moderate yourself`.
+**Response** `403 Forbidden`: not an active moderator or council member.
+**Response** `404 Not Found`: no user with that id.
+
+```bash
+curl -X DELETE https://bell.example.com/api/v1/moderation/users/0193a7b2-.../suspension \
+  -H "Cookie: ory_kratos_session=..."
+```
+
+This is the mute lift one severity up, and **every rule documented for
+`DELETE .../mute` above holds here word for word**:
+
+- **Idempotent.** `204` whether or not the user was actually suspended. A user
+  who does not exist is still `404` — idempotence is about the suspension, not
+  about the id.
+- **No self-lift.** Refused with `400`, ahead of the role check, so the caller
+  gets the specific answer.
+- **No action row, no trust movement.** No `moderation_actions` row is written,
+  no penalty propagates, no score is touched, no recalculation is queued. Every
+  severity in that table names a real trust penalty, so filing a release there
+  would punish the person released and everyone who vouched for them.
+- **Recorded in `moderation_reliefs`**, and read back by the member as
+  `suspension_lifts` on their own profile. Lifts against somebody who was not
+  suspended are recorded but hidden from that view.
+
+Clearing `suspended_until` is the whole operation. **`is_active` is deliberately
+not written.** It reverts on its own once the suspension is cleared, and writing
+it here would risk reactivating an account that was deactivated for some
+entirely separate reason — the trap migration `00019` was written to remove,
+arriving from the other side.
+
+Before this endpoint existed a suspension could only end by lapsing, so a
+moderator who suspended the wrong person had nothing to undo it with short of
+waiting out the duration they had chosen.
 
 ---
 

@@ -21,6 +21,23 @@ type ModerationAction struct {
 	Duration     *time.Duration `json:"duration,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	ExpiresAt    *time.Time     `json:"expires_at,omitempty"`
+
+	// TargetDisplayName and ModeratorDisplayName come from the join in the
+	// audit-trail reads, so that a moderator sees who an action concerns rather
+	// than two UUIDs.
+	//
+	// omitempty, following Post.AuthorDisplayName: this struct is serialized by
+	// paths that populate the names and by paths that cannot, and only the
+	// former should carry the keys. POST /moderation/actions echoes back the
+	// action it created and knows both people by id alone, so it emits neither.
+	//
+	// A member who has set no display name is also absent rather than "", since
+	// omitempty cannot tell the two apart. Callers fall back to the id for
+	// anything falsy, which covers both; neither is an error. The handler DTOs
+	// that always populate a name — vouchEntry — send it unconditionally
+	// instead, because for them there is no unpopulated path to distinguish.
+	TargetDisplayName    string `json:"target_display_name,omitempty"`
+	ModeratorDisplayName string `json:"moderator_display_name,omitempty"`
 }
 
 // ReliefType names a non-punitive moderator act — one that lifts a restriction
@@ -30,6 +47,12 @@ type ReliefType string
 const (
 	// ReliefMuteLift is a moderator ending a mute before its duration runs out.
 	ReliefMuteLift ReliefType = "mute_lift"
+	// ReliefSuspensionLift is a moderator ending a suspension before its
+	// duration runs out. It is a second value of the same column rather than a
+	// second table because the two acts are identical in everything the record
+	// captures — who was released, by whom, from what expiry, and whether they
+	// were actually under the restriction at the time.
+	ReliefSuspensionLift ReliefType = "suspension_lift"
 )
 
 // ModerationRelief records a moderator undoing a restriction.
@@ -44,8 +67,9 @@ type ModerationRelief struct {
 	TargetUserID string     `json:"target_user_id"`
 	ModeratorID  string     `json:"moderator_id"`
 	Type         ReliefType `json:"type"`
-	// PreviousExpiresAt is the muted_until the lift destroyed. Nil when the
-	// target had none, which is not an error: the lift endpoint is idempotent.
+	// PreviousExpiresAt is the expiry the lift destroyed — muted_until for a
+	// mute lift, suspended_until for a suspension lift. Nil when the target had
+	// none, which is not an error: the lift endpoints are idempotent.
 	PreviousExpiresAt *time.Time `json:"previous_expires_at,omitempty"`
 	// WasInForce distinguishes ending a live restriction from a lift against
 	// someone who was not under one. Only the former is worth telling the
@@ -61,6 +85,13 @@ type Report struct {
 	Reason     string    `json:"reason"`
 	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// ReporterDisplayName is who filed the report, joined in by the moderation
+	// queue read and by nothing else. It is omitempty on the same terms as
+	// ModerationAction's names above: the report a reporter gets back from
+	// POST /posts/{id}/report is their own, so that path populates no name and
+	// emits no key.
+	ReporterDisplayName string `json:"reporter_display_name,omitempty"`
 }
 
 // Trust propagation parameters, keyed by a moderation action's severity (1-5).

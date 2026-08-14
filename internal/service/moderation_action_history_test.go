@@ -225,3 +225,29 @@ func TestModerationActionService_GetActionHistory_PenaltyError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// The audit trail names both parties, joined in by the query. The history
+// service pairs each action with its penalties and must hand the action back
+// whole; rebuilding it would drop the names and return the trail to two UUIDs
+// per row.
+func TestModerationHistoryService_GetActionHistory_CarriesDisplayNames(t *testing.T) {
+	actions := newMockActionHistoryRepo()
+	actions.actionsByTarget = []*domain.ModerationAction{{
+		ID: "act-1", TargetUserID: "user-1", ModeratorID: "mod-1",
+		Action: domain.ActionWarn, Severity: 1, Reason: "spam",
+		TargetDisplayName: "Alice", ModeratorDisplayName: "Mallory",
+	}}
+
+	entries, err := NewModerationHistoryService(actions, newMockPenaltyListerS()).
+		GetActionHistory(context.Background(), "user-1", false, 10, 0)
+	if err != nil {
+		t.Fatalf("GetActionHistory() unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("%d entries, want 1", len(entries))
+	}
+	got := entries[0].Action
+	if got.TargetDisplayName != "Alice" || got.ModeratorDisplayName != "Mallory" {
+		t.Errorf("names = %q/%q, want Alice/Mallory", got.TargetDisplayName, got.ModeratorDisplayName)
+	}
+}

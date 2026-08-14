@@ -57,9 +57,14 @@ func (q *Queries) CreateModerationAction(ctx context.Context, arg CreateModerati
 }
 
 const listModerationActionsByModerator = `-- name: ListModerationActionsByModerator :many
-SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions
-WHERE moderator_id = $1
-ORDER BY created_at DESC
+SELECT m.id, m.target_user_id, m.moderator_id, m.action_type, m.severity, m.reason, m.duration_seconds, m.created_at, m.expires_at,
+       target.display_name AS target_display_name,
+       moderator.display_name AS moderator_display_name
+FROM moderation_actions m
+JOIN users target ON target.id = m.target_user_id
+JOIN users moderator ON moderator.id = m.moderator_id
+WHERE m.moderator_id = $1
+ORDER BY m.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -69,25 +74,34 @@ type ListModerationActionsByModeratorParams struct {
 	Offset      int32  `json:"offset"`
 }
 
-func (q *Queries) ListModerationActionsByModerator(ctx context.Context, arg ListModerationActionsByModeratorParams) ([]ModerationAction, error) {
+type ListModerationActionsByModeratorRow struct {
+	ModerationAction     ModerationAction `json:"moderation_action"`
+	TargetDisplayName    string           `json:"target_display_name"`
+	ModeratorDisplayName string           `json:"moderator_display_name"`
+}
+
+// The other direction of the same trail, joined the same way.
+func (q *Queries) ListModerationActionsByModerator(ctx context.Context, arg ListModerationActionsByModeratorParams) ([]ListModerationActionsByModeratorRow, error) {
 	rows, err := q.db.Query(ctx, listModerationActionsByModerator, arg.ModeratorID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ModerationAction{}
+	items := []ListModerationActionsByModeratorRow{}
 	for rows.Next() {
-		var i ModerationAction
+		var i ListModerationActionsByModeratorRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.TargetUserID,
-			&i.ModeratorID,
-			&i.ActionType,
-			&i.Severity,
-			&i.Reason,
-			&i.DurationSeconds,
-			&i.CreatedAt,
-			&i.ExpiresAt,
+			&i.ModerationAction.ID,
+			&i.ModerationAction.TargetUserID,
+			&i.ModerationAction.ModeratorID,
+			&i.ModerationAction.ActionType,
+			&i.ModerationAction.Severity,
+			&i.ModerationAction.Reason,
+			&i.ModerationAction.DurationSeconds,
+			&i.ModerationAction.CreatedAt,
+			&i.ModerationAction.ExpiresAt,
+			&i.TargetDisplayName,
+			&i.ModeratorDisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -100,9 +114,14 @@ func (q *Queries) ListModerationActionsByModerator(ctx context.Context, arg List
 }
 
 const listModerationActionsByTarget = `-- name: ListModerationActionsByTarget :many
-SELECT id, target_user_id, moderator_id, action_type, severity, reason, duration_seconds, created_at, expires_at FROM moderation_actions
-WHERE target_user_id = $1
-ORDER BY created_at DESC
+SELECT m.id, m.target_user_id, m.moderator_id, m.action_type, m.severity, m.reason, m.duration_seconds, m.created_at, m.expires_at,
+       target.display_name AS target_display_name,
+       moderator.display_name AS moderator_display_name
+FROM moderation_actions m
+JOIN users target ON target.id = m.target_user_id
+JOIN users moderator ON moderator.id = m.moderator_id
+WHERE m.target_user_id = $1
+ORDER BY m.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -112,25 +131,39 @@ type ListModerationActionsByTargetParams struct {
 	Offset       int32  `json:"offset"`
 }
 
-func (q *Queries) ListModerationActionsByTarget(ctx context.Context, arg ListModerationActionsByTargetParams) ([]ModerationAction, error) {
+type ListModerationActionsByTargetRow struct {
+	ModerationAction     ModerationAction `json:"moderation_action"`
+	TargetDisplayName    string           `json:"target_display_name"`
+	ModeratorDisplayName string           `json:"moderator_display_name"`
+}
+
+// Both parties are joined by name. The audit trail names who was acted on and
+// who acted, and a moderator reading it should not have to look either id up by
+// hand. Both columns are NOT NULL references to users, so neither join can drop
+// an action. Note this is the audit trail's own view: which moderator handled a
+// case stays behind the council check in the handler, exactly as it did when
+// only the id was carried.
+func (q *Queries) ListModerationActionsByTarget(ctx context.Context, arg ListModerationActionsByTargetParams) ([]ListModerationActionsByTargetRow, error) {
 	rows, err := q.db.Query(ctx, listModerationActionsByTarget, arg.TargetUserID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ModerationAction{}
+	items := []ListModerationActionsByTargetRow{}
 	for rows.Next() {
-		var i ModerationAction
+		var i ListModerationActionsByTargetRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.TargetUserID,
-			&i.ModeratorID,
-			&i.ActionType,
-			&i.Severity,
-			&i.Reason,
-			&i.DurationSeconds,
-			&i.CreatedAt,
-			&i.ExpiresAt,
+			&i.ModerationAction.ID,
+			&i.ModerationAction.TargetUserID,
+			&i.ModerationAction.ModeratorID,
+			&i.ModerationAction.ActionType,
+			&i.ModerationAction.Severity,
+			&i.ModerationAction.Reason,
+			&i.ModerationAction.DurationSeconds,
+			&i.ModerationAction.CreatedAt,
+			&i.ModerationAction.ExpiresAt,
+			&i.TargetDisplayName,
+			&i.ModeratorDisplayName,
 		); err != nil {
 			return nil, err
 		}

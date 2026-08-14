@@ -154,11 +154,12 @@ func (s *Server) apiRoutes(r chi.Router) {
 	// Handlers are stateless over their services, so each is built once here
 	// and shared by every route group that needs it.
 	uh := handler.NewUserHandler(s.userService, s.postService, s.vouchService)
-	// A member's own profile is the one place a lifted mute is visible to the
-	// person it released — the moderation audit trail is moderator-only — so the
-	// self view reads its lifts from the moderation service.
+	// A member's own profile is the one place a lifted mute or suspension is
+	// visible to the person it released — the moderation audit trail is
+	// moderator-only — so the self view reads its lifts from the moderation
+	// service.
 	if s.moderationActionService != nil {
-		uh.SetMuteLiftLister(s.moderationActionService)
+		uh.SetReliefLister(s.moderationActionService)
 	}
 	var reportH *handler.ReportHandler
 	if s.reportService != nil {
@@ -284,6 +285,10 @@ func (s *Server) apiRoutes(r chi.Router) {
 				// service re-checks the role regardless.
 				r.Get("/users/{user_id}/mute", mh.MuteStatus)
 				r.Delete("/users/{user_id}/mute", mh.LiftMute)
+				// The suspension is the same restriction one severity up, so
+				// it gets the same pair rather than a bespoke shape.
+				r.Get("/users/{user_id}/suspension", mh.SuspensionStatus)
+				r.Delete("/users/{user_id}/suspension", mh.LiftSuspension)
 			}
 		})
 	}

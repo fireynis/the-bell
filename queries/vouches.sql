@@ -10,14 +10,31 @@ SELECT * FROM vouches WHERE id = $1;
 SELECT * FROM vouches WHERE voucher_id = $1 AND vouchee_id = $2;
 
 -- name: ListActiveVouchesByVouchee :many
-SELECT * FROM vouches
-WHERE vouchee_id = $1 AND status = 'active'
-ORDER BY created_at;
+-- Both parties are joined by name because a vouch list is about people, and the
+-- id alone is unreadable: the profile rendered "0193a7b2..." for every row.
+-- Inner joins are safe on both sides — voucher_id and vouchee_id are NOT NULL
+-- references to users — so no row can be dropped by the join. Following the
+-- feed's convention (posts.sql), the name travels with the row rather than
+-- being fetched per id afterwards.
+SELECT sqlc.embed(v),
+       voucher.display_name AS voucher_display_name,
+       vouchee.display_name AS vouchee_display_name
+FROM vouches v
+JOIN users voucher ON voucher.id = v.voucher_id
+JOIN users vouchee ON vouchee.id = v.vouchee_id
+WHERE v.vouchee_id = $1 AND v.status = 'active'
+ORDER BY v.created_at;
 
 -- name: ListActiveVouchesByVoucher :many
-SELECT * FROM vouches
-WHERE voucher_id = $1 AND status = 'active'
-ORDER BY created_at;
+-- The other direction of the same list, joined the same way.
+SELECT sqlc.embed(v),
+       voucher.display_name AS voucher_display_name,
+       vouchee.display_name AS vouchee_display_name
+FROM vouches v
+JOIN users voucher ON voucher.id = v.voucher_id
+JOIN users vouchee ON vouchee.id = v.vouchee_id
+WHERE v.voucher_id = $1 AND v.status = 'active'
+ORDER BY v.created_at;
 
 -- name: RevokeVouch :one
 UPDATE vouches

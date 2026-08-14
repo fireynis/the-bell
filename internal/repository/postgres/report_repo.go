@@ -61,9 +61,14 @@ func (r *ReportRepo) ListPendingReports(ctx context.Context, limit, offset int) 
 		return nil, err
 	}
 
+	// The reporter's name rides along from the query's join: the moderation
+	// queue is the one read that shows a report to somebody other than the
+	// person who filed it, so it is the one read that needs the name.
 	reports := make([]*domain.Report, len(rows))
 	for i, row := range rows {
-		reports[i] = reportFromRow(row)
+		report := reportFromRow(row.Report)
+		report.ReporterDisplayName = row.ReporterDisplayName
+		reports[i] = report
 	}
 	return reports, nil
 }

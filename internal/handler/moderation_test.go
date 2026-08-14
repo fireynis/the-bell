@@ -125,10 +125,10 @@ func (m *mockReliefRepoH) CreateModerationRelief(_ context.Context, relief *doma
 	return nil
 }
 
-func (m *mockReliefRepoH) ListMuteLiftsInForce(_ context.Context, targetUserID string, limit int) ([]domain.ModerationRelief, error) {
+func (m *mockReliefRepoH) ListLiftsInForce(_ context.Context, targetUserID string, reliefType domain.ReliefType, limit int) ([]domain.ModerationRelief, error) {
 	var out []domain.ModerationRelief
 	for _, r := range m.reliefs {
-		if r.TargetUserID != targetUserID || !r.WasInForce || len(out) == limit {
+		if r.TargetUserID != targetUserID || r.Type != reliefType || !r.WasInForce || len(out) == limit {
 			continue
 		}
 		out = append(out, *r)
@@ -549,15 +549,21 @@ func TestModerationHandler_TakeAction_PenaltyFailureStillReports201(t *testing.T
 
 // --- LiftMute ---
 
-// mockLiftEnforcer records the muted_until writes the handler drives, so a test
-// can tell a nil write (the lift) from no write at all.
+// mockLiftEnforcer records the muted_until and suspended_until writes the
+// handler drives, so a test can tell a nil write (the lift) from no write at
+// all — and can tell the two restrictions apart.
 type mockLiftEnforcer struct {
-	mutes map[string]*time.Time
-	err   error
+	mutes       map[string]*time.Time
+	suspensions map[string]*time.Time
+	err         error
+	suspendErr  error
 }
 
 func newMockLiftEnforcer() *mockLiftEnforcer {
-	return &mockLiftEnforcer{mutes: make(map[string]*time.Time)}
+	return &mockLiftEnforcer{
+		mutes:       make(map[string]*time.Time),
+		suspensions: make(map[string]*time.Time),
+	}
 }
 
 func (m *mockLiftEnforcer) SetUserMutedUntil(_ context.Context, id string, until *time.Time) error {
@@ -568,7 +574,11 @@ func (m *mockLiftEnforcer) SetUserMutedUntil(_ context.Context, id string, until
 	return nil
 }
 
-func (m *mockLiftEnforcer) SetUserSuspendedUntil(_ context.Context, _ string, _ *time.Time) error {
+func (m *mockLiftEnforcer) SetUserSuspendedUntil(_ context.Context, id string, until *time.Time) error {
+	if m.suspendErr != nil {
+		return m.suspendErr
+	}
+	m.suspensions[id] = until
 	return nil
 }
 
@@ -796,5 +806,298 @@ func TestModerationHandler_MuteStatus_RefusesAMember(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), until.Format(time.RFC3339)[:10]) {
 		t.Errorf("the refusal leaked the mute expiry: %s", rec.Body.String())
+	}
+}
+
+// --- LiftSuspension ---
+
+func liftSuspensionRequest(userID string, caller *domain.User) *http.Request {
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/moderation/users/"+userID+"/suspension", nil)
+	if caller != nil {
+		req = withUser(req, caller)
+	}
+	return withChiURLParam(req, "user_id", userID)
+}
+
+// suspendedFor builds the target of these tests. is_active is false because that
+// is what a suspended user looks like coming out of the repository; nothing in
+// the lift reads it.
+func suspendedFor(id string) *domain.User {
+	until := fixedNow.Add(24 * time.Hour)
+	return &domain.User{ID: id, IsActive: false, SuspendedUntil: &until}
+}
+
+func TestModerationHandler_LiftSuspension_ClearsTheSuspensionAndAnswers204(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = suspendedFor("target-1")
+	enforcer := newMockLiftEnforcer()
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftSuspension(rec, liftSuspensionRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+	if got, ok := enforcer.suspensions["target-1"]; !ok || got != nil {
+		t.Errorf("suspended_until = %v (written %v), want a nil write", got, ok)
+	}
+	// The two restrictions are separate columns and a lift of one must not
+	// disturb the other: a suspended member may also be muted.
+	if len(enforcer.mutes) != 0 {
+		t.Errorf("lifting a suspension wrote muted_until: %v", enforcer.mutes)
+	}
+}
+
+// The same answer for a user who was not suspended, matching the mute DELETE:
+// the caller asked for a state and the state holds.
+func TestModerationHandler_LiftSuspension_AnswersTheSameForAnUnsuspendedUser(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.LiftSuspension(rec, liftSuspensionRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+}
+
+func TestModerationHandler_LiftSuspension_RejectsUnauthenticated(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = suspendedFor("target-1")
+	enforcer := newMockLiftEnforcer()
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftSuspension(rec, liftSuspensionRequest("target-1", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if len(enforcer.suspensions) != 0 {
+		t.Error("an unauthenticated caller lifted a suspension")
+	}
+}
+
+// The route group guards this, but the handler must not depend on that alone.
+// Self-release is the case worth pinning: a moderator must not be able to
+// overturn a colleague's decision about them.
+func TestModerationHandler_LiftSuspension_RejectsCallersWhoCannotModerate(t *testing.T) {
+	tests := []struct {
+		name       string
+		caller     *domain.User
+		targetID   string
+		wantStatus int
+	}{
+		{"a member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}, "target-1", http.StatusForbidden},
+		{"a member on themselves", &domain.User{ID: "target-1", Role: domain.RoleMember, IsActive: true}, "target-1", http.StatusBadRequest},
+		{"a moderator on themselves", &domain.User{ID: "target-1", Role: domain.RoleModerator, IsActive: true}, "target-1", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			users := newMockActionUserLookup()
+			users.users["target-1"] = suspendedFor("target-1")
+			enforcer := newMockLiftEnforcer()
+			h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+			rec := httptest.NewRecorder()
+			h.LiftSuspension(rec, liftSuspensionRequest(tt.targetID, tt.caller))
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d (body %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if len(enforcer.suspensions) != 0 {
+				t.Error("the suspension was lifted anyway")
+			}
+		})
+	}
+}
+
+func TestModerationHandler_LiftSuspension_UnknownUserIs404(t *testing.T) {
+	h := handler.NewModerationHandler(
+		newTestModerationActionServiceWithEnforcer(newMockActionUserLookup(), newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.LiftSuspension(rec, liftSuspensionRequest("nobody", testModerator()))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (body %s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+// A failed write is a suspension still in force, so it must not answer 204.
+func TestModerationHandler_LiftSuspension_WriteFailureIs500(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = suspendedFor("target-1")
+	enforcer := newMockLiftEnforcer()
+	enforcer.suspendErr = errors.New("db unavailable")
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, enforcer))
+
+	rec := httptest.NewRecorder()
+	h.LiftSuspension(rec, liftSuspensionRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// --- SuspensionStatus ---
+
+func suspensionStatusRequest(userID string, caller *domain.User) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/users/"+userID+"/suspension", nil)
+	if caller != nil {
+		req = withUser(req, caller)
+	}
+	return withChiURLParam(req, "user_id", userID)
+}
+
+func TestModerationHandler_SuspensionStatus_ReportsALiveSuspension(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = suspendedFor("target-1")
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.SuspensionStatus(rec, suspensionStatusRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		SuspendedUntil string `json:"suspended_until"`
+	}
+	decodeBody(t, rec, &resp)
+	want := fixedNow.Add(24 * time.Hour).Format(time.RFC3339)
+	if resp.SuspendedUntil != want {
+		t.Errorf("suspended_until = %q, want %q", resp.SuspendedUntil, want)
+	}
+}
+
+// The field's presence is the answer, exactly as for the mute: an unsuspended
+// user yields an object with no suspended_until rather than a null.
+func TestModerationHandler_SuspensionStatus_OmitsTheFieldWhenNotSuspended(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.SuspensionStatus(rec, suspensionStatusRequest("target-1", testModerator()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "suspended_until") {
+		t.Errorf("body = %s, want no suspended_until key", rec.Body.String())
+	}
+}
+
+func TestModerationHandler_SuspensionStatus_RejectsUnauthenticated(t *testing.T) {
+	h := handler.NewModerationHandler(
+		newTestModerationActionServiceWithEnforcer(newMockActionUserLookup(), newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.SuspensionStatus(rec, suspensionStatusRequest("target-1", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// suspended_until is moderation state kept off every user-facing response, so
+// the read that exposes it refuses anyone without the role that acts on it.
+func TestModerationHandler_SuspensionStatus_RefusesAMember(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = suspendedFor("target-1")
+	h := handler.NewModerationHandler(newTestModerationActionServiceWithEnforcer(users, newMockLiftEnforcer()))
+
+	rec := httptest.NewRecorder()
+	h.SuspensionStatus(rec, suspensionStatusRequest("target-1", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if strings.Contains(rec.Body.String(), fixedNow.Add(24 * time.Hour).Format(time.RFC3339)[:10]) {
+		t.Errorf("the refusal leaked the suspension expiry: %s", rec.Body.String())
+	}
+}
+
+// --- display names on the audit trail ---
+
+// The trail names two people, and a moderator reading it should not have to look
+// either id up by hand. The names ride along from the query's joins; the ids
+// stay, because the moderator views link to profiles by id.
+func TestModerationHandler_ListActions_CarriesDisplayNames(t *testing.T) {
+	actionRepo := newMockActionRepoH()
+	actionRepo.actionsByTarget = []*domain.ModerationAction{{
+		ID: "act-1", TargetUserID: "user-1", ModeratorID: "mod-1",
+		Action: domain.ActionWarn, Severity: 1, Reason: "spam", CreatedAt: fixedNow,
+		TargetDisplayName: "Alice", ModeratorDisplayName: "Mallory",
+	}}
+	h := handler.NewModerationHandler(newTestModerationActionService(
+		actionRepo, newMockActionUserLookup(), newMockPenaltyRepoH(), newMockPenaltyGraphH()))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/moderation/actions/user-1", nil)
+	req = withUser(req, testModerator())
+	req = withChiURLParam(req, "user_id", "user-1")
+	rec := httptest.NewRecorder()
+
+	h.ListActions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Actions []struct {
+			Action struct {
+				TargetUserID         string `json:"target_user_id"`
+				TargetDisplayName    string `json:"target_display_name"`
+				ModeratorID          string `json:"moderator_id"`
+				ModeratorDisplayName string `json:"moderator_display_name"`
+			} `json:"action"`
+		} `json:"actions"`
+	}
+	decodeBody(t, rec, &resp)
+	if len(resp.Actions) != 1 {
+		t.Fatalf("got %d actions, want 1", len(resp.Actions))
+	}
+	got := resp.Actions[0].Action
+	if got.TargetDisplayName != "Alice" {
+		t.Errorf("target_display_name = %q, want Alice", got.TargetDisplayName)
+	}
+	if got.ModeratorDisplayName != "Mallory" {
+		t.Errorf("moderator_display_name = %q, want Mallory", got.ModeratorDisplayName)
+	}
+	if got.TargetUserID != "user-1" || got.ModeratorID != "mod-1" {
+		t.Errorf("ids = %q/%q, want user-1/mod-1", got.TargetUserID, got.ModeratorID)
+	}
+}
+
+// The action a create echoes back carries no names: the create path knows both
+// people by id only, and two empty strings there would read as two nameless
+// members rather than as "not looked up".
+func TestModerationHandler_TakeAction_OmitsDisplayNames(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	h := handler.NewModerationHandler(newTestModerationActionService(
+		newMockActionRepoH(), users, newMockPenaltyRepoH(), newMockPenaltyGraphH()))
+
+	body := `{"target_user_id":"target-1","action_type":"warn","severity":1,"reason":"first warning"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/actions", strings.NewReader(body))
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.TakeAction(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "display_name") {
+		t.Errorf("body = %s, want no display name keys", rec.Body.String())
 	}
 }

@@ -566,3 +566,23 @@ func TestReportService_UpdateStatus_NotFound(t *testing.T) {
 		t.Fatalf("UpdateStatus() error = %v, want %v", err, ErrNotFound)
 	}
 }
+
+// The queue read joins the reporter by name, and the service passes the report
+// through untouched. A service that rebuilt domain.Report field by field would
+// drop the name and send the moderation queue back to raw ids.
+func TestReportService_ListQueue_CarriesTheReporterDisplayName(t *testing.T) {
+	repo, _, svc := newReportTestHarness()
+	repo.seedReport("r1", "reporter-1", "post-a", "pending", reportNow.Add(-time.Hour))
+	repo.reports[0].ReporterDisplayName = "Alice"
+
+	queue, err := svc.ListQueue(context.Background(), 10, 0)
+	if err != nil {
+		t.Fatalf("ListQueue() unexpected error: %v", err)
+	}
+	if len(queue) != 1 {
+		t.Fatalf("%d reports, want 1", len(queue))
+	}
+	if queue[0].ReporterDisplayName != "Alice" {
+		t.Errorf("reporter_display_name = %q, want Alice", queue[0].ReporterDisplayName)
+	}
+}
