@@ -36,8 +36,18 @@ func NewUserService(repo UserRepository, clock func() time.Time) *UserService {
 }
 
 // FindOrCreate looks up a user by Kratos identity ID. If no local user exists,
-// it auto-provisions one as pending with trust 50.0.
-func (s *UserService) FindOrCreate(ctx context.Context, kratosID string) (*domain.User, error) {
+// it auto-provisions one as pending with trust 50.0, seeded with displayName.
+//
+// displayName is the identity's `name` trait and applies to creation only. An
+// existing user is returned untouched, because by then the name is theirs to
+// manage: UpdateProfile lets them change it in-app, and re-applying the trait
+// on every request would silently undo that edit at the next page load.
+//
+// An empty displayName still creates the user. A town where nobody can sign in
+// because a trait is missing is far worse than one where a name has to be
+// filled in later, and callers with no identity to read (fixtures, tooling)
+// legitimately have nothing to pass.
+func (s *UserService) FindOrCreate(ctx context.Context, kratosID, displayName string) (*domain.User, error) {
 	user, err := s.repo.GetUserByKratosID(ctx, kratosID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("looking up user by kratos id: %w", err)
@@ -55,6 +65,7 @@ func (s *UserService) FindOrCreate(ctx context.Context, kratosID string) (*domai
 	user = &domain.User{
 		ID:               id.String(),
 		KratosIdentityID: kratosID,
+		DisplayName:      strings.TrimSpace(displayName),
 		TrustScore:       50.0,
 		Role:             domain.RolePending,
 		IsActive:         true,
@@ -72,8 +83,8 @@ func (s *UserService) FindOrCreate(ctx context.Context, kratosID string) (*domai
 
 // FindByKratosID satisfies the middleware.UserFinder interface by delegating
 // to FindOrCreate.
-func (s *UserService) FindByKratosID(ctx context.Context, kratosID string) (*domain.User, error) {
-	return s.FindOrCreate(ctx, kratosID)
+func (s *UserService) FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, error) {
+	return s.FindOrCreate(ctx, kratosID, displayName)
 }
 
 // GetByID retrieves a user by their primary ID.

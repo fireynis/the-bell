@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -509,10 +510,12 @@ func TestVouchService_Vouch_GraphAddEdgeError(t *testing.T) {
 	}
 }
 
-// The promotion that follows a vouch is best-effort: the vouch and its graph
-// edge are already committed, so losing the vouchee between the two reads must
-// still return the vouch rather than an error the caller cannot act on.
-func TestVouchService_Vouch_PromotionLookupFailureStillReturnsTheVouch(t *testing.T) {
+// Losing the vouchee between the two reads must surface. Vouching is the
+// primary way people join after bootstrap, so "the vouch worked but you are
+// still pending" is a state the caller has to be told about — the pair now
+// holds a vouch, which makes a retry a duplicate, so nobody can fix it later
+// without moderator help.
+func TestVouchService_Vouch_PromotionLookupFailureSurfacesAnError(t *testing.T) {
 	repo := newMockVouchRepo()
 	graph := newMockGraph()
 	users := newMockUserGetter()
@@ -522,17 +525,88 @@ func TestVouchService_Vouch_PromotionLookupFailureStillReturnsTheVouch(t *testin
 
 	svc := NewVouchService(repo, graph, users, fixedClock)
 	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
-	if err != nil {
-		t.Fatalf("Vouch() unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("Vouch() error = nil, want the promotion failure reported")
 	}
+	if !strings.Contains(err.Error(), "vouch recorded but") {
+		t.Errorf("error = %q, want it to say the vouch persisted", err)
+	}
+	// The sentinel must NOT survive: the handler maps ErrNotFound to 404 "not
+	// found", which would tell the voucher their vouchee does not exist and
+	// imply nothing was written — the opposite of what happened. Unwrapped, it
+	// falls through to 500, which is what a half-finished write deserves.
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound not propagated (it would render as a 404)", err)
+	}
+	if _, ok := users.updatedRoles["vouchee-1"]; ok {
+		t.Error("UpdateUserRole was called for a vouchee that could not be read")
+	}
+
+	// The contract the error names: the vouch itself is NOT rolled back. The
+	// error reports that the promotion did not run, so a caller retrying the
+	// vouch will hit the duplicate-pair check rather than double-writing.
 	if vouch == nil {
-		t.Fatal("Vouch() = nil, want the committed vouch")
+		t.Fatal("Vouch() = nil, want the committed vouch returned alongside the error")
+	}
+	if _, ok := repo.vouches[vouch.ID]; !ok {
+		t.Error("vouch missing from the repository; it should have committed")
 	}
 	if !graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
 		t.Error("graph edge missing; the vouch itself should have committed")
 	}
-	if _, ok := users.updatedRoles["vouchee-1"]; ok {
-		t.Error("UpdateUserRole was called for a vouchee that could not be read")
+}
+
+// The write that actually promotes is the one most likely to fail in
+// production, and discarding its error was the original bug: a vouch reported
+// success while the vouchee stayed pending forever.
+func TestVouchService_Vouch_PromotionUpdateFailureSurfacesAnError(t *testing.T) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = pendingUser("vouchee-1")
+	users.updateRoleErr = errors.New("db connection lost")
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err == nil {
+		t.Fatal("Vouch() error = nil, want the promotion failure reported")
+	}
+	if !strings.Contains(err.Error(), "promoting vouchee to member") {
+		t.Errorf("error = %q, want it to name the failed promotion", err)
+	}
+	if !strings.Contains(err.Error(), "db connection lost") {
+		t.Errorf("error = %q, want the underlying write failure wrapped", err)
+	}
+	if users.users["vouchee-1"].Role != domain.RolePending {
+		t.Errorf("vouchee role = %q, want it left %q", users.users["vouchee-1"].Role, domain.RolePending)
+	}
+
+	// Same contract as above: the vouch persisted, only the promotion did not.
+	if vouch == nil {
+		t.Fatal("Vouch() = nil, want the committed vouch returned alongside the error")
+	}
+	if _, ok := repo.vouches[vouch.ID]; !ok {
+		t.Error("vouch missing from the repository; it should have committed")
+	}
+	if !graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+		t.Error("graph edge missing; the vouch itself should have committed")
+	}
+}
+
+// A vouchee who is already a member never reaches UpdateUserRole, so a broken
+// role write must not turn an otherwise fine vouch into an error.
+func TestVouchService_Vouch_MemberVoucheeUnaffectedByRoleWriteFailure(t *testing.T) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	users.updateRoleErr = errors.New("db connection lost")
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
 	}
 }
 

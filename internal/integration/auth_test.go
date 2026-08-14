@@ -32,7 +32,7 @@ func TestKratosAuthValidSession(t *testing.T) {
 	userRepo := postgres.NewUserRepo(q)
 	userSvc := service.NewUserService(userRepo, nil)
 
-	user, err := userSvc.FindOrCreate(ctx, kratosID)
+	user, err := userSvc.FindOrCreate(ctx, kratosID, "")
 	if err != nil {
 		t.Fatalf("creating test user: %v", err)
 	}

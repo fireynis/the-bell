@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/httpjson"
@@ -25,9 +26,32 @@ func UserFromContext(ctx context.Context) (*domain.User, bool) {
 	return u, ok
 }
 
-// UserFinder looks up a local user by their Kratos identity ID.
+// UserFinder looks up a local user by their Kratos identity ID, auto-creating
+// one if this is the identity's first request.
+//
+// displayName carries the identity's `name` trait so a user provisioned here
+// starts with a name rather than a blank field. It is advisory: the finder
+// uses it only when creating, never to overwrite a name the user has since
+// edited in-app, and an empty string is a valid argument for callers that have
+// no identity to read it from.
 type UserFinder interface {
-	FindByKratosID(ctx context.Context, kratosID string) (*domain.User, error)
+	FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, error)
+}
+
+// identityDisplayName reads the `name` trait off a Kratos identity.
+//
+// Traits arrive as decoded JSON — the SDK types them as interface{} and the
+// identity schema is per-deployment — so every step here is a checked
+// assertion: a schema without `name`, or with a `name` that is not a string,
+// yields "" and a user with no display name, which is exactly what happened
+// before this trait was read at all. It is never an auth failure.
+func identityDisplayName(identity *kratos.Identity) string {
+	traits, ok := identity.GetTraits().(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	name, _ := traits["name"].(string)
+	return strings.TrimSpace(name)
 }
 
 // authOutcome says why a session lookup did not yield a local user, so that
@@ -64,7 +88,7 @@ func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFin
 	identity := session.GetIdentity()
 	kratosID := identity.GetId()
 
-	user, err := finder.FindByKratosID(r.Context(), kratosID)
+	user, err := finder.FindByKratosID(r.Context(), kratosID, identityDisplayName(&identity))
 	if err != nil {
 		logger.Error("auth: error looking up user", "kratos_id", kratosID, "error", err)
 		return nil, authLookupFailed

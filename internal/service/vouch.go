@@ -165,6 +165,9 @@ func (s *VouchService) enqueueVouchRecalc(ctx context.Context, voucherID, vouche
 // Vouch creates a new vouch from voucherID to voucheeID.
 // It enforces: no self-vouch, trust >= 60, no duplicate pair, daily limit of 3,
 // and no graph cycles. On success it also promotes a pending vouchee to member.
+//
+// A non-nil vouch with a non-nil error means the vouch persisted but the
+// promotion that follows it did not; see the promotion block below.
 func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (*domain.Vouch, error) {
 	if voucherID == voucheeID {
 		return nil, fmt.Errorf("%w: cannot vouch for yourself", ErrValidation)
@@ -232,12 +235,34 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	s.enqueueVouchRecalc(ctx, voucherID, voucheeID)
 
 	// Promote pending users to member on first vouch received.
+	//
+	// The vouch and its graph edge have already committed and are not rolled
+	// back, but a failure here must still reach the caller. This is the primary
+	// way people join after bootstrap, and a vouch that reports success while
+	// leaving the vouchee pending is unrecoverable from the outside: the pair
+	// now has a vouch, so vouching again is rejected as a duplicate, and the
+	// voucher has spent one of their three for the day on nothing. Silence
+	// turns a retryable write failure into a person who cannot join.
+	//
+	// The returned error says the promotion did not happen, not that the vouch
+	// was undone — the same contract as ApprovalService.Approve's bootstrap
+	// exit check, and the vouch is returned alongside it so a caller that wants
+	// to report what did persist can.
+	//
+	// Both failures deliberately drop the sentinel (%v, not %w). The sentinels'
+	// only consumer is the handler's status mapping, and a post-commit failure
+	// is not the caller's mistake: an ErrNotFound reaching it here would render
+	// as 404 "not found", telling the voucher their vouchee does not exist and
+	// implying nothing was written, when a vouch was. Unwrapped, these land in
+	// the default branch as 500, which is what a half-finished write is.
 	vouchee, err := s.users.GetUserByID(ctx, voucheeID)
 	if err != nil {
-		return vouch, nil // vouch succeeded; promotion is best-effort
+		return vouch, fmt.Errorf("vouch recorded but looking up vouchee for promotion: %v", err)
 	}
 	if vouchee.Role == domain.RolePending {
-		_ = s.users.UpdateUserRole(ctx, voucheeID, domain.RoleMember)
+		if err := s.users.UpdateUserRole(ctx, voucheeID, domain.RoleMember); err != nil {
+			return vouch, fmt.Errorf("vouch recorded but promoting vouchee to member: %v", err)
+		}
 	}
 
 	return vouch, nil

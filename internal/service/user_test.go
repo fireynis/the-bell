@@ -15,7 +15,7 @@ func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 	repo := newMockUserRepo()
 	svc := NewUserService(repo, func() time.Time { return now })
 
-	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123")
+	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada Lovelace")
 	if err != nil {
 		t.Fatalf("FindOrCreate() unexpected error: %v", err)
 	}
@@ -25,6 +25,9 @@ func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 	}
 	if user.KratosIdentityID != "kratos-abc-123" {
 		t.Errorf("KratosIdentityID = %q, want %q", user.KratosIdentityID, "kratos-abc-123")
+	}
+	if user.DisplayName != "Ada Lovelace" {
+		t.Errorf("DisplayName = %q, want %q (the identity's name trait)", user.DisplayName, "Ada Lovelace")
 	}
 	if user.TrustScore != 50.0 {
 		t.Errorf("TrustScore = %f, want 50.0", user.TrustScore)
@@ -63,13 +66,19 @@ func TestUserService_FindOrCreate_ExistingUser(t *testing.T) {
 	repo.users[existing.ID] = existing
 	repo.byKratos[existing.KratosIdentityID] = existing
 
-	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123")
+	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Trait Name")
 	if err != nil {
 		t.Fatalf("FindOrCreate() unexpected error: %v", err)
 	}
 
 	if user.ID != "user-existing" {
 		t.Errorf("ID = %q, want %q (should return existing user)", user.ID, "user-existing")
+	}
+	// The trait passed above differs from the stored name. The stored one wins:
+	// a user who renamed themselves in-app must not have that edit reverted by
+	// their next request.
+	if user.DisplayName != "Existing User" {
+		t.Errorf("DisplayName = %q, want %q (trait must not clobber an edited name)", user.DisplayName, "Existing User")
 	}
 	if user.TrustScore != 75.0 {
 		t.Errorf("TrustScore = %f, want 75.0 (should not reset)", user.TrustScore)
@@ -84,12 +93,90 @@ func TestUserService_FindOrCreate_ExistingUser(t *testing.T) {
 	}
 }
 
+// A missing or blank `name` trait must still produce an account. Sign-up is
+// the one flow where failing closed means the person cannot join at all, and a
+// blank display name is exactly the state every user was in before the trait
+// was threaded through — recoverable through UpdateProfile.
+func TestUserService_FindOrCreate_EmptyTraitStillCreatesTheUser(t *testing.T) {
+	tests := []struct {
+		name        string
+		displayName string
+	}{
+		{"absent trait", ""},
+		{"whitespace-only trait", "   \t\n "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockUserRepo()
+			svc := NewUserService(repo, nil)
+
+			user, err := svc.FindOrCreate(context.Background(), "kratos-nameless", tt.displayName)
+			if err != nil {
+				t.Fatalf("FindOrCreate() unexpected error: %v", err)
+			}
+			if user.DisplayName != "" {
+				t.Errorf("DisplayName = %q, want empty", user.DisplayName)
+			}
+			if user.Role != domain.RolePending {
+				t.Errorf("Role = %q, want %q", user.Role, domain.RolePending)
+			}
+			if _, ok := repo.users[user.ID]; !ok {
+				t.Error("user not stored in repository")
+			}
+		})
+	}
+}
+
+// The name is stored trimmed regardless of what the caller passes, so the
+// invariant does not depend on the middleware having tidied it up first.
+func TestUserService_FindOrCreate_TrimsTheTrait(t *testing.T) {
+	repo := newMockUserRepo()
+	svc := NewUserService(repo, nil)
+
+	user, err := svc.FindOrCreate(context.Background(), "kratos-padded", "  Grace Hopper\n")
+	if err != nil {
+		t.Fatalf("FindOrCreate() unexpected error: %v", err)
+	}
+	if user.DisplayName != "Grace Hopper" {
+		t.Errorf("DisplayName = %q, want %q", user.DisplayName, "Grace Hopper")
+	}
+}
+
+// Regression guard for the join path this fix exists for: a user created
+// through the middleware's entry point must reach the council's approval queue
+// with a name on it, not just a Kratos ID.
+func TestUserService_FindByKratosID_SeedsTheDisplayName(t *testing.T) {
+	repo := newMockUserRepo()
+	svc := NewUserService(repo, nil)
+
+	user, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Ada Lovelace")
+	if err != nil {
+		t.Fatalf("FindByKratosID() unexpected error: %v", err)
+	}
+	if user.DisplayName != "Ada Lovelace" {
+		t.Errorf("DisplayName = %q, want %q", user.DisplayName, "Ada Lovelace")
+	}
+
+	// Second request, same identity, a stale trait: the stored record wins.
+	again, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Someone Else")
+	if err != nil {
+		t.Fatalf("FindByKratosID() unexpected error: %v", err)
+	}
+	if again.DisplayName != "Ada Lovelace" {
+		t.Errorf("DisplayName = %q, want it unchanged at %q", again.DisplayName, "Ada Lovelace")
+	}
+	if len(repo.users) != 1 {
+		t.Errorf("repo has %d users, want 1", len(repo.users))
+	}
+}
+
 func TestUserService_FindOrCreate_LookupError(t *testing.T) {
 	repo := newMockUserRepo()
 	repo.getByKratosErr = errors.New("connection refused")
 	svc := NewUserService(repo, nil)
 
-	_, err := svc.FindOrCreate(context.Background(), "kratos-abc-123")
+	_, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada")
 	if err == nil {
 		t.Fatal("FindOrCreate() expected error, got nil")
 	}
@@ -103,7 +190,7 @@ func TestUserService_FindOrCreate_CreateError(t *testing.T) {
 	repo.createErr = errors.New("unique constraint violation")
 	svc := NewUserService(repo, nil)
 
-	_, err := svc.FindOrCreate(context.Background(), "kratos-new")
+	_, err := svc.FindOrCreate(context.Background(), "kratos-new", "Ada")
 	if err == nil {
 		t.Fatal("FindOrCreate() expected error, got nil")
 	}
@@ -118,7 +205,7 @@ func TestUserService_FindByKratosID(t *testing.T) {
 
 	// FindByKratosID delegates to FindOrCreate, so calling it for a new
 	// kratos ID should auto-provision a user.
-	user, err := svc.FindByKratosID(context.Background(), "kratos-new")
+	user, err := svc.FindByKratosID(context.Background(), "kratos-new", "Ada")
 	if err != nil {
 		t.Fatalf("FindByKratosID() unexpected error: %v", err)
 	}

@@ -14,13 +14,20 @@ import (
 	kratos "github.com/ory/kratos-client-go"
 )
 
-// mockUserFinder implements middleware.UserFinder for tests.
+// mockUserFinder implements middleware.UserFinder for tests. It records the
+// display name it was handed so tests can assert what the middleware pulled
+// out of the identity's traits.
 type mockUserFinder struct {
 	user *domain.User
 	err  error
+
+	gotKratosID    string
+	gotDisplayName string
 }
 
-func (m *mockUserFinder) FindByKratosID(_ context.Context, _ string) (*domain.User, error) {
+func (m *mockUserFinder) FindByKratosID(_ context.Context, kratosID, displayName string) (*domain.User, error) {
+	m.gotKratosID = kratosID
+	m.gotDisplayName = displayName
 	return m.user, m.err
 }
 
@@ -33,6 +40,13 @@ func newKratosClient(baseURL string) *kratos.APIClient {
 
 // kratosSessionJSON returns a minimal Kratos session response with the given identity ID.
 func kratosSessionJSON(identityID string) string {
+	return kratosSessionJSONWithTraits(identityID, `{}`)
+}
+
+// kratosSessionJSONWithTraits is the same, with the identity's traits object
+// supplied verbatim so a test can hand the middleware a schema it does not
+// expect as easily as the one it does.
+func kratosSessionJSONWithTraits(identityID, traits string) string {
 	return fmt.Sprintf(`{
 		"id": "session-id",
 		"active": true,
@@ -40,9 +54,9 @@ func kratosSessionJSON(identityID string) string {
 			"id": %q,
 			"schema_id": "default",
 			"schema_url": "http://kratos/schemas/default",
-			"traits": {}
+			"traits": %s
 		}
-	}`, identityID)
+	}`, identityID, traits)
 }
 
 func testLogger() *slog.Logger {
@@ -166,6 +180,115 @@ func TestKratosAuth_Success(t *testing.T) {
 	}
 	if gotUser.ID != "user-1" {
 		t.Errorf("user ID = %q, want %q", gotUser.ID, "user-1")
+	}
+}
+
+// --- name trait extraction ---
+
+// The trait has to reach the finder, because that is the only moment a
+// newly-provisioned user can be given a name. Miss it and the council's
+// approval queue lists hex ID fragments instead of people.
+func TestKratosAuth_PassesNameTraitToFinder(t *testing.T) {
+	tests := []struct {
+		name   string
+		traits string
+		want   string
+	}{
+		{
+			name:   "name trait is forwarded",
+			traits: `{"email":"ada@example.com","name":"Ada Lovelace"}`,
+			want:   "Ada Lovelace",
+		},
+		{
+			name:   "surrounding whitespace is trimmed",
+			traits: `{"name":"  Ada Lovelace \n"}`,
+			want:   "Ada Lovelace",
+		},
+		// The remaining cases are all shapes a differently-configured identity
+		// schema can produce. None of them may fail the request: an
+		// authenticated user with no display name is a cosmetic problem, being
+		// locked out is not.
+		{
+			name:   "absent name trait yields empty",
+			traits: `{"email":"ada@example.com"}`,
+			want:   "",
+		},
+		{
+			name:   "empty traits object yields empty",
+			traits: `{}`,
+			want:   "",
+		},
+		{
+			name:   "non-string name yields empty",
+			traits: `{"name":{"first":"Ada","last":"Lovelace"}}`,
+			want:   "",
+		},
+		{
+			name:   "non-object traits yield empty",
+			traits: `"ada@example.com"`,
+			want:   "",
+		},
+		{
+			name:   "null traits yield empty",
+			traits: `null`,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kratosServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, kratosSessionJSONWithTraits("kratos-789", tt.traits))
+			}))
+			defer kratosServer.Close()
+
+			finder := &mockUserFinder{user: &domain.User{
+				ID:               "user-1",
+				KratosIdentityID: "kratos-789",
+				Role:             domain.RoleMember,
+				IsActive:         true,
+			}}
+			handler := middleware.KratosAuth(newKratosClient(kratosServer.URL), finder, testLogger())(okHandler())
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Cookie", "ory_session=valid")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, http.StatusOK)
+			if finder.gotKratosID != "kratos-789" {
+				t.Errorf("kratos id = %q, want %q", finder.gotKratosID, "kratos-789")
+			}
+			if finder.gotDisplayName != tt.want {
+				t.Errorf("display name = %q, want %q", finder.gotDisplayName, tt.want)
+			}
+		})
+	}
+}
+
+// OptionalAuth shares resolveUser with KratosAuth, so the trait must arrive on
+// that path too — a visitor's first request can land on a public page.
+func TestOptionalAuth_PassesNameTraitToFinder(t *testing.T) {
+	validSession := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, kratosSessionJSONWithTraits("kratos-456", `{"name":"Grace Hopper"}`))
+	})
+	finder := &mockUserFinder{user: &domain.User{
+		ID:               "user-1",
+		KratosIdentityID: "kratos-456",
+		Role:             domain.RoleMember,
+		IsActive:         true,
+	}}
+
+	rec, gotUser := optionalAuthCase(t, validSession, finder, "ory_session=valid")
+
+	assertStatus(t, rec, http.StatusOK)
+	if gotUser == nil {
+		t.Fatal("expected the signed-in user in context, got none")
+	}
+	if finder.gotDisplayName != "Grace Hopper" {
+		t.Errorf("display name = %q, want %q", finder.gotDisplayName, "Grace Hopper")
 	}
 }
 
