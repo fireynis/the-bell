@@ -59,6 +59,18 @@ func (c *FeedCache) GetFeed(ctx context.Context, cursor string, limit int) ([]*d
 		return c.repo.ListPosts(ctx, cursor, limit)
 	}
 
+	// A limit beyond what the cache is allowed to hold can never be satisfied
+	// from it: a full sorted set would still be a short page. Nothing asks for
+	// this today (the handler caps at feedMaxLen), but serving it from the
+	// cache would truncate the feed the moment that cap moved.
+	if limit > feedMaxLen {
+		return c.repo.ListPosts(ctx, "", limit)
+	}
+
+	// A non-empty sorted set is authoritative for a first page of at most
+	// feedMaxLen: only warmCache creates the key, and it writes the newest
+	// feedMaxLen posts straight from the source of truth. See
+	// InvalidateOnCreate for why appends must never create it.
 	posts, err := c.getFromRedis(ctx, limit)
 	if err == nil && len(posts) > 0 {
 		return posts, nil
@@ -96,8 +108,37 @@ func (c *FeedCache) warmCacheOnce(ctx context.Context) {
 	}()
 }
 
+// appendPostScript adds one post to an *existing* feed sorted set, trims it to
+// the newest feedMaxLen entries and refreshes the TTL. It does nothing at all
+// when the key is absent — see InvalidateOnCreate.
+//
+// The existence check has to happen inside the script rather than as a separate
+// EXISTS: between two round trips the key can expire, and losing that race
+// recreates exactly the single-member feed this guard exists to prevent.
+//
+// KEYS[1] feed key. ARGV: score, member, trim bound, TTL in seconds.
+var appendPostScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 0 then
+	return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+return 1
+`)
+
 // InvalidateOnCreate adds the new post to the sorted set and trims it to
 // feedMaxLen entries, keeping the cache fresh without a full rebuild.
+//
+// It appends only to a cache that is already warm, and never creates the key.
+// An append to a missing key was the one way the feed could hold a set of posts
+// that was neither the newest feedMaxLen nor the whole feed: a clear
+// (InvalidateOnUpdate, InvalidateOnDelete, or the TTL) followed by one post
+// creation left feed:latest holding that single post with a fresh 60s TTL, and
+// GetFeed cannot distinguish it from a town that genuinely has one post — so it
+// served a one-post feed, hasMore:false and all, until the TTL ran out. Skipping
+// the append instead costs nothing: the key's absence is already the signal for
+// the next read to rebuild from Postgres, which picks up this post anyway.
 func (c *FeedCache) InvalidateOnCreate(ctx context.Context, post *domain.Post) {
 	data, err := json.Marshal(post)
 	if err != nil {
@@ -105,21 +146,13 @@ func (c *FeedCache) InvalidateOnCreate(ctx context.Context, post *domain.Post) {
 		return
 	}
 
-	pipe := c.rdb.Pipeline()
-
-	// Score = Unix timestamp in seconds (float64 for sub-second if needed).
-	score := float64(post.CreatedAt.UnixMilli())
-	pipe.ZAdd(ctx, feedKey, redis.Z{Score: score, Member: string(data)})
-
-	// Trim to keep only the latest feedMaxLen entries (highest scores).
-	// ZRemRangeByRank removes by ascending rank, so 0..(-(feedMaxLen+1))
-	// removes everything except the top feedMaxLen.
-	pipe.ZRemRangeByRank(ctx, feedKey, 0, int64(-feedMaxLen-1))
-
-	// Refresh TTL
-	pipe.Expire(ctx, feedKey, feedTTL)
-
-	if _, err := pipe.Exec(ctx); err != nil {
+	// Score = Unix timestamp in milliseconds, matching warmCache. The trim
+	// removes by ascending rank, so 0..(-(feedMaxLen+1)) drops everything
+	// except the top (newest) feedMaxLen entries.
+	err = appendPostScript.Run(ctx, c.rdb, []string{feedKey},
+		post.CreatedAt.UnixMilli(), string(data), -feedMaxLen-1, int64(feedTTL.Seconds()),
+	).Err()
+	if err != nil {
 		c.logger.Error("feed cache: invalidate on create", "error", err)
 	}
 }
@@ -179,7 +212,12 @@ func (c *FeedCache) warmCache(ctx context.Context) {
 		})
 	}
 
-	pipe := c.rdb.Pipeline()
+	// MULTI/EXEC, not a plain pipeline: a plain pipeline leaves the key absent
+	// between the Del and the ZAdd, and a post created in that gap would be
+	// dropped by InvalidateOnCreate, which now declines to write to a missing
+	// key. Making the swap atomic means the key is either the old feed or the
+	// new one, never nothing.
+	pipe := c.rdb.TxPipeline()
 	pipe.Del(ctx, feedKey)
 	pipe.ZAdd(ctx, feedKey, members...)
 	pipe.Expire(ctx, feedKey, feedTTL)

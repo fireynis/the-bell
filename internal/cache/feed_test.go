@@ -223,6 +223,103 @@ func TestInvalidateOnCreate_AddsToCache(t *testing.T) {
 	}
 }
 
+// A full clear followed by a single create used to poison the feed: the create
+// re-made feed:latest holding exactly one member with a fresh TTL, and the next
+// first-page read served that one post as if it were the whole town's feed —
+// short enough that the handler also reported hasMore:false. The cache must
+// only be authoritative when it was built from the source of truth.
+func TestGetFeed_CreateAfterClearDoesNotTruncateFeed(t *testing.T) {
+	const limit = 20
+	ctx := context.Background()
+	repo := &stubPostRepo{posts: makePosts(51)}
+	fc, rdb := newTestFeedCache(t, repo)
+
+	// Warm the cache, then clear it the way an edit or a delete does.
+	_, _ = fc.GetFeed(ctx, "", limit)
+	waitForWarm(t, rdb)
+	fc.InvalidateOnDelete(ctx, postID(0))
+
+	// One post is created before any read has rebuilt the cache.
+	newPost := &domain.Post{
+		ID:        "post-new",
+		AuthorID:  "user-1",
+		Body:      "brand new",
+		Status:    domain.PostVisible,
+		CreatedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
+	}
+	repo.posts = append(repo.posts, newPost)
+	fc.InvalidateOnCreate(ctx, newPost)
+
+	posts, err := fc.GetFeed(ctx, "", limit)
+	if err != nil {
+		t.Fatalf("GetFeed() error = %v", err)
+	}
+	if len(posts) != limit {
+		t.Fatalf("GetFeed() returned %d posts, want %d (the cache served a partial feed as the whole feed)", len(posts), limit)
+	}
+	if posts[0].ID != newPost.ID {
+		t.Errorf("first post = %q, want %q", posts[0].ID, newPost.ID)
+	}
+}
+
+// InvalidateOnCreate must never be the command that creates feed:latest: a key
+// built by an append holds one post but claims to be the feed. Only the warm
+// path, which reads from the source of truth, may create it.
+func TestInvalidateOnCreate_DoesNotSeedAnAbsentCache(t *testing.T) {
+	ctx := context.Background()
+	repo := &stubPostRepo{posts: makePosts(3)}
+	fc, rdb := newTestFeedCache(t, repo)
+
+	newPost := &domain.Post{
+		ID:        "post-new",
+		AuthorID:  "user-1",
+		Body:      "brand new",
+		Status:    domain.PostVisible,
+		CreatedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
+	}
+	fc.InvalidateOnCreate(ctx, newPost)
+
+	exists, err := rdb.Exists(ctx, feedKey).Result()
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists != 0 {
+		t.Errorf("InvalidateOnCreate created %s on a cold cache; only a full rebuild may create it", feedKey)
+	}
+}
+
+// Appending to a warm cache must still push the expiry out; the whole point of
+// serving a new post from Redis is lost if the key dies moments later.
+func TestInvalidateOnCreate_RefreshesTTLOfAWarmCache(t *testing.T) {
+	ctx := context.Background()
+	repo := &stubPostRepo{posts: makePosts(3)}
+	fc, rdb := newTestFeedCache(t, repo)
+
+	_, _ = fc.GetFeed(ctx, "", 10)
+	waitForWarm(t, rdb)
+
+	// Age the key so a refresh is visible.
+	if err := rdb.Expire(ctx, feedKey, 2*time.Second).Err(); err != nil {
+		t.Fatalf("Expire: %v", err)
+	}
+
+	fc.InvalidateOnCreate(ctx, &domain.Post{
+		ID:        "post-new",
+		AuthorID:  "user-1",
+		Body:      "brand new",
+		Status:    domain.PostVisible,
+		CreatedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
+	})
+
+	ttl, err := rdb.TTL(ctx, feedKey).Result()
+	if err != nil {
+		t.Fatalf("TTL: %v", err)
+	}
+	if ttl <= 2*time.Second || ttl > feedTTL {
+		t.Errorf("feed key TTL after create = %v, want (2s, %v]", ttl, feedTTL)
+	}
+}
+
 func TestInvalidateOnDelete_ClearsCache(t *testing.T) {
 	repo := &stubPostRepo{posts: makePosts(3)}
 	fc, rdb := newTestFeedCache(t, repo)
