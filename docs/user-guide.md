@@ -173,11 +173,12 @@ Moderators and council members can access the moderation queue, which shows all 
 
 **Review Reports**: Mark reports as `reviewed` or `dismissed`.
 
-**Check and Lift Mutes**: See whether a member is currently muted and when the
-mute ends, and end it early if it was applied in error or the member appeals
-successfully. Check the mute rather than reading the audit trail: a past mute
-entry keeps its original end time forever and will keep suggesting a mute that
-may already be over. A moderator cannot lift a mute on themselves.
+**Check and Lift Mutes or Suspensions**: See whether a member is currently
+muted or suspended and when the restriction ends, and end it early if it was
+applied in error or the member appeals successfully. Check the live status
+rather than reading the audit trail: a past mute or suspension entry keeps its
+original end time forever and will keep suggesting a restriction that may
+already be over. A moderator cannot lift a mute or suspension on themselves.
 
 **Remove a Post**: Take a single post down with a reason. The post stops
 appearing in the feed and on its author's profile, exactly as an author's own
@@ -200,7 +201,7 @@ that is a moderation action.
 | Warn (minor) | 1 | -5 points | 90 days | No immediate restriction |
 | Warn (moderate) | 2 | -10 points | 180 days | No immediate restriction |
 | Mute | 3 | -25 points | 270 days | Cannot post until the mute expires. Trust score is not changed |
-| Suspend | 4 | -40 points | 365 days | Account deactivated |
+| Suspend | 4 | -40 points | 365 days | Account inactive until the suspension expires |
 | Ban | 5 | -100 points | Permanent | Role set to `banned`, trust set to 0 |
 
 A mute lasts exactly as long as the moderator set it for, and it is recorded
@@ -225,6 +226,15 @@ post again; your profile is the place that tells you whether a mute is still in
 force.
 
 Moderators cannot lift their own mutes.
+
+**Lifting a suspension early.** Suspensions work the same way: they end on
+their own at the time the moderator set, and a moderator or council member can
+end one sooner. Like a lifted mute, an early release costs nobody trust,
+propagates nothing, and is not filed as a moderation action. A suspension is
+less visible to you than a mute while it runs — your account simply reads as
+inactive — so if one is lifted early, that release appears on your own profile
+beside any lifted mutes. Nobody else sees it, and moderators cannot lift their
+own suspensions.
 
 ### Trust Penalty Propagation
 

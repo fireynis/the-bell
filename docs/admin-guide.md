@@ -149,6 +149,7 @@ All configuration is via environment variables. The Bell binary reads them at st
 | `PORT` | No | `8080` | HTTP listen port |
 | `REDIS_URL` | No | (empty) | Redis connection string. When set, enables feed caching, trust score background worker, and per-user rate limiting. Example: `redis://redis-bell:6379` |
 | `IMAGE_STORAGE_PATH` | No | `/storage/the-bell/images` | Filesystem path for uploaded images |
+| `TRUST_SWEEP_INTERVAL` | No | `24h` | How often the in-process trust worker recalculates every active user. A **Go duration** (`24h`, `12h`, `90m`) -- not a number of seconds, unlike `CHECK_ROLES_INTERVAL_SECONDS` below. Zero or negative is refused at startup. Requires `REDIS_URL`; without Redis there is no worker and `bell check-roles` does the recalculating instead. See [Trust recalculation](#trust-recalculation) |
 | `TOWN_NAME` | No | `My Town` | Display name for the municipality |
 | `BELL_ENV` | No | `production` | Only `dev` or `development` (case-insensitive) select development mode. **Anything else — including unset, empty, or a typo — means production.** In development mode The Bell strips the `Secure` attribute from Kratos session cookies as they pass back through the `/.ory/*` proxy, so login works over plain-HTTP localhost. Never set this on a deployment reachable over the network: it would hand the session cookie to any downgrade attacker |
 
@@ -217,7 +218,7 @@ be noise rather than information.
 
 ## CLI Commands
 
-The `bell` binary provides three commands:
+The `bell` binary provides four commands:
 
 ### `bell serve`
 
@@ -263,14 +264,42 @@ Stretch the interval to a week and penalties linger roughly seven times longer
 than the moderator who applied them intended. Daily is the right cadence, and it
 is not only about promotions.
 
-With Redis, the in-process trust worker sweeps every active user every 24 hours
-on its own, so `check-roles` usually finds the score already current.
+With Redis, the in-process trust worker sweeps every active user on its own, so
+`check-roles` usually finds the score already current. See
+[Trust recalculation](#trust-recalculation) for that sweep's interval.
 
 Run a pass immediately:
 
 ```bash
 docker compose exec bell ./bell check-roles
 ```
+
+### `bell backfill-display-names`
+
+Fills in display names for users who were provisioned before The Bell started
+reading the Kratos `name` trait at sign-in. Those accounts have an empty
+display name and no way to acquire one except the user editing their own
+profile — which matters most in the council's approval queue, where a pending
+user shows up as an ID and nothing else.
+
+```bash
+docker compose exec bell ./bell backfill-display-names --dry-run
+docker compose exec bell ./bell backfill-display-names
+```
+
+Run it once after upgrading. It is safe to re-run: a user who already has a
+display name is skipped, never overwritten — including a name they chose
+themselves in-app, which always wins over the trait. `--dry-run` reports the
+same counts and writes nothing.
+
+The command reports users scanned, updated, already named, no name trait, and
+errors. A user whose identity Kratos will not return, or whose write fails, is
+logged and counted but does not end the run; the exit code is non-zero if any
+user failed, so a scripted run can tell. Kratos allows a longer name than The
+Bell does (100 characters), so an over-long trait is truncated and the
+truncation noted in the output.
+
+There is no sidecar for this one — it is a one-time repair, not a schedule.
 
 Check the schedule is alive:
 
@@ -283,9 +312,57 @@ Promotion criteria (member to moderator):
 - Member for >= 90 days
 - At least 2 vouches from moderators or council members
 
-Demotion criteria:
-- Trust score < 70 for 30 consecutive days
-- Moderator demoted to member, member demoted to pending
+Demotion criteria -- the threshold depends on the role, and demotion needs
+**30 consecutive days** below it:
+
+| Role | Threshold | Demoted to |
+|------|-----------|------------|
+| Moderator | Trust < 70 | member |
+| Member | Trust < 35 | pending |
+| Council | exempt | -- |
+
+Recovering above the threshold at any point resets the 30-day clock, so one bad
+month cannot cost someone a role.
+
+The two numbers are far apart because they answer different questions. 70 sits
+15 points under the 85 promotion bar: a moderator is expected to keep clearly
+above-average standing, and an engaged member in good standing scores around 68,
+so a moderator below 70 has slipped under the people they moderate. 35 is the
+line between a quiet resident and collapsed trust: a member who reads more than
+they post, has two vouches and has never been sanctioned scores about 50, and
+one serving a fresh suspension still scores about 38. Crossing 35 takes more
+than 50 points of live penalty -- typically the fallout of having vouched for
+someone since banned, on top of a sanction of their own.
+
+These thresholds were a flat 70 for every role, which was survivable only while
+scores were rarely recalculated. Once the sweep and `check-roles` began
+converging scores on their real values, a flat 70 would have demoted most
+healthy members within the 30-day window, and would have cascaded a demoted
+moderator straight on to pending. The derivation, with the arithmetic, is in
+`internal/domain/user.go` above `MemberDemotionTrustThreshold`.
+
+### Trust recalculation
+
+A user's trust score is recomputed from tenure, activity, vouches and active
+moderation penalties. Two things trigger it:
+
+- **The trust worker**, in-process and Redis-backed. It recalculates a single
+  user whenever something happens to them (a moderation penalty, a vouch
+  change), and sweeps *every* active user on a fixed interval so that penalties
+  decay and tenure accrues for people nothing is happening to. It sweeps once at
+  startup and then every `TRUST_SWEEP_INTERVAL` -- default `24h`, expressed as a
+  Go duration.
+- **`bell check-roles`**, which refreshes each user's score before judging it.
+
+Daily suits inputs that move with the calendar: the shortest penalty decay
+window is 90 days and tenure resolves to a day, so shortening the interval
+mostly buys work. Lengthening it is the change with consequences -- penalties
+linger past the point the moderator who applied them intended, and role checks
+judge scores that are up to one interval stale.
+
+Without `REDIS_URL` there is no worker at all, and `check-roles` is the only
+thing that recalculates anything; `TRUST_SWEEP_INTERVAL` has no effect on such a
+deployment.
 
 If you would rather schedule it on the host, delete the sidecar service first —
 two schedulers would run every check twice:
