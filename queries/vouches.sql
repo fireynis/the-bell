@@ -7,7 +7,32 @@ RETURNING *;
 SELECT * FROM vouches WHERE id = $1;
 
 -- name: GetVouchByPair :one
+-- Deliberately unfiltered by status. A pair has at most one row —
+-- UNIQUE(voucher_id, vouchee_id) — so this is the whole history of the pair,
+-- and the service needs the revoked row as much as the active one: an active
+-- one is a duplicate to refuse, a revoked one is the row ReactivateVouch
+-- brings back.
 SELECT * FROM vouches WHERE voucher_id = $1 AND vouchee_id = $2;
+
+-- name: ReactivateVouch :one
+-- Vouching again for someone you previously revoked reuses that row rather
+-- than inserting a second one, because the unique constraint on the pair means
+-- there can never be a second one to insert.
+--
+-- created_at moves to the new vouch's timestamp so the row reads as the
+-- endorsement it now is: the daily limit counts from created_at, so leaving it
+-- at the original date would let a member revoke and re-vouch without ever
+-- spending an allowance. revoked_at is cleared for the same reason — a
+-- revocation that has been undone must leave no trace that ListActiveVouches*
+-- or the trust calculation could still read.
+--
+-- The status guard makes this a no-op on an already-active row, so a caller
+-- that reached here on a live vouch gets no rows rather than silently
+-- refreshing somebody's vouch date.
+UPDATE vouches
+SET status = 'active', created_at = $2, revoked_at = NULL
+WHERE id = $1 AND status = 'revoked'
+RETURNING *;
 
 -- name: ListActiveVouchesByVouchee :many
 -- Both parties are joined by name because a vouch list is about people, and the

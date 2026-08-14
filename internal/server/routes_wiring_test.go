@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,6 +84,9 @@ func (stubVouchRepo) ListActiveVouchesByVoucher(context.Context, string) ([]*dom
 	return nil, nil
 }
 func (stubVouchRepo) RevokeVouch(context.Context, string) error { return nil }
+func (stubVouchRepo) ReactivateVouch(context.Context, string, time.Time) error {
+	return nil
+}
 
 type stubConfigRepo struct{}
 
@@ -812,6 +816,68 @@ func TestVouchRoutesCarryTwoDifferentGuards(t *testing.T) {
 				t.Errorf("%s %s status = %d for role %q, want %d", tt.method, tt.path, rec.Code, tt.viewer.Role, http.StatusForbidden)
 			}
 		})
+	}
+}
+
+// Vouching and revoking must not share one rate-limit bucket. They did: both
+// carried the "vouches" spec, so a member who spent their three vouches for the
+// day could not withdraw one for the next 24 hours. Revoking is the
+// abuse-response path — it is what you do on realising you vouched for the
+// wrong person — and ordinary vouching must never be able to close it.
+//
+// The limiter keys on the endpoint name, so this drives both routes through a
+// counting client and checks the two claims that matter: the keys are
+// different, and exhausting one budget does not spend the other.
+func TestVouchAndRevokeDoNotShareARateLimitBucket(t *testing.T) {
+	member := &domain.User{ID: "m1", Role: domain.RoleMember, IsActive: true}
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	counts := &countingRateLimiterClient{}
+
+	srv := New(config.Config{Port: 0, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithUserService(service.NewUserService(stubUserRepo{}, nil)),
+		WithVouchService(service.NewVouchService(stubVouchRepo{}, nil, nil, nil)),
+		WithApprovalService(service.NewApprovalService(nil, nil)),
+		WithRateLimiter(middleware.NewRateLimiter(counts, logger)),
+		WithAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(middleware.WithUser(r.Context(), member)))
+			})
+		}),
+	)
+	h := srv.Handler()
+
+	// Vouch until the budget is provably gone. The bound is generous rather
+	// than equal to the limit, so the test does not have to restate it.
+	const attempts = 25
+	var exhausted bool
+	for range attempts {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/vouches/", strings.NewReader(`{}`)))
+		if rec.Code == http.StatusTooManyRequests {
+			exhausted = true
+			break
+		}
+	}
+	if !exhausted {
+		t.Fatalf("POST /api/v1/vouches was never rate limited in %d attempts; "+
+			"the limiter is not installed and this test proves nothing", attempts)
+	}
+
+	// The whole point: with the vouching budget spent, a revoke still goes
+	// through. The stubbed service makes the eventual status uninteresting —
+	// what matters is that it is not a 429.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/v1/vouches/v1", nil))
+	if rec.Code == http.StatusTooManyRequests {
+		t.Error("DELETE /api/v1/vouches/{id} was rate limited by the vouching budget; " +
+			"a member who used their vouches cannot revoke one")
+	}
+
+	// And directly: two buckets, not one.
+	counts.mu.Lock()
+	defer counts.mu.Unlock()
+	if len(counts.counts) != 2 {
+		t.Errorf("limiter keys = %v, want exactly two distinct buckets", slices.Sorted(maps.Keys(counts.counts)))
 	}
 }
 

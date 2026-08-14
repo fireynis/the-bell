@@ -44,6 +44,7 @@ type VouchRepository interface {
 	ListActiveVouchesByVouchee(ctx context.Context, voucheeID string) ([]*domain.Vouch, error)
 	ListActiveVouchesByVoucher(ctx context.Context, voucherID string) ([]*domain.Vouch, error)
 	RevokeVouch(ctx context.Context, id string) error
+	ReactivateVouch(ctx context.Context, id string, createdAt time.Time) error
 }
 
 // GraphQuerier abstracts trust-graph edge operations.
@@ -162,9 +163,25 @@ func (s *VouchService) enqueueVouchRecalc(ctx context.Context, voucherID, vouche
 	}
 }
 
-// Vouch creates a new vouch from voucherID to voucheeID.
-// It enforces: no self-vouch, trust >= 60, no duplicate pair, daily limit of 3,
-// and no graph cycles. On success it also promotes a pending vouchee to member.
+// Vouch records a vouch from voucherID to voucheeID.
+// It enforces: no self-vouch, trust >= 60, no live vouch for the pair, daily
+// limit of 3, and no graph cycles. On success it also promotes a pending
+// vouchee to member.
+//
+// A pair whose vouch was revoked can vouch again. The row is reactivated rather
+// than replaced, because UNIQUE(voucher_id, vouchee_id) means a second row for
+// the pair cannot exist — before this, a revoked row matched the duplicate
+// check and made the rejection permanent, while the revoke dialog told the
+// member they could vouch again later. Reactivation runs through every gate a
+// first vouch does: the trust floor, the daily limit, cycle detection, and the
+// pending-vouchee promotion below. The only difference is which write it ends
+// in.
+//
+// Re-vouching does NOT refund the revocation penalty the voucher paid. The
+// penalty prices the act of flip-flopping, not the state of the graph — which
+// is exactly what vouching again is — and the daily limit and the penalty
+// together are what make a vouch/revoke loop cost something. Refunding it would
+// make the loop free.
 //
 // A non-nil vouch with a non-nil error means the vouch persisted but the
 // promotion that follows it did not; see the promotion block below.
@@ -190,7 +207,12 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("checking existing vouch: %w", err)
 	}
-	if existing != nil {
+	// Only a revoked vouch may be given again. Anything else that already
+	// exists is a live endorsement, and endorsing someone twice is the
+	// duplicate this has always refused. Testing for "revoked" rather than
+	// "not active" is the fail-safe direction: a status added later is treated
+	// as live until somebody decides otherwise.
+	if existing != nil && existing.Status != domain.VouchRevoked {
 		return nil, fmt.Errorf("%w: vouch already exists for this pair", ErrValidation)
 	}
 
@@ -211,23 +233,42 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 		return nil, fmt.Errorf("%w: vouch would create a cycle in the trust graph", ErrValidation)
 	}
 
-	id, err := uuid.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("generating vouch id: %w", err)
-	}
-
 	vouch := &domain.Vouch{
-		ID:        id.String(),
 		VoucherID: voucherID,
 		VoucheeID: voucheeID,
 		Status:    domain.VouchActive,
 		CreatedAt: now,
 	}
 
-	if err := s.vouches.CreateVouch(ctx, vouch); err != nil {
-		return nil, fmt.Errorf("creating vouch: %w", err)
+	if existing != nil {
+		vouch.ID = existing.ID
+		if err := s.vouches.ReactivateVouch(ctx, existing.ID, now); err != nil {
+			// The UPDATE matching nothing means the row is no longer revoked:
+			// a concurrent request for the same pair reactivated it between
+			// the read above and this write. That is the create path's race
+			// seen from the other side — there, the unique constraint fires
+			// and the adapter maps it to a duplicate — so it gets the same
+			// answer, rather than a 404 telling the voucher a vouch they can
+			// see does not exist.
+			if errors.Is(err, ErrNotFound) {
+				return nil, fmt.Errorf("%w: vouch already exists for this pair", ErrValidation)
+			}
+			return nil, fmt.Errorf("reactivating vouch: %w", err)
+		}
+	} else {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return nil, fmt.Errorf("generating vouch id: %w", err)
+		}
+		vouch.ID = id.String()
+		if err := s.vouches.CreateVouch(ctx, vouch); err != nil {
+			return nil, fmt.Errorf("creating vouch: %w", err)
+		}
 	}
 
+	// Restores the edge Revoke deleted, on the reactivation path. AddVouchEdge
+	// MERGEs, so it is the same call either way — the graph and the table stay
+	// in agreement without this branch having to know which one it is on.
 	if err := s.graph.AddVouchEdge(ctx, voucherID, voucheeID); err != nil {
 		return nil, fmt.Errorf("adding graph edge: %w", err)
 	}

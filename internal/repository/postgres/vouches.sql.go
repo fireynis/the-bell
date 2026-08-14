@@ -130,6 +130,11 @@ type GetVouchByPairParams struct {
 	VoucheeID string `json:"vouchee_id"`
 }
 
+// Deliberately unfiltered by status. A pair has at most one row —
+// UNIQUE(voucher_id, vouchee_id) — so this is the whole history of the pair,
+// and the service needs the revoked row as much as the active one: an active
+// one is a duplicate to refuse, a revoked one is the row ReactivateVouch
+// brings back.
 func (q *Queries) GetVouchByPair(ctx context.Context, arg GetVouchByPairParams) (Vouch, error) {
 	row := q.db.QueryRow(ctx, getVouchByPair, arg.VoucherID, arg.VoucheeID)
 	var i Vouch
@@ -241,6 +246,46 @@ func (q *Queries) ListActiveVouchesByVoucher(ctx context.Context, voucherID stri
 		return nil, err
 	}
 	return items, nil
+}
+
+const reactivateVouch = `-- name: ReactivateVouch :one
+UPDATE vouches
+SET status = 'active', created_at = $2, revoked_at = NULL
+WHERE id = $1 AND status = 'revoked'
+RETURNING id, voucher_id, vouchee_id, status, created_at, revoked_at
+`
+
+type ReactivateVouchParams struct {
+	ID        string             `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Vouching again for someone you previously revoked reuses that row rather
+// than inserting a second one, because the unique constraint on the pair means
+// there can never be a second one to insert.
+//
+// created_at moves to the new vouch's timestamp so the row reads as the
+// endorsement it now is: the daily limit counts from created_at, so leaving it
+// at the original date would let a member revoke and re-vouch without ever
+// spending an allowance. revoked_at is cleared for the same reason — a
+// revocation that has been undone must leave no trace that ListActiveVouches*
+// or the trust calculation could still read.
+//
+// The status guard makes this a no-op on an already-active row, so a caller
+// that reached here on a live vouch gets no rows rather than silently
+// refreshing somebody's vouch date.
+func (q *Queries) ReactivateVouch(ctx context.Context, arg ReactivateVouchParams) (Vouch, error) {
+	row := q.db.QueryRow(ctx, reactivateVouch, arg.ID, arg.CreatedAt)
+	var i Vouch
+	err := row.Scan(
+		&i.ID,
+		&i.VoucherID,
+		&i.VoucheeID,
+		&i.Status,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
 }
 
 const revokeVouch = `-- name: RevokeVouch :one

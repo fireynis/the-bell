@@ -72,8 +72,16 @@ Rate limiting requires Redis (`REDIS_URL` must be set). Limits are per-user, per
 | `POST /api/v1/posts` | 10 requests | 1 hour | user |
 | `POST /api/v1/posts/{postId}/reactions` | 60 requests | 1 minute | user |
 | `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour | user |
-| `POST /api/v1/vouches` and `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours | user |
+| `POST /api/v1/vouches` | 3 requests | 24 hours | user |
+| `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours | user |
 | Kratos registration flows (see below) | 10 requests | 1 hour | client IP |
+
+Vouching and revoking have the **same limit but separate budgets**, and the
+separation is the point. They shared one bucket until a member who had spent
+their three vouches for the day found they could not withdraw one for the next
+24 hours — revoking is the abuse-response path, what you do on realising you
+vouched for the wrong person, so ordinary vouching must not be able to close it.
+Spending either budget leaves the other untouched.
 
 ### Registration
 
@@ -1514,7 +1522,8 @@ with `validation error:` — the body is `{"error": "validation error: cannot
 vouch for yourself"}` and so on for:
 
 - `cannot vouch for yourself`
-- `vouch already exists for this pair`
+- `vouch already exists for this pair` — only an **active** vouch conflicts; see
+  re-vouching below
 - `daily vouch limit (3) reached`
 - `vouch would create a cycle in the trust graph`
 
@@ -1528,8 +1537,20 @@ underlying reason is deliberately not disclosed.
 `{"error": "not found"}`.
 
 If the vouchee is `pending`, a successful vouch **promotes them to `member`**.
-The promotion is best-effort: the vouch is still created and still returned
-`201` if the promotion itself fails.
+A promotion that fails is reported as a `500`, and the vouch is **not** rolled
+back — the response says the promotion did not happen, not that nothing was
+written. Retrying the vouch will then hit `vouch already exists for this pair`,
+so a vouchee left pending this way needs a moderator rather than another vouch.
+
+**Re-vouching after a revoke is allowed.** A pair whose vouch was revoked may
+vouch again; the original vouch is reactivated, so the response carries the same
+`id` with `status` back to `"active"` and `created_at` set to the new vouch's
+time. Every rule that applies to a first vouch applies again — the trust floor,
+the daily limit, cycle detection, and promoting a `pending` vouchee. Two things
+deliberately do not reset: the revoked vouch still counts against the voucher's
+daily limit for the day it was made, and the trust penalty the voucher paid for
+revoking is not refunded (it decays on its own 30-day schedule). Both exist to
+price vouch-and-revoke churn, which is exactly what re-vouching is half of.
 
 ---
 
@@ -1540,7 +1561,8 @@ from `GET /api/v1/users/{id}/vouches`.
 
 **Auth**: Required
 **Role**: `member` or higher
-**Rate Limit**: 3/24 hours
+**Rate Limit**: 3/24 hours, on its own budget — spending the `POST` allowance
+does not consume this one. See [Rate Limiting](#rate-limiting).
 
 **Response** `204 No Content`
 **Response** `400 Bad Request`: `validation error: vouch is already revoked`, or

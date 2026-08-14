@@ -124,6 +124,23 @@ func (r *VouchRepo) RevokeVouch(ctx context.Context, id string) error {
 	return err
 }
 
+// ReactivateVouch brings a revoked vouch back to active as of createdAt.
+//
+// No rows means the row was not revoked after all — another request
+// reactivated it in between, or the id names a live vouch — which is
+// ErrNotFound for the same reason RevokeVouch treats it that way: the row this
+// call was for is not there to change.
+func (r *VouchRepo) ReactivateVouch(ctx context.Context, id string, createdAt time.Time) error {
+	_, err := r.q.ReactivateVouch(ctx, ReactivateVouchParams{
+		ID:        id,
+		CreatedAt: pgtype.Timestamptz{Time: createdAt, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	return err
+}
+
 func vouchFromRow(row Vouch) *domain.Vouch {
 	v := &domain.Vouch{
 		ID:        row.ID,

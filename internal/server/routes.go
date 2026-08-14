@@ -390,17 +390,37 @@ func (s *Server) apiRoutes(r chi.Router) {
 
 			if s.vouchService != nil {
 				vh := handler.NewVouchHandler(s.vouchService)
+
+				// The limiter keys on the endpoint NAME, not the route, so
+				// "vouches" is the per-member vouching budget and nothing else
+				// may reuse it. Naming it on the approval group would put a
+				// member's vouches and a council member's approvals in one
+				// shared bucket.
 				r.Group(func(r chi.Router) {
-					// The limiter keys on the endpoint NAME, not the route, so
-					// "vouches" is the per-member vouching budget and nothing
-					// else may reuse it. Naming it here again on the approval
-					// group would put a member's vouches and a council
-					// member's approvals in one shared bucket.
 					r.Use(s.protected(guard{
 						role:  domain.RoleMember,
 						limit: &rateSpec{"vouches", 3, 24 * time.Hour},
 					})...)
 					r.Post("/", vh.Create)
+				})
+
+				// Revocation gets its own budget for the same reason, one step
+				// further out. Sharing "vouches" meant a member who had spent
+				// their three vouches could not withdraw one for 24 hours —
+				// and revoking is the abuse-response path: it is what you do
+				// when you realise you vouched for the wrong person. It must
+				// never be starved by ordinary vouching. The limiter's Lua
+				// records the attempt before counting it, by design, so each
+				// refused retry also pushed the window out; splitting the
+				// buckets is what stops the lockout, not that behaviour.
+				//
+				// Same 3-per-24h shape, because the abuse it guards against is
+				// the same: scripted churn against the trust graph.
+				r.Group(func(r chi.Router) {
+					r.Use(s.protected(guard{
+						role:  domain.RoleMember,
+						limit: &rateSpec{"vouch-revokes", 3, 24 * time.Hour},
+					})...)
 					r.Delete("/{id}", vh.Revoke)
 				})
 			}

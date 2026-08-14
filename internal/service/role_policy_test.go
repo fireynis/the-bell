@@ -65,6 +65,76 @@ func TestDemotableRolesAgreeWithTheirDestinations(t *testing.T) {
 	}
 }
 
+// A member's trust score is not evidence of anything until the account is old
+// enough to have produced one. Tenure and the 90-day activity window both only
+// rise with time, so a member vouched in last month sits below the bar however
+// well they behave — see domain.DemotionMinimumTenureDays.
+func TestEvaluateDemotion_MembersGetATenureGrace(t *testing.T) {
+	inGrace := policyNow.AddDate(0, 0, -(domain.DemotionMinimumTenureDays - 1))
+	pastGrace := policyNow.AddDate(0, 0, -domain.DemotionMinimumTenureDays)
+
+	tests := []struct {
+		name        string
+		user        *domain.User
+		wantOutcome demotionOutcome
+		wantRole    domain.Role
+	}{
+		{
+			name:        "a member inside the grace is not judged at all",
+			user:        &domain.User{Role: domain.RoleMember, TrustScore: 20, JoinedAt: inGrace},
+			wantOutcome: demotionNone,
+		},
+		{
+			// Repairs anyone marked before the grace existed, and stops the
+			// days a new member spends below the bar being banked against them.
+			name: "a member inside the grace has any timer cleared",
+			user: &domain.User{
+				Role: domain.RoleMember, TrustScore: 20, JoinedAt: inGrace,
+				TrustBelowSince: ptrTime(daysAgo(45)),
+			},
+			wantOutcome: demotionClear,
+		},
+		{
+			name:        "the grace ends exactly at the minimum tenure",
+			user:        &domain.User{Role: domain.RoleMember, TrustScore: 20, JoinedAt: pastGrace},
+			wantOutcome: demotionMark,
+		},
+		{
+			name: "a member past the grace is demoted as before",
+			user: &domain.User{
+				Role: domain.RoleMember, TrustScore: 20, JoinedAt: pastGrace,
+				TrustBelowSince: ptrTime(daysAgo(30)),
+			},
+			wantOutcome: demotionDemote,
+			wantRole:    domain.RolePending,
+		},
+		{
+			// Reaching moderator takes PromotionMinDays of membership, so no
+			// real moderator is this new — but the grace must be the member
+			// bar's alone, not something a role change could smuggle in.
+			name: "a moderator gets no grace",
+			user: &domain.User{
+				Role: domain.RoleModerator, TrustScore: 20, JoinedAt: inGrace,
+				TrustBelowSince: ptrTime(daysAgo(30)),
+			},
+			wantOutcome: demotionDemote,
+			wantRole:    domain.RoleMember,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateDemotion(tt.user, policyNow)
+			if got.Outcome != tt.wantOutcome {
+				t.Errorf("Outcome = %v, want %v", got.Outcome, tt.wantOutcome)
+			}
+			if got.NewRole != tt.wantRole {
+				t.Errorf("NewRole = %q, want %q", got.NewRole, tt.wantRole)
+			}
+		})
+	}
+}
+
 func TestEvaluateDemotion(t *testing.T) {
 	// Members are judged against 35, moderators against 70, and both need
 	// DemotionConsecutiveDays (30) below their own threshold.

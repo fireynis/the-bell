@@ -273,6 +273,127 @@ func TestApprovalService_Approve_BelowThresholdDoesNotTouchConfig(t *testing.T) 
 	}
 }
 
+// --- Self-healing bootstrap exit ---
+
+// stuckInBootstrap builds the state a failed exit check leaves behind:
+// bootstrap_mode still true with the town already over the threshold. It is
+// reachable in production because Approve evaluates the exit AFTER committing
+// the role change, and re-approving that user fails the pending guard — so
+// without a second look, nothing ever re-evaluates it.
+func stuckInBootstrap(t *testing.T, activeMembers int) (*fakeUserStore, *mockConfigRepo, *ApprovalService) {
+	t.Helper()
+
+	userRepo := newMockApprovalUserRepo()
+	configRepo := newMockConfigRepo()
+	configRepo.config["bootstrap_mode"] = "true"
+	for i := range activeMembers {
+		id := fmt.Sprintf("member-%d", i)
+		userRepo.users[id] = &domain.User{ID: id, Role: domain.RoleMember, IsActive: true}
+	}
+	userRepo.users["pending-1"] = &domain.User{
+		ID: "pending-1", Role: domain.RolePending, IsActive: true,
+	}
+
+	svc := NewApprovalService(userRepo, configRepo)
+	svc.logger = discardLogger()
+	return userRepo, configRepo, svc
+}
+
+// Any call down the approval path repairs the flag, so the entry point rather
+// than one method is what carries the check.
+func TestApprovalService_ReEvaluatesAMissedBootstrapExit(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*ApprovalService) error
+	}{
+		{"approve", func(s *ApprovalService) error {
+			_, err := s.Approve(context.Background(), "pending-1")
+			return err
+		}},
+		{"list pending", func(s *ApprovalService) error {
+			_, err := s.ListPending(context.Background())
+			return err
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userRepo, configRepo, svc := stuckInBootstrap(t, bootstrapExitThreshold)
+
+			// The town has left bootstrap, so the call is refused for the same
+			// reason it would be if the flip had happened on time.
+			if err := tt.call(svc); !errors.Is(err, ErrForbidden) {
+				t.Fatalf("error = %v, want %v", err, ErrForbidden)
+			}
+			if configRepo.config["bootstrap_mode"] != "false" {
+				t.Errorf("bootstrap_mode = %q, want %q — the town is stuck in bootstrap mode forever",
+					configRepo.config["bootstrap_mode"], "false")
+			}
+			// And the refusal is a refusal: nothing was approved on the way.
+			if got := userRepo.users["pending-1"].Role; got != domain.RolePending {
+				t.Errorf("pending user's role = %q, want it left at %q", got, domain.RolePending)
+			}
+		})
+	}
+}
+
+// The repair must not fire early. A town below the threshold is doing exactly
+// what bootstrap mode is for, and flipping the flag would strand its remaining
+// pending residents with no way in.
+func TestApprovalService_BelowThresholdIsNotFlippedByTheRecheck(t *testing.T) {
+	userRepo, configRepo, svc := stuckInBootstrap(t, bootstrapExitThreshold-2)
+
+	user, err := svc.Approve(context.Background(), "pending-1")
+	if err != nil {
+		t.Fatalf("Approve() unexpected error: %v", err)
+	}
+	if user.Role != domain.RoleMember {
+		t.Errorf("role = %q, want %q", user.Role, domain.RoleMember)
+	}
+	if configRepo.config["bootstrap_mode"] != "true" {
+		t.Errorf("bootstrap_mode = %q, want it left at %q", configRepo.config["bootstrap_mode"], "true")
+	}
+	// The approval took the count to one short of the threshold, so the town
+	// stays in bootstrap for one more resident.
+	count, err := userRepo.CountActiveMembers(context.Background())
+	if err != nil {
+		t.Fatalf("CountActiveMembers() unexpected error: %v", err)
+	}
+	if count != bootstrapExitThreshold-1 {
+		t.Errorf("active members = %d, want %d", count, bootstrapExitThreshold-1)
+	}
+}
+
+// The re-check runs on calls that are not about the exit at all, so it must not
+// be able to fail one. A town that cannot be counted still approves its next
+// resident — and Approve's own post-commit check, one step later, is what tells
+// the caller the count failed.
+func TestApprovalService_RecheckFailureDoesNotBlockTheApprovalPath(t *testing.T) {
+	userRepo, configRepo, svc := stuckInBootstrap(t, bootstrapExitThreshold)
+	configRepo.setErr = errors.New("db write failed")
+
+	// The write fails, so the flag stays wrong — but ListPending still answers
+	// rather than reporting the repair's failure as the caller's problem.
+	pending, err := svc.ListPending(context.Background())
+	if err != nil {
+		t.Fatalf("ListPending() error = %v; a failed repair must not fail the call", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("%d pending users, want 1", len(pending))
+	}
+	if configRepo.config["bootstrap_mode"] != "true" {
+		t.Errorf("bootstrap_mode = %q, want it unchanged at %q after the failed write",
+			configRepo.config["bootstrap_mode"], "true")
+	}
+
+	// Same for a count that cannot be read.
+	configRepo.setErr = nil
+	userRepo.countErr = errors.New("db connection lost")
+	if _, err := svc.ListPending(context.Background()); err != nil {
+		t.Fatalf("ListPending() error = %v; an unreadable count must not fail the call", err)
+	}
+}
+
 func TestApprovalService_Approve_RoleUpdateError(t *testing.T) {
 	userRepo := newMockApprovalUserRepo()
 	userRepo.updateRoleErr = errors.New("db write failed")

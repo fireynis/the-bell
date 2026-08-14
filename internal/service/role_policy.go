@@ -56,6 +56,20 @@ func nextRoleAfterDemotion(current domain.Role) (domain.Role, bool) {
 	}
 }
 
+// withinDemotionGrace reports whether a member's account is still too young for
+// its trust score to be evidence of anything.
+//
+// Only members have the grace. Moderators reach the role after
+// PromotionMinDays of membership, so every one of them is past it already, and
+// the roles with no threshold never reach this question. See
+// domain.DemotionMinimumTenureDays for why the number is what it is.
+func withinDemotionGrace(u *domain.User, now time.Time) bool {
+	if u.Role != domain.RoleMember {
+		return false
+	}
+	return now.Sub(u.JoinedAt).Hours()/24 < float64(domain.DemotionMinimumTenureDays)
+}
+
 // evaluateDemotion applies the sustained-low-trust policy: a user must sit
 // below their role's demotion threshold continuously for
 // DemotionConsecutiveDays before losing a role. Recovering above the threshold
@@ -68,11 +82,21 @@ func nextRoleAfterDemotion(current domain.Role) (domain.Role, bool) {
 func evaluateDemotion(u *domain.User, now time.Time) demotionDecision {
 	threshold, demotable := domain.DemotionTrustThresholdFor(u.Role)
 
+	// A member inside the tenure grace is not judged at all. Their score is
+	// structurally depressed by components that only time can raise, so being
+	// under the bar says nothing yet — treating them as demotable would demote
+	// a healthy new member a month after they were vouched in.
+	if withinDemotionGrace(u, now) {
+		demotable = false
+	}
+
 	// A role with no threshold is not on any clock, so it is treated exactly
 	// like a user above theirs — including clearing a timer it is still
 	// carrying. A member demoted to pending while below the member threshold
 	// would otherwise keep those spent days, and be demoted again the moment a
-	// vouch restored them to member.
+	// vouch restored them to member. A member inside the grace clears a timer
+	// for the same reason, which also repairs anyone marked before the grace
+	// existed.
 	if !demotable || u.TrustScore >= threshold {
 		if u.TrustBelowSince != nil {
 			return demotionDecision{Outcome: demotionClear}

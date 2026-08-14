@@ -18,8 +18,9 @@ type mockVouchRepo struct {
 	vouches map[string]*domain.Vouch    // keyed by ID
 	byPair  map[[2]string]*domain.Vouch // keyed by [voucher, vouchee]
 
-	createErr error
-	revokeErr error
+	createErr     error
+	revokeErr     error
+	reactivateErr error
 }
 
 func newMockVouchRepo() *mockVouchRepo {
@@ -110,6 +111,22 @@ func (m *mockVouchRepo) RevokeVouch(_ context.Context, id string) error {
 	v.Status = domain.VouchRevoked
 	now := time.Now()
 	v.RevokedAt = &now
+	return nil
+}
+
+// ReactivateVouch mirrors the SQL, including its status guard: only a revoked
+// row comes back, and it comes back as if made at createdAt.
+func (m *mockVouchRepo) ReactivateVouch(_ context.Context, id string, createdAt time.Time) error {
+	if m.reactivateErr != nil {
+		return m.reactivateErr
+	}
+	v, ok := m.vouches[id]
+	if !ok || v.Status != domain.VouchRevoked {
+		return ErrNotFound
+	}
+	v.Status = domain.VouchActive
+	v.CreatedAt = createdAt
+	v.RevokedAt = nil
 	return nil
 }
 
@@ -370,6 +387,260 @@ func TestVouchService_Vouch_DuplicatePair(t *testing.T) {
 	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("Vouch() error = %v, want %v", err, ErrValidation)
+	}
+}
+
+// An existing ACTIVE vouch is still a duplicate. The reactivation path must
+// not reach for it: refreshing a live vouch's created_at would hand the voucher
+// their daily allowance back for a vouch they never withdrew.
+func TestVouchService_Vouch_ActiveDuplicateIsNotReactivated(t *testing.T) {
+	repo := newMockVouchRepo()
+	original := fixedNow.Add(-48 * time.Hour)
+	repo.seedVouch("voucher-1", "vouchee-1", original)
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+
+	svc := NewVouchService(repo, newMockGraph(), users, fixedClock)
+	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Vouch() error = %v, want %v", err, ErrValidation)
+	}
+
+	stored := repo.vouches["voucher-1->vouchee-1"]
+	if !stored.CreatedAt.Equal(original) {
+		t.Errorf("created_at = %v, want it left at %v — a live vouch was refreshed", stored.CreatedAt, original)
+	}
+}
+
+// --- Re-vouching after a revoke ---
+
+// revokedPair returns the fixture the reactivation tests share: one vouch that
+// has been given and withdrawn, with the graph edge gone, as Revoke leaves it.
+func revokedPair(t *testing.T, voucheeRole domain.Role) (*mockVouchRepo, *mockGraph, *mockUserGetter, *VouchService) {
+	t.Helper()
+
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = &domain.User{
+		ID: "vouchee-1", TrustScore: 50.0, Role: voucheeRole, IsActive: true,
+	}
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.logger = discardLogger()
+
+	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("seeding the original vouch: %v", err)
+	}
+	if err := svc.Revoke(context.Background(), vouch.ID, "voucher-1"); err != nil {
+		t.Fatalf("seeding the revocation: %v", err)
+	}
+
+	// Reset what the seeding did to the vouchee, so each test observes only
+	// what the re-vouch itself does.
+	users.users["vouchee-1"].Role = voucheeRole
+	users.updatedRoles = make(map[string]domain.Role)
+
+	return repo, graph, users, svc
+}
+
+// The bug this closes: a revoked row still matched the duplicate check, so the
+// pair was blocked forever — while the revoke dialog told the member they could
+// vouch for the same person again later.
+func TestVouchService_Vouch_RevokedPairMayVouchAgain(t *testing.T) {
+	repo, graph, _, svc := revokedPair(t, domain.RoleMember)
+
+	revoked := repo.vouches["voucher-1->vouchee-1"]
+	if revoked != nil {
+		t.Fatal("fixture used the seeded id; the service should have generated one")
+	}
+
+	again, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("re-vouching after a revoke: %v", err)
+	}
+
+	// The unique constraint on the pair means there can only ever be one row,
+	// so the reactivated vouch has to be the original.
+	if len(repo.vouches) != 1 {
+		t.Errorf("%d vouch rows for one pair, want 1 reactivated row", len(repo.vouches))
+	}
+	stored := repo.vouches[again.ID]
+	if stored == nil {
+		t.Fatalf("re-vouch returned id %q, which is not in the repository", again.ID)
+	}
+	if stored.Status != domain.VouchActive {
+		t.Errorf("stored status = %q, want %q", stored.Status, domain.VouchActive)
+	}
+	if stored.RevokedAt != nil {
+		t.Errorf("revoked_at = %v, want it cleared", stored.RevokedAt)
+	}
+	if !stored.CreatedAt.Equal(fixedNow) {
+		t.Errorf("created_at = %v, want the re-vouch time %v", stored.CreatedAt, fixedNow)
+	}
+	if again.Status != domain.VouchActive {
+		t.Errorf("returned status = %q, want %q", again.Status, domain.VouchActive)
+	}
+
+	// The graph edge Revoke deleted has to come back, or the trust calculation
+	// and the vouches table disagree about who endorsed whom.
+	if !graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+		t.Error("graph edge not restored; the table says active and the graph says nothing")
+	}
+}
+
+// Reactivation is a vouch, so every gate a first vouch passes applies to it.
+// Each of these would be a way to get a vouch past a rule by having revoked one
+// earlier.
+func TestVouchService_Vouch_ReactivationRunsEveryGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(*mockVouchRepo, *mockGraph, *mockUserGetter)
+		want    error
+	}{
+		{
+			name: "trust floor",
+			arrange: func(_ *mockVouchRepo, _ *mockGraph, users *mockUserGetter) {
+				users.users["voucher-1"].TrustScore = domain.VouchingThreshold - 1
+			},
+			want: ErrForbidden,
+		},
+		{
+			name: "daily limit",
+			arrange: func(repo *mockVouchRepo, _ *mockGraph, _ *mockUserGetter) {
+				// The revoked vouch already counts as one of the three (revoked
+				// vouches deliberately still count), so two more fill the day.
+				for i := range dailyVouchLimit - 1 {
+					repo.seedVouch("voucher-1", "other-"+string(rune('a'+i)), fixedNow.Add(-time.Hour))
+				}
+			},
+			want: ErrValidation,
+		},
+		{
+			name: "cycle detection",
+			arrange: func(_ *mockVouchRepo, graph *mockGraph, _ *mockUserGetter) {
+				graph.cycles[[2]string{"voucher-1", "vouchee-1"}] = true
+			},
+			want: ErrValidation,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, graph, users, svc := revokedPair(t, domain.RoleMember)
+			tt.arrange(repo, graph, users)
+
+			_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Vouch() error = %v, want %v", err, tt.want)
+			}
+			if repo.vouches["voucher-1->vouchee-1"] != nil {
+				t.Fatal("unexpected fixture row")
+			}
+			for _, v := range repo.vouches {
+				if v.VoucheeID == "vouchee-1" && v.Status != domain.VouchRevoked {
+					t.Error("the vouch was reactivated despite the gate rejecting it")
+				}
+			}
+			if graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+				t.Error("graph edge restored despite the gate rejecting the vouch")
+			}
+		})
+	}
+}
+
+// Someone vouched in, then dropped back to pending when that vouch was revoked,
+// is exactly who a re-vouch is for. The promotion has to run on the reactivation
+// path or they stay pending with an active vouch against their name.
+func TestVouchService_Vouch_ReactivationPromotesAPendingVouchee(t *testing.T) {
+	_, _, users, svc := revokedPair(t, domain.RolePending)
+
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("re-vouching after a revoke: %v", err)
+	}
+
+	if got := users.users["vouchee-1"].Role; got != domain.RoleMember {
+		t.Errorf("vouchee role = %q, want %q", got, domain.RoleMember)
+	}
+	if users.updatedRoles["vouchee-1"] != domain.RoleMember {
+		t.Error("UpdateUserRole not called for a pending vouchee on reactivation")
+	}
+}
+
+// Re-vouching does not refund the revocation penalty. The penalty prices the
+// act of withdrawing an endorsement, and vouching again is the other half of
+// exactly the flip-flop it exists to make expensive — so the voucher keeps
+// paying it until it decays on its own 30-day schedule.
+func TestVouchService_Vouch_ReactivationDoesNotRefundTheRevocationPenalty(t *testing.T) {
+	repo := newMockVouchRepo()
+	graph := newMockGraph()
+	users := newMockUserGetter()
+	users.users["voucher-1"] = activeMember("voucher-1", 80.0)
+	users.users["vouchee-1"] = activeMember("vouchee-1", 50.0)
+	penalties := newMockPenaltyRepo()
+
+	svc := NewVouchService(repo, graph, users, fixedClock)
+	svc.SetPenaltyRepository(penalties)
+
+	vouch, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if err != nil {
+		t.Fatalf("Vouch() unexpected error: %v", err)
+	}
+	if err := svc.Revoke(context.Background(), vouch.ID, "voucher-1"); err != nil {
+		t.Fatalf("Revoke() unexpected error: %v", err)
+	}
+	if len(penalties.penalties) != 1 {
+		t.Fatalf("wrote %d penalties for the revocation, want 1", len(penalties.penalties))
+	}
+
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err != nil {
+		t.Fatalf("re-vouching after a revoke: %v", err)
+	}
+
+	if len(penalties.penalties) != 1 {
+		t.Errorf("penalty rows = %d, want the revocation's 1 left exactly as it was", len(penalties.penalties))
+	}
+	if p := penalties.penalties[0]; p.PenaltyAmount != revocationPenaltyPoints {
+		t.Errorf("penalty = %v, want it untouched at %v", p.PenaltyAmount, revocationPenaltyPoints)
+	}
+}
+
+// Two requests re-vouching for the same pair at once: the loser's UPDATE
+// matches nothing, because the row is no longer revoked. That is a duplicate,
+// not a missing vouch — and the difference is visible to the member, since
+// ErrNotFound renders as a 404 saying the vouch does not exist while they are
+// looking at it.
+func TestVouchService_Vouch_ConcurrentReactivationIsADuplicate(t *testing.T) {
+	repo, _, _, svc := revokedPair(t, domain.RoleMember)
+
+	// What the repository returns when the row it was told to reactivate is
+	// already active, which is exactly what the SQL's status guard produces.
+	repo.reactivateErr = ErrNotFound
+
+	_, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("Vouch() error = %v, want %v", err, ErrValidation)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound not propagated (it would render as a 404)", err)
+	}
+}
+
+// The write can fail like any other, and when it does nothing else may proceed —
+// a returned vouch whose row is still revoked would report an endorsement that
+// does not exist.
+func TestVouchService_Vouch_ReactivationWriteFailureIsFatal(t *testing.T) {
+	repo, graph, _, svc := revokedPair(t, domain.RoleMember)
+	repo.reactivateErr = errors.New("db write failed")
+
+	if _, err := svc.Vouch(context.Background(), "voucher-1", "vouchee-1"); err == nil {
+		t.Fatal("Vouch() error = nil, want the failed reactivation reported")
+	}
+	if graph.edges[[2]string{"voucher-1", "vouchee-1"}] {
+		t.Error("graph edge restored after the row write failed; the two would disagree")
 	}
 }
 

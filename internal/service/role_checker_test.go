@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -565,6 +566,7 @@ type recalcFixture struct {
 	reactions int64
 	vouches   int64
 	avgTrust  float64
+	penalties []domain.TrustPenalty
 }
 
 // stubRecalcInputs is a TrustInputs over a fixed cast of users. It drives the
@@ -601,8 +603,8 @@ func (s *stubRecalcInputs) CountActiveVouchesWithAvgTrust(_ context.Context, id 
 	return f.vouches, f.avgTrust, nil
 }
 
-func (s *stubRecalcInputs) ListActivePenaltiesByUser(_ context.Context, _ string) ([]domain.TrustPenalty, error) {
-	return nil, nil
+func (s *stubRecalcInputs) ListActivePenaltiesByUser(_ context.Context, id string) ([]domain.TrustPenalty, error) {
+	return s.fixtures[id].penalties, nil
 }
 
 // stubTrustScoreWriter records the scores the refresh persists.
@@ -697,13 +699,27 @@ func TestRoleChecker_Run_DoesNotDemoteOnANeverRecalculatedScore(t *testing.T) {
 }
 
 // The other half of the fix: refreshing must not amount to switching demotion
-// off. This user's stored 50 and freshly computed 30 are both below the
-// threshold, and the fresh one is what the reason string reports.
+// off. This user's stored 50 and freshly computed score are both below the
+// member threshold, and the fresh one is what the reason string reports.
+//
+// The account is 100 days old rather than brand new because the member bar is
+// not applied inside domain.DemotionMinimumTenureDays — see
+// TestRoleChecker_Run_LeavesANewMemberAlone. 100 days is past the grace and
+// still short enough that tenure alone leaves the composite under 35.
 func TestRoleChecker_Run_StillDemotesOnAFreshlyLowScore(t *testing.T) {
+	joinedAt := roleCheckNow.AddDate(0, 0, -100)
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	users := []*domain.User{
 		{ID: "user-1", DisplayName: "Dan", TrustScore: 50, Role: domain.RoleMember,
-			JoinedAt: roleCheckNow, TrustBelowSince: &thirtyOneDaysAgo},
+			JoinedAt: joinedAt, TrustBelowSince: &thirtyOneDaysAgo},
+	}
+
+	// No posts, no reactions, no vouches and no penalties: tenure and a clean
+	// moderation component are the whole score.
+	wantScore := CompositeScore(CalcTenureScore(joinedAt, roleCheckNow), 0, 0, 100)
+	if wantScore >= domain.MemberDemotionTrustThreshold {
+		t.Fatalf("fixture scores %v, which is not below the member bar of %v",
+			wantScore, domain.MemberDemotionTrustThreshold)
 	}
 
 	rc, repo, writer := withRefresher(t, users, map[string]recalcFixture{})
@@ -718,11 +734,121 @@ func TestRoleChecker_Run_StillDemotesOnAFreshlyLowScore(t *testing.T) {
 	if repo.updatedRoles["user-1"] != domain.RolePending {
 		t.Errorf("role = %q, want %q", repo.updatedRoles["user-1"], domain.RolePending)
 	}
-	if got := writer.scores["user-1"]; got != 30 {
-		t.Errorf("persisted score = %v, want 30 (the clean moderation component alone)", got)
+	if got := writer.scores["user-1"]; got != wantScore {
+		t.Errorf("persisted score = %v, want %v", got, wantScore)
 	}
-	if want := "trust 30.0"; !strings.Contains(result.Demotions[0].Reason, want) {
+	if want := fmt.Sprintf("trust %.1f", wantScore); !strings.Contains(result.Demotions[0].Reason, want) {
 		t.Errorf("reason = %q, want it to quote the refreshed score (%q)", result.Demotions[0].Reason, want)
+	}
+}
+
+// The review's exact scenario, run through the real calculator: a member
+// vouched in 30 days ago by one mid-trust neighbour, who has read rather than
+// posted and has never been sanctioned. Nothing is wrong with them; their score
+// is low because tenure and activity have not accrued yet.
+//
+// Before the tenure grace this run demoted them back to pending on day 30 — the
+// earliest the consecutive-days clock allows — which is the whole reason
+// domain.DemotionMinimumTenureDays exists.
+func TestRoleChecker_Run_LeavesANewMemberAlone(t *testing.T) {
+	joinedAt := roleCheckNow.AddDate(0, 0, -30)
+	users := []*domain.User{
+		{ID: "newcomer", DisplayName: "Nan", TrustScore: 50, Role: domain.RoleMember,
+			JoinedAt: joinedAt, TrustBelowSince: ptrTime(joinedAt)},
+	}
+	fixtures := map[string]recalcFixture{
+		"newcomer": {vouches: 1, avgTrust: 60},
+	}
+
+	// The grace is what has to save them, so pin that the score itself does
+	// not: if the calculator ever puts a clean newcomer above the bar on its
+	// own, this test stops testing anything.
+	score := CompositeScore(CalcTenureScore(joinedAt, roleCheckNow), 0, CalcVoucherScore(1, 60), 100)
+	if score >= domain.MemberDemotionTrustThreshold {
+		t.Fatalf("a clean 30-day member scores %v, at or above the bar of %v; "+
+			"the grace is no longer what keeps them", score, domain.MemberDemotionTrustThreshold)
+	}
+
+	rc, repo, _ := withRefresher(t, users, fixtures)
+	result, err := rc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if len(result.Demotions) != 0 {
+		t.Errorf("Demotions = %+v, want none: a healthy new member scoring %v was demoted",
+			result.Demotions, score)
+	}
+	if got, ok := repo.updatedRoles["newcomer"]; ok {
+		t.Errorf("role changed to %q, want it left at %q", got, domain.RoleMember)
+	}
+	// And the timer they were carrying goes, so the days spent being new are
+	// not banked against them for the moment the grace lapses.
+	if !repo.clearedUsers["newcomer"] {
+		t.Error("trust_below_since not cleared; the grace period would be counted against them later")
+	}
+}
+
+// The counterpart: the grace delays the judgement, it does not cancel it. This
+// member is 200 days in with two vouches, and would be comfortably fine but for
+// a moderation record — a permanent ban penalty three hops out plus a mute of
+// their own, which is the "collapsed trust" case the member bar was set for.
+func TestRoleChecker_Run_StillDemotesEstablishedCollapsedTrust(t *testing.T) {
+	joinedAt := roleCheckNow.AddDate(0, 0, -200)
+	users := []*domain.User{
+		{ID: "collapsed", DisplayName: "Cal", TrustScore: 50, Role: domain.RoleMember,
+			JoinedAt: joinedAt, TrustBelowSince: ptrTime(roleCheckNow.AddDate(0, 0, -31))},
+	}
+	fixtures := map[string]recalcFixture{
+		"collapsed": {
+			vouches:  2,
+			avgTrust: 70,
+			penalties: []domain.TrustPenalty{
+				// A ban propagated three hops: 100 * 0.75^3, and permanent, as
+				// propagated penalties inherit the ban's nil DecaysAt.
+				{PenaltyAmount: 100 * 0.75 * 0.75 * 0.75, CreatedAt: roleCheckNow, HopDepth: 3},
+				// Plus a mute of their own: severity 3, 25 points over 270 days.
+				{PenaltyAmount: 25, CreatedAt: roleCheckNow,
+					DecaysAt: ptrTime(roleCheckNow.AddDate(0, 0, 270))},
+			},
+		},
+	}
+
+	rc, repo, _ := withRefresher(t, users, fixtures)
+	result, err := rc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if len(result.Demotions) != 1 {
+		t.Fatalf("Demotions = %d, want 1", len(result.Demotions))
+	}
+	if repo.updatedRoles["collapsed"] != domain.RolePending {
+		t.Errorf("role = %q, want %q", repo.updatedRoles["collapsed"], domain.RolePending)
+	}
+}
+
+// A moderator is judged on the same schedule as before. The grace is the member
+// bar's alone: reaching moderator already takes PromotionMinDays of membership,
+// so there is no such thing as a moderator too new to judge.
+func TestRoleChecker_Run_TenureGraceDoesNotReachModerators(t *testing.T) {
+	joinedAt := roleCheckNow.AddDate(0, 0, -(domain.DemotionMinimumTenureDays - 1))
+	users := []*domain.User{
+		{ID: "mod-1", DisplayName: "Mo", TrustScore: 50, Role: domain.RoleModerator,
+			JoinedAt: joinedAt, TrustBelowSince: ptrTime(roleCheckNow.AddDate(0, 0, -31))},
+	}
+
+	rc, repo, _ := withRefresher(t, users, map[string]recalcFixture{})
+	result, err := rc.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if len(result.Demotions) != 1 {
+		t.Fatalf("Demotions = %d, want 1", len(result.Demotions))
+	}
+	if repo.updatedRoles["mod-1"] != domain.RoleMember {
+		t.Errorf("role = %q, want %q", repo.updatedRoles["mod-1"], domain.RoleMember)
 	}
 }
 

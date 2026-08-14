@@ -38,7 +38,7 @@ Every user has a **trust score** from 0 to 100. The score is a weighted composit
 | Vouching | 60 | You must have trust >= 60 to vouch for others |
 | Promotion | 85 | Eligible for automatic promotion to moderator (additional criteria apply) |
 | Demotion (moderator) | 70 | A moderator below 70 for 30 consecutive days is demoted to member |
-| Demotion (member) | 35 | A member below 35 for 30 consecutive days is demoted to pending |
+| Demotion (member) | 35 | A member below 35 for 30 consecutive days is demoted to pending, once their account is at least 90 days old |
 
 ## Posting
 
@@ -144,6 +144,20 @@ it for 30 consecutive days:
 
 - A moderator below **70** is demoted to member
 - A member below **35** is demoted to pending
+
+**New members are not judged for their first 90 days.** Two parts of your trust
+score can only go up with time — tenure counts days since you joined, and
+activity is measured over a rolling 90-day window — so a member who was vouched
+in last month scores low no matter how well they behave. A quiet newcomer with
+one vouch from a mid-trust neighbour computes to around 34, which is under the
+bar on their very first day. Applying the bar to them would demote healthy new
+residents a month after they arrived, so the member bar starts applying once the
+account is 90 days old, by which point tenure alone has lifted the score clear.
+The clock that counts consecutive days below the bar does not run during those
+90 days either, so nothing is banked against a new member.
+
+Moderators get no such grace: becoming a moderator already requires 90 days as
+a member, so every moderator is past that point when the role is granted.
 
 The bars differ on purpose. A healthy, quietly-participating member computes to
 roughly 50, so the member bar sits well beneath that: a served suspension or

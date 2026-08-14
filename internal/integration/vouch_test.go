@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/service"
@@ -185,6 +186,95 @@ func TestVouchApprovalStillRequiresCouncilOverHTTP(t *testing.T) {
 	}
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d for a member: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// Re-vouching after a revoke has to work against the real schema, which is
+// where the original bug lived: UNIQUE(voucher_id, vouchee_id) means a second
+// INSERT for the pair cannot succeed, so the fix reactivates the existing row.
+// A mock cannot tell us the constraint is satisfied, and it cannot tell us the
+// AGE edge came back — the two halves that have to stay in agreement.
+func TestRevokedVouchCanBeGivenAgain(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	svcs := newTestServices(t, pool)
+
+	voucher := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("again-voucher"), domain.RoleMember, 80.0)
+	vouchee := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("again-vouchee"), domain.RolePending, 50.0)
+
+	first, err := svcs.VouchService.Vouch(ctx, voucher.ID, vouchee.ID)
+	if err != nil {
+		t.Fatalf("first vouch: %v", err)
+	}
+	if err := svcs.VouchService.Revoke(ctx, first.ID, voucher.ID); err != nil {
+		t.Fatalf("revoking: %v", err)
+	}
+
+	vouchers, err := svcs.AGEQuerier.FindVouchersWithDepth(ctx, vouchee.ID, 1)
+	if err != nil {
+		t.Fatalf("finding vouchers after revocation: %v", err)
+	}
+	if _, ok := vouchers[voucher.ID]; ok {
+		t.Fatal("the graph edge survived the revocation; the fixture is not in the state under test")
+	}
+
+	again, err := svcs.VouchService.Vouch(ctx, voucher.ID, vouchee.ID)
+	if err != nil {
+		t.Fatalf("re-vouching after a revoke: %v", err)
+	}
+
+	// One row for the pair, reactivated rather than replaced — the unique
+	// constraint allows nothing else.
+	var (
+		rows      int
+		id        string
+		status    string
+		revokedAt *time.Time
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM vouches WHERE voucher_id = $1 AND vouchee_id = $2`,
+		voucher.ID, vouchee.ID,
+	).Scan(&rows); err != nil {
+		t.Fatalf("counting vouch rows: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("%d vouch rows for the pair, want 1", rows)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT id, status, revoked_at FROM vouches WHERE voucher_id = $1 AND vouchee_id = $2`,
+		voucher.ID, vouchee.ID,
+	).Scan(&id, &status, &revokedAt); err != nil {
+		t.Fatalf("reading the vouch back: %v", err)
+	}
+	if id != first.ID || again.ID != first.ID {
+		t.Errorf("ids = stored %q / returned %q, want the original %q", id, again.ID, first.ID)
+	}
+	if status != string(domain.VouchActive) {
+		t.Errorf("status = %q, want %q", status, domain.VouchActive)
+	}
+	if revokedAt != nil {
+		t.Errorf("revoked_at = %v, want NULL", revokedAt)
+	}
+
+	// The graph edge comes back, so the trust calculation and the vouches table
+	// agree about who endorsed whom.
+	vouchers, err = svcs.AGEQuerier.FindVouchersWithDepth(ctx, vouchee.ID, 1)
+	if err != nil {
+		t.Fatalf("finding vouchers after the re-vouch: %v", err)
+	}
+	if _, ok := vouchers[voucher.ID]; !ok {
+		t.Error("graph edge not restored; the table says active and the graph says nothing")
+	}
+
+	// And the promotion runs on the reactivation path too: the vouchee was
+	// pending when the first vouch arrived, and is a member on the far side of
+	// a revoke and a re-vouch.
+	var role string
+	if err := pool.QueryRow(ctx, `SELECT role FROM users WHERE id = $1`, vouchee.ID).Scan(&role); err != nil {
+		t.Fatalf("reading the vouchee's role back: %v", err)
+	}
+	if role != string(domain.RoleMember) {
+		t.Errorf("vouchee role = %q, want %q", role, domain.RoleMember)
 	}
 }
 

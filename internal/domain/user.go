@@ -54,6 +54,13 @@ const (
 // Profile A is the floor of "fine", not the middle: a member who reads more
 // than they post, has been vouched for twice, and has never been sanctioned.
 // Whatever the member threshold is, it has to sit clearly below 50.01.
+//
+// All three profiles are established accounts, and that is a premise of the
+// numbers rather than an accident of the examples: tenure and activity are
+// functions of time, so a member who joined last month scores below every one
+// of them on components that have nothing to do with conduct. The member bar
+// is therefore not applied until DemotionMinimumTenureDays have passed — see
+// the constant below for that derivation.
 const (
 	// MemberDemotionTrustThreshold is the score a member must stay at or above
 	// to keep posting rights (below it, sustained, they drop back to pending).
@@ -99,6 +106,43 @@ const (
 	// that was only ever a statement about moderator standing. At 35 for members
 	// the demotion stops where it was meant to.
 	ModeratorDemotionTrustThreshold = 70.0
+
+	// DemotionMinimumTenureDays is how old a member's account must be before
+	// the member bar is applied to it at all.
+	//
+	// The bar assumes a score that has had time to mean something, and a new
+	// member's has not. Two of the four components are functions of time rather
+	// than of conduct: tenure is days/365, and activity is counted over a
+	// 90-day window, so a member who joined recently scores low on both no
+	// matter how well they behave. Run the review's case through the real
+	// calculator — 30 days in, quiet, one vouch from a 60-trust neighbour, never
+	// sanctioned:
+	//
+	//	tenure     30/365*100 = 8.22  -> 1.23
+	//	activity   0                  -> 0.00
+	//	voucher    15 * 0.60 = 9.00   -> 3.15
+	//	moderation 100                -> 30.00
+	//	                                34.38
+	//
+	// That is below 35 on the day they are vouched in, with nothing held
+	// against them. Thirty consecutive days later the sweep would demote them
+	// back to pending for the crime of being new and quiet — and the demotion
+	// clock could start on day one, so the earliest demotion lands around day
+	// 31, before the account is old enough to have produced a meaningful score.
+	//
+	// 90 days is where the structural depression lifts. Tenure alone is then
+	// 90/365*100 = 24.66 -> 3.70, and a single vouch from a 55-trust neighbour
+	// adds 15 * 0.55 = 8.25 -> 2.89, so a clean member sits at 36.59 with no
+	// posts at all — above the bar on the components they cannot hurry. It is
+	// also the window activity is measured over, so by then a member has had a
+	// full one, and it matches PromotionMinDays: 90 days is already the point
+	// at which this codebase considers a member's record long enough to judge.
+	//
+	// Below it the score is not evidence, so no demotion decision is made
+	// either way; see evaluateDemotion. Moderators are deliberately not given
+	// the grace — reaching the role takes PromotionMinDays of membership, so
+	// every moderator is already past it.
+	DemotionMinimumTenureDays = 90
 )
 
 // DemotionTrustThresholdFor returns the trust score a user of this role must
