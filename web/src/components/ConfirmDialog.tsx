@@ -1,5 +1,6 @@
 import ErrorBanner from "./ErrorBanner";
 import Spinner from "./Spinner";
+import { useModalDialog } from "../hooks/useModalDialog";
 
 interface ConfirmDialogProps {
   title: string;
@@ -34,6 +35,14 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  // Cancel is the first control in the panel, so the safe half of the choice
+  // takes focus on open, never the destructive one. Escape is ignored while the
+  // action is in flight, matching the disabled Cancel button — the request is
+  // already gone, and closing would only hide the outcome.
+  const panelRef = useModalDialog<HTMLDivElement>(() => {
+    if (!busy) onCancel();
+  });
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
@@ -42,6 +51,7 @@ export default function ConfirmDialog({
       aria-label={title}
     >
       <div
+        ref={panelRef}
         className="w-full max-w-md p-6"
         style={{
           backgroundColor: "var(--color-surface)",

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import PostCard from "../components/PostCard.tsx";
+import MuteToggle from "../components/MuteToggle.tsx";
 import { NewPostsBanner } from "../components/NewPostsBanner.tsx";
 import { Toast } from "../components/Toast.tsx";
 import ErrorBanner from "../components/ErrorBanner.tsx";
 import Spinner from "../components/Spinner.tsx";
 import { useFeed } from "../hooks/useFeed.ts";
+import { replacePost, withoutPost } from "../lib/post.ts";
 import { useLiveFeed } from "../hooks/useLiveFeed.ts";
 import type { ReactionNotification } from "../hooks/useLiveFeed.ts";
 import { describeReactions, mergePendingPosts } from "../lib/liveFeed.ts";
@@ -15,7 +17,7 @@ import { useSound } from "../hooks/useSound.ts";
 import type { Post } from "../api/types.ts";
 
 export default function Home() {
-  const { posts, loading, hasMore, error, loadMore, retry } = useFeed();
+  const { posts, loading, hasMore, error, loadMore, retry, updatePost, dropPost } = useFeed();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [newPosts, setNewPosts] = useState<Post[]>([]);
   const [muted, setMuted] = useState(() => localStorage.getItem("bell-sound-muted") === "true");
@@ -56,6 +58,26 @@ export default function Home() {
     flush();
   };
 
+  // An author's own edit or delete has to reach both halves of the list. A post
+  // that arrived over SSE lives in newPosts and is never in the paginated state,
+  // so touching only the feed hook would leave the newest posts — the ones still
+  // inside their edit window — unable to show the change.
+  const handlePostUpdated = useCallback(
+    (updated: Post) => {
+      setNewPosts((prev) => replacePost(prev, updated));
+      updatePost(updated);
+    },
+    [updatePost],
+  );
+
+  const handlePostRemoved = useCallback(
+    (postId: string) => {
+      setNewPosts((prev) => withoutPost(prev, postId));
+      dropPost(postId);
+    },
+    [dropPost],
+  );
+
   // The bell announces an arrival, so it counts the moments the pending total
   // went up rather than reacting to the total itself. Anything else re-rings
   // for posts the reader has already been told about — most visibly when they
@@ -80,6 +102,22 @@ export default function Home() {
 
   return (
     <div className="py-5">
+      {/*
+        The feed header at lg and up. It exists for the mute toggle: the compose
+        shortcut below is redundant on desktop because the sidebar carries one,
+        but the bell sounds are played by this page at every width, so the switch
+        that silences them has to be reachable at every width too.
+      */}
+      <div className="mb-5 hidden items-center justify-between lg:flex">
+        <h1
+          className="text-xl font-bold"
+          style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
+        >
+          Town Feed
+        </h1>
+        <MuteToggle muted={muted} arrivals={arrivals} onToggle={toggleMute} />
+      </div>
+
       <div className="mb-5 flex items-center gap-3 lg:hidden">
         <Link
           to="/compose"
@@ -94,20 +132,7 @@ export default function Home() {
           <div className="h-8 w-8 rounded-full" style={{ backgroundColor: "var(--color-primary-light)" }} />
           <span className="text-sm">What's happening in town?</span>
         </Link>
-        <button
-          onClick={toggleMute}
-          className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          title={muted ? "Unmute notifications" : "Mute notifications"}
-        >
-          {/* Keyed on the arrival count so each arrival remounts the span and
-              replays the one-shot CSS animation \u2014 no timer to reset. */}
-          <span
-            key={arrivals}
-            className={`text-xl ${arrivals > 0 ? "animate-ring inline-block" : ""}`}
-          >
-            {muted ? "\uD83D\uDD15" : "\uD83D\uDD14"}
-          </span>
-        </button>
+        <MuteToggle muted={muted} arrivals={arrivals} onToggle={toggleMute} />
       </div>
 
       {error && (
@@ -126,7 +151,12 @@ export default function Home() {
 
       <div className="flex flex-col gap-3 stagger-children">
         {allPosts.map((post) => (
-          <PostCard key={post.id} post={post} />
+          <PostCard
+            key={post.id}
+            post={post}
+            onUpdated={handlePostUpdated}
+            onRemoved={handlePostRemoved}
+          />
         ))}
       </div>
 

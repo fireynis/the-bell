@@ -1,5 +1,5 @@
 import type { ApiError, MuteLift, MuteStatus, Post, TakeActionRequest, User } from "../api/types";
-import type { ValidationResult } from "./post";
+import { byteLength, type ValidationResult } from "./post";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
 export const ACTION_TYPES = ["warn", "mute", "suspend", "ban"] as const;
@@ -49,7 +49,7 @@ export function validateRemovalReason(reason: string): ValidationResult {
   if (trimmed.length === 0) {
     return { valid: false, error: "A reason is required." };
   }
-  const bytes = new TextEncoder().encode(trimmed).length;
+  const bytes = byteLength(trimmed);
   if (bytes > MAX_REMOVAL_REASON_LENGTH) {
     return {
       valid: false,

@@ -1,4 +1,4 @@
-import type { Post } from "../api/types";
+import type { ApiError, Post } from "../api/types";
 
 /** Mirrors domain.MaxPostBodyLength in internal/domain/post.go. */
 export const MAX_POST_BODY_LENGTH = 1000;
@@ -16,6 +16,18 @@ export interface ValidationResult {
   valid: boolean;
   /** Human-readable reason, present only when invalid. */
   error?: string;
+}
+
+/**
+ * byteLength measures a string the way Go's `len` does.
+ *
+ * Every server-side length bound on free text is `len(s)` over a Go string,
+ * which counts UTF-8 bytes. Checking JS string length instead would wave
+ * through a reason of multi-byte characters that the server then rejects, so
+ * anything mirroring one of those bounds measures with this.
+ */
+export function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
 }
 
 /**
@@ -106,6 +118,97 @@ export function canEditPost(
 
   const elapsedMinutes = (now - created) / 60_000;
   return elapsedMinutes >= 0 && elapsedMinutes <= EDIT_WINDOW_MINUTES;
+}
+
+/**
+ * canDeletePost reports whether to offer an author the control that takes their
+ * own post down.
+ *
+ * PostService.Delete in internal/service/post.go checks only authorship — there
+ * is no window, which is the whole difference from canEditPost. The visibility
+ * check is this UI's own rule rather than the server's: deleting a post that a
+ * moderator has already removed would succeed and change nothing a reader can
+ * see, so offering it only invites the author to act on a post that is already
+ * gone.
+ */
+export function canDeletePost(
+  post: Pick<Post, "author_id" | "status">,
+  userId: string | null,
+): boolean {
+  return !!userId && post.author_id === userId && post.status === "visible";
+}
+
+/**
+ * validationDetail pulls the readable half out of a 400 from the API.
+ *
+ * statusForError in internal/handler/respond.go answers ErrValidation with the
+ * whole error string, and those are built as `fmt.Errorf("%w: ...",
+ * ErrValidation)` — so the body reads "validation error: you have already
+ * reported this post" and only the part after the prefix is worth showing.
+ * Returns null when there is nothing usable, leaving the caller's own wording to
+ * stand.
+ */
+export function validationDetail(message: string | undefined | null): string | null {
+  const detail = (message ?? "").replace(/^validation error:\s*/i, "").trim();
+  if (detail.length === 0) return null;
+
+  const sentence = detail[0].toUpperCase() + detail.slice(1);
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+}
+
+/**
+ * postMutationErrorMessage turns a failed edit or delete into something the
+ * author can act on.
+ *
+ * The 409 is the one worth naming outright: ErrEditWindow is answered with the
+ * bare string "edit window expired", which says nothing about how long the
+ * window was or that the post is otherwise fine. The 429 is reachable for both
+ * actions because PATCH and DELETE sit inside the same 10-per-hour "posts"
+ * bucket as creating one — see the guard in internal/server/routes.go.
+ */
+export function postMutationErrorMessage(
+  err: ApiError | null | undefined,
+  action: "edit" | "delete",
+): string {
+  const fallback =
+    action === "edit"
+      ? "Your edit could not be saved. Please try again."
+      : "The post could not be deleted. Please try again.";
+
+  if (!err) return fallback;
+
+  switch (err.status) {
+    case 409:
+      return `Posts can only be edited for ${EDIT_WINDOW_MINUTES} minutes after they go up, and that time has passed.`;
+    case 429:
+      return "You have made a lot of changes in the last hour. Please try again later.";
+    case 404:
+      return "That post is no longer available.";
+    case 401:
+    case 403:
+      return `Only the author can ${action} this post.`;
+    case 400:
+      return validationDetail(err.error) ?? fallback;
+    default:
+      return fallback;
+  }
+}
+
+/**
+ * replacePost swaps in a post the server has just returned, leaving the rest of
+ * the list — and crucially its order — alone.
+ *
+ * An edit must not move a post in the feed: the author changed a typo, they did
+ * not post again, and a card that jumps to the top would read to everyone else
+ * as a new arrival.
+ */
+export function replacePost(posts: readonly Post[], updated: Post): Post[] {
+  return posts.map((p) => (p.id === updated.id ? updated : p));
+}
+
+/** withoutPost drops a post the author has deleted from a loaded list. */
+export function withoutPost(posts: readonly Post[], postId: string): Post[] {
+  return posts.filter((p) => p.id !== postId);
 }
 
 /**

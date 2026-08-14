@@ -1,5 +1,5 @@
 import type { FeedResponse, Post } from "../api/types";
-import { appendFeedPage } from "./post";
+import { appendFeedPage, replacePost, withoutPost } from "./post";
 
 /** Everything the feed hook needs to render and to ask for the next page. */
 export interface FeedState {
@@ -36,6 +36,28 @@ export function applyFeedPage(state: FeedState, page: FeedResponse, append: bool
     cursor,
     hasMore: !!cursor,
   };
+}
+
+/**
+ * replaceFeedPost folds an author's edit into the loaded feed.
+ *
+ * The cursor and hasMore are carried through untouched: an edit changes a post's
+ * body, not the feed's shape, and resetting either would make the next scroll
+ * re-fetch a page the reader already has.
+ */
+export function replaceFeedPost(state: FeedState, updated: Post): FeedState {
+  return { ...state, posts: replacePost(state.posts, updated) };
+}
+
+/**
+ * removeFeedPost drops a post its author deleted.
+ *
+ * hasMore is likewise left alone. It answers "is there another page", which a
+ * deletion does not change — the server's next cursor is still the last post the
+ * reader was sent, whether or not this one is still in the list.
+ */
+export function removeFeedPost(state: FeedState, postId: string): FeedState {
+  return { ...state, posts: withoutPost(state.posts, postId) };
 }
 
 /**

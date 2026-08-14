@@ -14,6 +14,7 @@ import EditProfileForm from "./profile/EditProfileForm";
 import VouchList from "./profile/VouchList";
 import VouchAction from "./profile/VouchAction";
 import { vouchingBlockReason } from "../lib/gating";
+import { replacePost, withoutPost } from "../lib/post";
 
 type Tab = "posts" | "vouches";
 
@@ -238,7 +239,12 @@ export default function Profile() {
               ) : (
                 <div className="flex flex-col gap-4">
                   {posts.map((post) => (
-                    <PostCard key={post.id} post={post} />
+                    <PostCard
+                      key={post.id}
+                      post={post}
+                      onUpdated={(updated) => setPosts((prev) => replacePost(prev, updated))}
+                      onRemoved={(postId) => setPosts((prev) => withoutPost(prev, postId))}
+                    />
                   ))}
                 </div>
               )}

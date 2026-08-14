@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { FeedResponse } from "../api/types";
-import { applyFeedPage, initialFeedState, type FeedState } from "../lib/feed";
+import {
+  applyFeedPage,
+  initialFeedState,
+  removeFeedPost,
+  replaceFeedPost,
+  type FeedState,
+} from "../lib/feed";
+import type { Post } from "../api/types";
 
 const PAGE_SIZE = 20;
 
@@ -46,6 +53,17 @@ export function useFeed() {
     fetchPage();
   }, [fetchPage]);
 
+  // Applied locally rather than by refetching: the feed is cursor-paginated, so
+  // reloading after an edit would throw away every page past the first and drop
+  // the reader back to the top.
+  const updatePost = useCallback((post: Post) => {
+    setFeed((prev) => replaceFeedPost(prev, post));
+  }, []);
+
+  const dropPost = useCallback((postId: string) => {
+    setFeed((prev) => removeFeedPost(prev, postId));
+  }, []);
+
   return {
     posts: feed.posts,
     loading,
@@ -53,5 +71,7 @@ export function useFeed() {
     error,
     loadMore,
     retry,
+    updatePost,
+    dropPost,
   };
 }

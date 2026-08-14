@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { FeedResponse, Post } from "../api/types";
-import { applyFeedPage, initialFeedState, mergeLivePosts } from "./feed";
+import {
+  applyFeedPage,
+  initialFeedState,
+  mergeLivePosts,
+  removeFeedPost,
+  replaceFeedPost,
+} from "./feed";
 
 function post(id: string, overrides: Partial<Post> = {}): Post {
   return {
@@ -87,6 +93,49 @@ describe("applyFeedPage", () => {
     const state = applyFeedPage(initialFeedState(), page(["a"], "c1"), true);
     applyFeedPage(state, page(["b"], "c2"), true);
     expect(state.posts.map((p) => p.id)).toEqual(["a"]);
+  });
+});
+
+describe("replaceFeedPost", () => {
+  it("swaps in the edited post without moving it", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a", "b", "c"], "c1"), false);
+    const got = replaceFeedPost(state, post("b", { body: "corrected" }));
+    expect(got.posts.map((p) => p.id)).toEqual(["a", "b", "c"]);
+    expect(got.posts[1].body).toBe("corrected");
+  });
+
+  // An edit changes a post's body, not the feed's shape. Resetting either would
+  // make the next scroll re-fetch a page the reader already has.
+  it("carries the cursor and hasMore through untouched", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a", "b"], "c1"), false);
+    const got = replaceFeedPost(state, post("a", { body: "corrected" }));
+    expect(got.cursor).toBe("c1");
+    expect(got.hasMore).toBe(true);
+  });
+
+  it("leaves the feed alone when the post is not loaded", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a"], "c1"), false);
+    expect(replaceFeedPost(state, post("z")).posts.map((p) => p.id)).toEqual(["a"]);
+  });
+});
+
+describe("removeFeedPost", () => {
+  it("drops the deleted post from the loaded feed", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a", "b"], "c1"), false);
+    expect(removeFeedPost(state, "a").posts.map((p) => p.id)).toEqual(["b"]);
+  });
+
+  // hasMore answers "is there another page", which a deletion does not change.
+  it("keeps the cursor, so the next page still follows the same post", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a", "b"], "c1"), false);
+    const got = removeFeedPost(state, "a");
+    expect(got.cursor).toBe("c1");
+    expect(got.hasMore).toBe(true);
+  });
+
+  it("leaves the feed alone when the post is not loaded", () => {
+    const state = applyFeedPage(initialFeedState(), page(["a"], "c1"), false);
+    expect(removeFeedPost(state, "z").posts.map((p) => p.id)).toEqual(["a"]);
   });
 });
 

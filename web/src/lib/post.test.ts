@@ -5,12 +5,18 @@ import {
   MAX_IMAGE_BYTES,
   MAX_POST_BODY_LENGTH,
   appendFeedPage,
+  byteLength,
+  canDeletePost,
   canEditPost,
   counterColor,
   counterOpacity,
+  postMutationErrorMessage,
   remainingChars,
+  replacePost,
   validateImageFile,
   validatePostBody,
+  validationDetail,
+  withoutPost,
 } from "./post";
 
 const NOW = Date.parse("2026-03-01T12:00:00Z");
@@ -132,6 +138,156 @@ describe("canEditPost", () => {
 
   it("refuses an unparseable timestamp rather than allowing the edit", () => {
     expect(canEditPost(post({ created_at: "not a date" }), "author", NOW)).toBe(false);
+  });
+});
+
+describe("canDeletePost", () => {
+  it("allows the author, with no window to be inside", () => {
+    expect(canDeletePost(post({ created_at: minutesAgo(60 * 24) }), "author")).toBe(true);
+  });
+
+  it("refuses a different user", () => {
+    expect(canDeletePost(post(), "someone-else")).toBe(false);
+  });
+
+  it("refuses when nobody is signed in", () => {
+    expect(canDeletePost(post(), null)).toBe(false);
+  });
+
+  // The server would allow this — PostService.Delete checks only authorship —
+  // but there is nothing left to take down, so the control is not offered.
+  it.each(["removed_by_author", "removed_by_mod"])("refuses a %s post", (status) => {
+    expect(canDeletePost(post({ status }), "author")).toBe(false);
+  });
+});
+
+describe("byteLength", () => {
+  it("counts plain ASCII as one byte each", () => {
+    expect(byteLength("hello")).toBe(5);
+  });
+
+  it("counts an emoji as its four UTF-8 bytes, not its two UTF-16 units", () => {
+    expect("🔔".length).toBe(2);
+    expect(byteLength("🔔")).toBe(4);
+  });
+
+  it("counts an accented character as two bytes", () => {
+    expect(byteLength("é")).toBe(2);
+  });
+
+  it("is zero for an empty string", () => {
+    expect(byteLength("")).toBe(0);
+  });
+});
+
+describe("validationDetail", () => {
+  it("drops the sentinel prefix the API wraps every 400 in", () => {
+    expect(validationDetail("validation error: reason must not be empty")).toBe(
+      "Reason must not be empty.",
+    );
+  });
+
+  it("punctuates a detail that came without a full stop", () => {
+    expect(validationDetail("validation error: post is not visible")).toBe("Post is not visible.");
+  });
+
+  it("leaves punctuation the server already supplied alone", () => {
+    expect(validationDetail("validation error: post is not visible.")).toBe("Post is not visible.");
+  });
+
+  it("uses a message that carries no prefix as-is", () => {
+    expect(validationDetail("edit window expired")).toBe("Edit window expired.");
+  });
+
+  it("returns null for a prefix with nothing behind it", () => {
+    expect(validationDetail("validation error:")).toBeNull();
+  });
+
+  it("returns null rather than a bare full stop for an absent message", () => {
+    expect(validationDetail(undefined)).toBeNull();
+    expect(validationDetail(null)).toBeNull();
+  });
+});
+
+describe("postMutationErrorMessage", () => {
+  // "edit window expired" is all the server says; the author needs to know how
+  // long the window was and that nothing else is wrong with their post.
+  it("explains a 409 as the edit window having closed, and how long it was", () => {
+    const message = postMutationErrorMessage({ status: 409, error: "edit window expired" }, "edit");
+    expect(message).toContain(String(EDIT_WINDOW_MINUTES));
+  });
+
+  it("explains a 429, which PATCH and DELETE share with posting", () => {
+    expect(
+      postMutationErrorMessage({ status: 429, error: "rate limit exceeded" }, "delete"),
+    ).toContain("try again later");
+  });
+
+  it("names the action in a 403, so the author knows what was refused", () => {
+    expect(postMutationErrorMessage({ status: 403, error: "forbidden" }, "delete")).toContain(
+      "delete",
+    );
+  });
+
+  it("passes on the server's own complaint for a 400", () => {
+    expect(
+      postMutationErrorMessage({ status: 400, error: "validation error: post cannot be empty" }, "edit"),
+    ).toBe("Post cannot be empty.");
+  });
+
+  it("never leaks a 500's internal message", () => {
+    const message = postMutationErrorMessage({ status: 500, error: "internal error" }, "edit");
+    expect(message).not.toContain("internal error");
+  });
+
+  it("distinguishes the two actions when it has nothing else to go on", () => {
+    expect(postMutationErrorMessage(null, "edit")).toContain("edit could not be saved");
+    expect(postMutationErrorMessage(null, "delete")).toContain("could not be deleted");
+  });
+});
+
+describe("replacePost", () => {
+  it("swaps in the updated post", () => {
+    const got = replacePost([post({ id: "a" }), post({ id: "b" })], post({ id: "b", body: "new" }));
+    expect(got.map((p) => p.body)).toEqual(["body", "new"]);
+  });
+
+  // An edit is not a new post: a card that jumped to the top would read to
+  // every other reader as an arrival.
+  it("leaves the post where it was in the list", () => {
+    const got = replacePost(
+      [post({ id: "a" }), post({ id: "b" }), post({ id: "c" })],
+      post({ id: "b", body: "new" }),
+    );
+    expect(got.map((p) => p.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("changes nothing when the post is not in the list", () => {
+    const existing = [post({ id: "a" })];
+    expect(replacePost(existing, post({ id: "z", body: "new" }))).toEqual(existing);
+  });
+
+  it("does not mutate the array it was given", () => {
+    const existing = [post({ id: "a", body: "old" })];
+    replacePost(existing, post({ id: "a", body: "new" }));
+    expect(existing[0].body).toBe("old");
+  });
+});
+
+describe("withoutPost", () => {
+  it("drops the deleted post", () => {
+    const got = withoutPost([post({ id: "a" }), post({ id: "b" })], "a");
+    expect(got.map((p) => p.id)).toEqual(["b"]);
+  });
+
+  it("changes nothing when the post is not in the list", () => {
+    expect(withoutPost([post({ id: "a" })], "z").map((p) => p.id)).toEqual(["a"]);
+  });
+
+  it("does not mutate the array it was given", () => {
+    const existing = [post({ id: "a" })];
+    withoutPost(existing, "a");
+    expect(existing).toHaveLength(1);
   });
 });
 

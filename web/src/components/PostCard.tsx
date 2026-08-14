@@ -1,19 +1,89 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import type { Post } from "../api/types";
+import { postApi } from "../api/client";
+import type { ApiError, Post } from "../api/types";
+import { useAuth } from "../context/AuthContext";
 import Avatar from "./Avatar";
+import ConfirmDialog from "./ConfirmDialog";
+import EditPostDialog from "./EditPostDialog";
 import { ImageLightbox } from "./ImageLightbox";
+import PostMenu, { type PostMenuItem } from "./PostMenu";
 import ReactionButton from "./ReactionButton";
+import ReportDialog from "./ReportDialog";
 import { formatAbsoluteTime, formatRelativeTime } from "../lib/time";
+import { canEditPost, canDeletePost, postMutationErrorMessage } from "../lib/post";
+import { canReportPost } from "../lib/report";
 import { REACTION_TYPES } from "../lib/reactions";
+
+/** Which dialog, if any, the card currently has open. */
+type OpenDialog = "edit" | "delete" | "report" | null;
 
 interface PostCardProps {
   post: Post;
+  /**
+   * Called with the server's copy of the post after its author edits it. A card
+   * without this handler still saves the edit; it just shows the old body until
+   * the list is loaded again.
+   */
+  onUpdated?: (post: Post) => void;
+  /** Called after the author deletes their post, so the list can drop the card. */
+  onRemoved?: (postId: string) => void;
 }
 
-export default function PostCard({ post }: PostCardProps) {
+export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) {
+  const { user } = useAuth();
   const [lightbox, setLightbox] = useState(false);
+  const [dialog, setDialog] = useState<OpenDialog>(null);
+  const [reported, setReported] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [selfRemoved, setSelfRemoved] = useState(false);
+
+  // Re-read when the menu opens rather than on a timer: the only rule that
+  // changes with the clock is the edit window, and nobody needs the Edit item to
+  // disappear from a menu they are not looking at.
+  const [now, setNow] = useState(() => Date.now());
+
   const authorName = post.author_display_name || post.author_id.slice(0, 8);
+  const viewerId = user?.id ?? null;
+
+  const items: PostMenuItem[] = [];
+  if (canEditPost(post, viewerId, now)) {
+    items.push({ label: "Edit post", onSelect: () => setDialog("edit") });
+  }
+  if (canDeletePost(post, viewerId)) {
+    items.push({ label: "Delete post", danger: true, onSelect: () => setDialog("delete") });
+  }
+  if (canReportPost(post, user)) {
+    // Kept in place once sent rather than dropped, so the menu answers "did that
+    // go through?" — and a second report on the same post is a guaranteed 400.
+    items.push(
+      reported
+        ? { label: "Reported", disabled: true, onSelect: () => {} }
+        : { label: "Report post", onSelect: () => setDialog("report") },
+    );
+  }
+
+  async function handleDelete() {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+
+    try {
+      await postApi.remove(post.id);
+      setDialog(null);
+      // Hidden here as well as reported upward: a confirmed delete that leaves
+      // the card sitting there reads as a failure, and not every list that
+      // renders a post card tracks its own copy of the feed.
+      setSelfRemoved(true);
+      onRemoved?.(post.id);
+    } catch (err) {
+      setDeleteError(postMutationErrorMessage(err as ApiError, "delete"));
+      setDeleting(false);
+    }
+  }
+
+  if (selfRemoved) return null;
 
   return (
     <article
@@ -46,6 +116,14 @@ export default function PostCard({ post }: PostCardProps) {
           {formatRelativeTime(post.created_at)}
           {post.edited_at && " (edited)"}
         </span>
+
+        <div className="ml-auto">
+          <PostMenu
+            items={items}
+            label={`Actions for ${authorName}'s post`}
+            onOpen={() => setNow(Date.now())}
+          />
+        </div>
       </div>
 
       <p
@@ -81,6 +159,39 @@ export default function PostCard({ post }: PostCardProps) {
           />
         ))}
       </div>
+
+      {dialog === "edit" && (
+        <EditPostDialog
+          post={post}
+          onClose={() => setDialog(null)}
+          onSaved={(updated) => onUpdated?.(updated)}
+        />
+      )}
+
+      {dialog === "delete" && (
+        <ConfirmDialog
+          title="Delete your post?"
+          body="It stops being visible to the town. Moderators can still see it, and any reports already filed against it stay in their queue."
+          confirmLabel="Delete post"
+          danger
+          busy={deleting}
+          error={deleteError}
+          onConfirm={handleDelete}
+          onCancel={() => {
+            setDialog(null);
+            setDeleteError(null);
+          }}
+        />
+      )}
+
+      {dialog === "report" && (
+        <ReportDialog
+          postId={post.id}
+          authorName={authorName}
+          onClose={() => setDialog(null)}
+          onReported={() => setReported(true)}
+        />
+      )}
     </article>
   );
 }

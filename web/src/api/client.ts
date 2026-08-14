@@ -116,6 +116,33 @@ export const postApi = {
   create: (req: CreatePostRequest) => api.post<Post>("/posts/", req),
   /** Multipart variant; the body and image are read from the form data. */
   createWithImage: (form: FormData) => api.upload<Post>("/posts/", form),
+
+  /**
+   * Edits an author's own post inside the 15-minute window, answering 200 with
+   * the whole updated post — read the body back from the response rather than
+   * assuming the sent text, since edited_at only exists on the server's copy.
+   *
+   * Answers 409 once the window has closed; see postMutationErrorMessage.
+   */
+  update: (postId: string, body: string) => api.patch<Post>(`/posts/${postId}`, { body }),
+
+  /**
+   * Takes an author's own post down. Answers 204 with no body: the post still
+   * exists, with a status only its author and moderators can see, so there is
+   * nothing for an ordinary reader to be handed back.
+   */
+  remove: (postId: string) => api.delete(`/posts/${postId}`),
+
+  /**
+   * Files a report against someone else's post, answering 201 with the created
+   * report.
+   *
+   * The reason is bounded in bytes rather than characters — validate it with
+   * validateReportReason before calling. A second report on the same post by the
+   * same person is a 400, not a 409: the service raises ErrValidation for it.
+   */
+  report: (postId: string, reason: string) =>
+    api.post<Report>(`/posts/${postId}/report`, { reason }),
 };
 
 export const moderationApi = {
