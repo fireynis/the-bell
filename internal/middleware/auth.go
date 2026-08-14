@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/httpjson"
+	internalkratos "github.com/fireynis/the-bell/internal/kratos"
 	kratos "github.com/ory/kratos-client-go"
 )
 
@@ -46,12 +46,7 @@ type UserFinder interface {
 // yields "" and a user with no display name, which is exactly what happened
 // before this trait was read at all. It is never an auth failure.
 func identityDisplayName(identity *kratos.Identity) string {
-	traits, ok := identity.GetTraits().(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	name, _ := traits["name"].(string)
-	return strings.TrimSpace(name)
+	return internalkratos.DisplayNameFromTraits(identity.GetTraits())
 }
 
 // authOutcome says why a session lookup did not yield a local user, so that

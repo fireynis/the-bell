@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	client "github.com/ory/kratos-client-go"
@@ -81,6 +82,36 @@ func newIdentityBody(email, displayName, password string) *client.CreateIdentity
 	body.SetCredentials(*creds)
 	body.SetState(identityStateActive)
 	return body
+}
+
+// DisplayNameFromTraits reads the `name` trait off a decoded identity trait set.
+//
+// Traits arrive as decoded JSON — the SDK types them as interface{} and the
+// identity schema is per-deployment — so every step is a checked assertion: a
+// schema without `name`, or with a `name` that is not a string, yields "" and a
+// caller that has no name to apply. It is never an error, because a deployment
+// whose schema names the field differently is a configuration the app has to
+// keep running under, not a failure to report.
+func DisplayNameFromTraits(traits interface{}) string {
+	m, ok := traits.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	name, _ := m["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+// IdentityDisplayName fetches one identity by ID and returns its `name` trait.
+//
+// An identity that exists but carries no usable name yields ("", nil): the
+// caller cannot tell that apart from a schema mismatch and does not need to,
+// since both mean "nothing to write". Only the fetch itself errors.
+func (c *AdminClient) IdentityDisplayName(ctx context.Context, kratosID string) (string, error) {
+	identity, _, err := c.api.GetIdentity(ctx, kratosID).Execute()
+	if err != nil {
+		return "", fmt.Errorf("kratos get identity %s: %w", kratosID, err)
+	}
+	return DisplayNameFromTraits(identity.GetTraits()), nil
 }
 
 // CreateIdentity creates a Kratos identity with password credentials.

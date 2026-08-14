@@ -227,6 +227,106 @@ func TestAdminClient_CreateIdentity_Success(t *testing.T) {
 	}
 }
 
+// --- DisplayNameFromTraits / IdentityDisplayName ---
+
+// Traits are decoded JSON against a per-deployment schema, so every shape that
+// is not a string under `name` has to come back as "" rather than panicking a
+// backfill that is walking the whole town.
+func TestDisplayNameFromTraits(t *testing.T) {
+	tests := []struct {
+		name   string
+		traits interface{}
+		want   string
+	}{
+		{"name trait", map[string]interface{}{"email": "a@b.c", "name": "Ada Lovelace"}, "Ada Lovelace"},
+		{"name is trimmed", map[string]interface{}{"name": "  Ada \n"}, "Ada"},
+		{"whitespace-only name", map[string]interface{}{"name": "   "}, ""},
+		{"no name key", map[string]interface{}{"email": "a@b.c"}, ""},
+		{"name is not a string", map[string]interface{}{"name": 42}, ""},
+		{"name is an object", map[string]interface{}{"name": map[string]interface{}{"first": "Ada"}}, ""},
+		{"traits are not an object", []interface{}{"Ada"}, ""},
+		{"traits are nil", nil, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DisplayNameFromTraits(tt.traits); got != tt.want {
+				t.Errorf("DisplayNameFromTraits(%v) = %q, want %q", tt.traits, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAdminClient_IdentityDisplayName_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/admin/identities/kratos-identity-123" {
+			t.Errorf("path = %s, want /admin/identities/kratos-identity-123", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":         "kratos-identity-123",
+			"schema_id":  "default",
+			"schema_url": "http://localhost/schemas/default",
+			"traits":     map[string]interface{}{"email": "alice@example.com", "name": "Alice"},
+		})
+	}))
+	defer srv.Close()
+
+	name, err := NewAdminClient(srv.URL).IdentityDisplayName(context.Background(), "kratos-identity-123")
+	if err != nil {
+		t.Fatalf("IdentityDisplayName() error: %v", err)
+	}
+	if name != "Alice" {
+		t.Errorf("name = %q, want %q", name, "Alice")
+	}
+}
+
+// An identity that exists but carries no name is not a failure: the caller has
+// nothing to write, which is a different outcome from not being able to ask.
+func TestAdminClient_IdentityDisplayName_NoTraitIsNotAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":         "kratos-identity-123",
+			"schema_id":  "default",
+			"schema_url": "http://localhost/schemas/default",
+			"traits":     map[string]interface{}{"email": "alice@example.com"},
+		})
+	}))
+	defer srv.Close()
+
+	name, err := NewAdminClient(srv.URL).IdentityDisplayName(context.Background(), "kratos-identity-123")
+	if err != nil {
+		t.Fatalf("IdentityDisplayName() error: %v", err)
+	}
+	if name != "" {
+		t.Errorf("name = %q, want empty", name)
+	}
+}
+
+// A deleted identity that a local user still points at must surface as an
+// error naming the identity, so the backfill can count and log it.
+func TestAdminClient_IdentityDisplayName_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{"message": "Unable to locate the resource"},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := NewAdminClient(srv.URL).IdentityDisplayName(context.Background(), "kratos-gone")
+	if err == nil {
+		t.Fatal("IdentityDisplayName() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "kratos-gone") {
+		t.Errorf("error = %q, want it to name the identity", err)
+	}
+}
+
 func TestAdminClient_CreateIdentity_Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -431,10 +432,27 @@ func TestRun_UsageAndUnknownCommand(t *testing.T) {
 // Usage lists every subcommand run actually dispatches. A command added to the
 // switch without a usage line would be invisible to operators.
 func TestUsageListsEverySubcommand(t *testing.T) {
-	for _, cmd := range []string{"serve", "setup", "check-roles"} {
+	for _, cmd := range []string{"serve", "setup", "check-roles", "backfill-display-names"} {
 		if !strings.Contains(usage, cmd) {
 			t.Errorf("usage does not mention the %q subcommand", cmd)
 		}
+	}
+}
+
+// A mistyped flag must stop the command before it opens a database connection —
+// an operator who meant --dry-run and typed --dryrun would otherwise get a live
+// run that writes.
+func TestRunBackfillDisplayNames_RejectsUnknownFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&stdout, nil))
+
+	code := runBackfillDisplayNames(logger, []string{"--dryrun"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Errorf("runBackfillDisplayNames() = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "dryrun") {
+		t.Errorf("stderr = %q, want it to name the unrecognized flag", stderr.String())
 	}
 }
 

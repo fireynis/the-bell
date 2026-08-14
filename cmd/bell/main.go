@@ -34,9 +34,10 @@ import (
 const usage = `usage: bell <command>
 
 Commands:
-  serve         Start the HTTP server
-  setup         Bootstrap the town with initial council members
-  check-roles   Run role promotion/demotion checks
+  serve                    Start the HTTP server
+  setup                    Bootstrap the town with initial council members
+  check-roles              Run role promotion/demotion checks
+  backfill-display-names   Fill empty display names from Kratos identity traits
 `
 
 func main() {
@@ -61,6 +62,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSetup(logger, args[2:], stdin, stdout, stderr)
 	case "check-roles":
 		return runCheckRoles(logger, stdout)
+	case "backfill-display-names":
+		return runBackfillDisplayNames(logger, args[2:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[1])
 		return 1
@@ -549,6 +552,86 @@ func runCheckRoles(logger *slog.Logger, stdout io.Writer) int {
 	for _, d := range result.Demotions {
 		fmt.Fprintf(stdout, "  [DEMOTED]  %s (%s): %s -> %s (%s)\n",
 			d.DisplayName, d.UserID, d.OldRole, d.NewRole, d.Reason)
+	}
+	return 0
+}
+
+// runBackfillDisplayNames fills in display names for users provisioned before
+// the app started reading the identity's `name` trait at sign-in.
+//
+// It is wired by hand rather than through app.Build because the backfill needs
+// the Kratos *Admin* API, which the request-path graph has no use for and does
+// not build: app.Build only ever creates the public-URL client that validates
+// session cookies. Redis is not opened at all — nothing here reads the feed
+// cache or enqueues a trust recalculation.
+func runBackfillDisplayNames(logger *slog.Logger, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backfill-display-names", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", false, "report what would change without writing anything")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg, pool, err := initApp(ctx, logger)
+	if err != nil {
+		logger.Error("startup failed", "error", err)
+		return 1
+	}
+	defer pool.Close()
+
+	queries := postgres.New(pool)
+	userRepo := postgres.NewUserRepo(queries)
+	backfill := service.NewDisplayNameBackfill(
+		userRepo,
+		postgres.NewRoleCheckerRepo(queries),
+		kratosadmin.NewAdminClient(cfg.KratosAdminURL),
+		service.NewUserService(userRepo, nil),
+		logger,
+	)
+
+	// A run interrupted partway — Ctrl-C, a cancelled context — still returns
+	// what it managed to do. Reporting that is the difference between an
+	// operator knowing which names were already written and having to guess.
+	result, err := backfill.Run(ctx, *dryRun)
+	if err != nil {
+		logger.Error("backfill failed", "error", err)
+		if result == nil {
+			return 1
+		}
+	}
+
+	updatedLabel, changeTag := "Updated:", "SET"
+	if *dryRun {
+		fmt.Fprintln(stdout, "Dry run: no changes were written.")
+		updatedLabel, changeTag = "Would update:", "WOULD SET"
+	}
+	if err != nil {
+		fmt.Fprintf(stdout, "Display name backfill stopped early: %v\n", err)
+	} else {
+		fmt.Fprintf(stdout, "Display name backfill complete.\n")
+	}
+	fmt.Fprintf(stdout, "  %-16s%d\n", "Users scanned:", result.Scanned)
+	fmt.Fprintf(stdout, "  %-16s%d\n", updatedLabel, result.Updated)
+	fmt.Fprintf(stdout, "  %-16s%d\n", "Already named:", result.SkippedNamed)
+	fmt.Fprintf(stdout, "  %-16s%d\n", "No name trait:", result.SkippedNoTrait)
+	fmt.Fprintf(stdout, "  %-16s%d\n", "Errors:", result.Errors)
+
+	for _, c := range result.Changes {
+		note := ""
+		if c.Truncated {
+			note = " (truncated)"
+		}
+		fmt.Fprintf(stdout, "  [%s] %s: %q%s\n", changeTag, c.UserID, c.DisplayName, note)
+	}
+
+	// Per-user failures are reported, not fatal, but the exit code has to say
+	// that something went unfixed — an operator scripting this run should not
+	// see success when part of the town still has no name.
+	if err != nil || result.Errors > 0 {
+		return 1
 	}
 	return 0
 }
