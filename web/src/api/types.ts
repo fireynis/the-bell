@@ -16,8 +16,9 @@ export interface Post {
  * One entry in a member's own record of being released from a mute early.
  *
  * It names no moderator. Which moderator acted appears on no member-facing
- * response — the moderation audit trail is entirely moderator-only — and
- * changing that is a policy decision rather than a property of this record.
+ * response — the member-facing history at /users/me/moderation-history holds
+ * that line too — and changing it is a policy decision rather than a property
+ * of this record.
  */
 export interface MuteLift {
   lifted_at: string;
