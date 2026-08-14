@@ -48,17 +48,20 @@ func (m *mockActionRepo) ListActionsByModerator(_ context.Context, _ string, _, 
 // --- mock UserEnforcer ---
 
 type mockUserEnforcer struct {
-	deactivatedIDs []string
-	roleUpdates    map[string]domain.Role
-	trustUpdates   map[string]float64
+	roleUpdates  map[string]domain.Role
+	trustUpdates map[string]float64
 	// mutes records every SetUserMutedUntil call, including the nil that lifts
 	// a mute, so a test can tell "muted until nil" from "never called".
-	mutes         map[string]*time.Time
-	mutedIDs      []string
-	deactivateErr error
-	roleErr       error
-	trustErr      error
-	muteErr       error
+	mutes map[string]*time.Time
+	// suspensions records SetUserSuspendedUntil the same way, for the same
+	// reason.
+	suspensions  map[string]*time.Time
+	mutedIDs     []string
+	suspendedIDs []string
+	roleErr      error
+	trustErr     error
+	muteErr      error
+	suspendErr   error
 }
 
 func newMockUserEnforcer() *mockUserEnforcer {
@@ -66,6 +69,7 @@ func newMockUserEnforcer() *mockUserEnforcer {
 		roleUpdates:  make(map[string]domain.Role),
 		trustUpdates: make(map[string]float64),
 		mutes:        make(map[string]*time.Time),
+		suspensions:  make(map[string]*time.Time),
 	}
 }
 
@@ -78,11 +82,12 @@ func (m *mockUserEnforcer) SetUserMutedUntil(_ context.Context, id string, until
 	return nil
 }
 
-func (m *mockUserEnforcer) DeactivateUser(_ context.Context, id string) error {
-	if m.deactivateErr != nil {
-		return m.deactivateErr
+func (m *mockUserEnforcer) SetUserSuspendedUntil(_ context.Context, id string, until *time.Time) error {
+	if m.suspendErr != nil {
+		return m.suspendErr
 	}
-	m.deactivatedIDs = append(m.deactivatedIDs, id)
+	m.suspensions[id] = until
+	m.suspendedIDs = append(m.suspendedIDs, id)
 	return nil
 }
 
@@ -162,6 +167,17 @@ func newTestModerationActionServiceWithReliefs(
 
 func int64Ptr(v int64) *int64 { return &v }
 
+// addActor seeds the caller of a moderation action.
+//
+// Only a ban makes TakeAction look the caller up — it is the one action a
+// moderator may not take alone — so tests of any other action can leave the
+// store without them, as most of these do.
+func addActor(users *fakeUserStore, id string, role domain.Role) *domain.User {
+	actor := &domain.User{ID: id, IsActive: true, TrustScore: 90.0, Role: role}
+	users.add(actor)
+	return actor
+}
+
 // --- Validation: orchestration ---
 
 // The individual validation rules are tested directly against
@@ -210,8 +226,106 @@ func TestModerationActionService_TakeAction_ValidationFailureTouchesNothing(t *t
 			if len(actions.actions) != 0 {
 				t.Errorf("%d moderation actions were written despite the request being rejected", len(actions.actions))
 			}
-			if len(enforcer.deactivatedIDs) != 0 || len(enforcer.roleUpdates) != 0 || len(enforcer.trustUpdates) != 0 {
+			if len(enforcer.suspendedIDs) != 0 || len(enforcer.roleUpdates) != 0 || len(enforcer.trustUpdates) != 0 {
 				t.Error("enforcement ran against the target despite the request being rejected")
+			}
+		})
+	}
+}
+
+// --- Authorization: only the council may ban ---
+
+// A ban is the one action a moderator may not take alone. It is permanent, it
+// propagates a severity-5 penalty three hops through the vouch graph — costing
+// people whose only involvement was vouching for the target — and nothing in
+// the system reverses any of it. The design doc's authorization matrix reserves
+// it for the council, and the route group requires only the moderator role, so
+// this is where that has to hold.
+func TestModerationActionService_TakeAction_BanRequiresCouncil(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    domain.Role
+		allowed bool
+	}{
+		{"a moderator may not ban", domain.RoleModerator, false},
+		{"a member may not ban", domain.RoleMember, false},
+		{"the council may ban", domain.RoleCouncil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actions := newMockActionRepo()
+			users := newMockActionUserLookup()
+			users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, Role: domain.RoleMember}
+			addActor(users, "mod-1", tt.role)
+			enforcer := newMockUserEnforcer()
+
+			svc := newTestModerationActionService(
+				actions, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+			_, err := svc.TakeAction(
+				context.Background(), "mod-1", "target-1", domain.ActionBan, 5, "banned", nil)
+
+			if tt.allowed {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(actions.actions) != 1 {
+					t.Fatalf("%d actions written, want the ban recorded", len(actions.actions))
+				}
+				if enforcer.roleUpdates["target-1"] != domain.RoleBanned {
+					t.Error("the ban was recorded but never enforced")
+				}
+				return
+			}
+
+			if !errors.Is(err, ErrForbidden) {
+				t.Fatalf("error = %v, want %v", err, ErrForbidden)
+			}
+			// A refused ban must leave no trace: the audit trail is public, and
+			// an action row would report a ban that never happened.
+			if len(actions.actions) != 0 {
+				t.Errorf("%d actions written despite the ban being refused", len(actions.actions))
+			}
+			if len(enforcer.roleUpdates) != 0 || len(enforcer.trustUpdates) != 0 {
+				t.Error("the target was enforced against despite the ban being refused")
+			}
+		})
+	}
+}
+
+// The council floor is specific to the ban. Everything else on the matrix stays
+// a moderator's to decide, and pushing them all up a rank would leave day-to-day
+// moderation waiting on the council.
+func TestModerationActionService_TakeAction_ModeratorKeepsTheOtherActions(t *testing.T) {
+	tests := []struct {
+		name     string
+		action   domain.ActionType
+		severity int
+		duration *int64
+	}{
+		{"warn", domain.ActionWarn, 2, nil},
+		{"mute", domain.ActionMute, 3, int64Ptr(3600)},
+		{"suspend", domain.ActionSuspend, 4, int64Ptr(86400)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actions := newMockActionRepo()
+			users := newMockActionUserLookup()
+			users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, Role: domain.RoleMember}
+			addActor(users, "mod-1", domain.RoleModerator)
+
+			svc := newTestModerationActionService(
+				actions, users, newMockPenaltyRepo(), newMockPenaltyGraph(), newMockUserEnforcer())
+
+			if _, err := svc.TakeAction(
+				context.Background(), "mod-1", "target-1", tt.action, tt.severity, "reason", tt.duration,
+			); err != nil {
+				t.Fatalf("a moderator was refused a %s: %v", tt.action, err)
+			}
+			if len(actions.actions) != 1 {
+				t.Fatalf("%d actions written, want the %s recorded", len(actions.actions), tt.action)
 			}
 		})
 	}
@@ -331,6 +445,7 @@ func TestModerationActionService_TakeAction_ValidBan(t *testing.T) {
 	actionRepo := newMockActionRepo()
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+	addActor(users, "mod-1", domain.RoleCouncil)
 	penaltyRepo := newMockPenaltyRepo()
 	graph := newMockPenaltyGraph()
 	graph.vouchers["v1"] = 1
@@ -374,6 +489,11 @@ func TestModerationActionService_TakeAction_AllValidCombos(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			users := newMockActionUserLookup()
 			users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true}
+			// A council caller, so that every row here is testing the
+			// action/severity pairing rather than the caller's rank. Which rank
+			// each action needs is
+			// TestModerationActionService_TakeAction_BanRequiresCouncil's job.
+			addActor(users, "mod-1", domain.RoleCouncil)
 
 			svc := newTestModerationActionService(
 				newMockActionRepo(), users,
@@ -559,8 +679,8 @@ func TestModerationActionService_TakeAction_MuteLeavesTrustAlone(t *testing.T) {
 	if score, ok := enforcer.trustUpdates["target-1"]; ok {
 		t.Errorf("mute wrote trust score %v; muted_until is the mechanism now", score)
 	}
-	if len(enforcer.deactivatedIDs) != 0 {
-		t.Errorf("mute deactivated %v; a mute is not a suspension", enforcer.deactivatedIDs)
+	if len(enforcer.suspendedIDs) != 0 {
+		t.Errorf("mute suspended %v; a mute is not a suspension", enforcer.suspendedIDs)
 	}
 	if len(enforcer.roleUpdates) != 0 {
 		t.Errorf("mute changed roles %v; a mute is not a ban", enforcer.roleUpdates)
@@ -598,8 +718,11 @@ func TestModerationActionService_TakeAction_MuteAppliesBelowThePostingThreshold(
 	}
 }
 
-// --- Enforcement: suspend deactivates user ---
+// --- Enforcement: suspend records an expiry ---
 
+// The suspension has to be written as an expiry taken from the duration the
+// moderator chose. It used to call DeactivateUser, which sets a flag no query
+// sets back, so a seven-day suspension ran until somebody edited the database.
 func TestModerationActionService_TakeAction_SuspendEnforcement(t *testing.T) {
 	actionRepo := newMockActionRepo()
 	users := newMockActionUserLookup()
@@ -613,8 +736,44 @@ func TestModerationActionService_TakeAction_SuspendEnforcement(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(enforcer.deactivatedIDs) != 1 || enforcer.deactivatedIDs[0] != "target-1" {
-		t.Errorf("deactivated = %v, want [target-1]", enforcer.deactivatedIDs)
+	until, ok := enforcer.suspensions["target-1"]
+	if !ok {
+		t.Fatal("expected suspended_until to be set for target-1")
+	}
+	if until == nil || !until.Equal(fixedNow.Add(24*time.Hour)) {
+		t.Errorf("suspended_until = %v, want %v", until, fixedNow.Add(24*time.Hour))
+	}
+	// The same expiry the moderator UI shows on the action row.
+	if action := actionRepo.actions[0]; action.ExpiresAt == nil || !action.ExpiresAt.Equal(*until) {
+		t.Errorf("action expires_at = %v, want it to match suspended_until %v", action.ExpiresAt, *until)
+	}
+}
+
+// A suspension must not reach for is_active, which is the flag that made every
+// one of them permanent. The enforcer no longer offers DeactivateUser at all,
+// so this asserts the remaining paths: nothing else about the user changes.
+func TestModerationActionService_TakeAction_SuspendTouchesNothingElse(t *testing.T) {
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0, Role: domain.RoleMember}
+	enforcer := newMockUserEnforcer()
+
+	svc := newTestModerationActionService(
+		newMockActionRepo(), users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
+
+	if _, err := svc.TakeAction(
+		context.Background(), "mod-1", "target-1", domain.ActionSuspend, 4, "suspended", int64Ptr(86400),
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(enforcer.roleUpdates) != 0 {
+		t.Errorf("suspend changed roles %v; a suspension is not a ban", enforcer.roleUpdates)
+	}
+	if len(enforcer.trustUpdates) != 0 {
+		t.Errorf("suspend wrote trust %v; suspended_until is the mechanism", enforcer.trustUpdates)
+	}
+	if len(enforcer.mutes) != 0 {
+		t.Errorf("suspend wrote muted_until %v", enforcer.mutes)
 	}
 }
 
@@ -624,6 +783,7 @@ func TestModerationActionService_TakeAction_BanEnforcement(t *testing.T) {
 	actionRepo := newMockActionRepo()
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0, Role: domain.RoleMember}
+	addActor(users, "mod-1", domain.RoleCouncil)
 	enforcer := newMockUserEnforcer()
 
 	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
@@ -665,8 +825,8 @@ func TestModerationActionService_TakeAction_WarnNoEnforcement(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(enforcer.deactivatedIDs) != 0 {
-		t.Error("expected no deactivation for warn")
+	if len(enforcer.suspendedIDs) != 0 {
+		t.Error("expected no suspension for warn")
 	}
 	if len(enforcer.roleUpdates) != 0 {
 		t.Error("expected no role update for warn")
@@ -754,10 +914,14 @@ func TestModerationActionService_TakeAction_EnforcesWhenGraphUnavailable(t *test
 			},
 		},
 		{
-			name: "suspend deactivates", action: domain.ActionSuspend, severity: 4, duration: int64Ptr(86400),
+			name: "suspend records its expiry", action: domain.ActionSuspend, severity: 4, duration: int64Ptr(86400),
 			verify: func(t *testing.T, e *mockUserEnforcer) {
-				if len(e.deactivatedIDs) != 1 || e.deactivatedIDs[0] != "target-1" {
-					t.Errorf("deactivated = %v, want [target-1]", e.deactivatedIDs)
+				until, ok := e.suspensions["target-1"]
+				if !ok {
+					t.Fatal("expected suspended_until to be set for target-1")
+				}
+				if until == nil || !until.Equal(fixedNow.Add(24*time.Hour)) {
+					t.Errorf("suspended_until = %v, want %v", until, fixedNow.Add(24*time.Hour))
 				}
 			},
 		},
@@ -778,6 +942,7 @@ func TestModerationActionService_TakeAction_EnforcesWhenGraphUnavailable(t *test
 		t.Run(tt.name, func(t *testing.T) {
 			users := newMockActionUserLookup()
 			users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 80.0, Role: domain.RoleMember}
+			addActor(users, "mod-1", domain.RoleCouncil)
 			graph := newMockPenaltyGraph()
 			graph.err = graphErr
 			enforcer := newMockUserEnforcer()
@@ -807,7 +972,7 @@ func TestModerationActionService_TakeAction_EnforcementError(t *testing.T) {
 	users := newMockActionUserLookup()
 	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, TrustScore: 50.0}
 	enforcer := newMockUserEnforcer()
-	enforcer.deactivateErr = errors.New("db unavailable")
+	enforcer.suspendErr = errors.New("db unavailable")
 
 	svc := newTestModerationActionService(actionRepo, users, newMockPenaltyRepo(), newMockPenaltyGraph(), enforcer)
 
@@ -904,8 +1069,8 @@ func TestModerationActionService_LiftMute_LeavesTrustAlone(t *testing.T) {
 	if users.users["target-1"].TrustScore != 50.0 {
 		t.Errorf("trust score = %v, want it unchanged at 50", users.users["target-1"].TrustScore)
 	}
-	if len(enforcer.roleUpdates) != 0 || len(enforcer.deactivatedIDs) != 0 {
-		t.Error("lifting a mute changed the role or activation state")
+	if len(enforcer.roleUpdates) != 0 || len(enforcer.suspensions) != 0 {
+		t.Error("lifting a mute changed the role or the suspension")
 	}
 }
 

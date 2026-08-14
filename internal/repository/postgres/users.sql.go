@@ -21,7 +21,9 @@ func (q *Queries) ClearUserTrustBelowSince(ctx context.Context, id string) error
 }
 
 const countAllUsers = `-- name: CountAllUsers :one
-SELECT COUNT(*) FROM users WHERE is_active = TRUE
+SELECT COUNT(*) FROM users
+WHERE is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 `
 
 func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
@@ -34,6 +36,7 @@ func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
 const countCouncilMembers = `-- name: CountCouncilMembers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'council' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 `
 
 func (q *Queries) CountCouncilMembers(ctx context.Context) (int64, error) {
@@ -46,6 +49,7 @@ func (q *Queries) CountCouncilMembers(ctx context.Context) (int64, error) {
 const countModerators = `-- name: CountModerators :one
 SELECT COUNT(*) FROM users
 WHERE role = 'moderator' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 `
 
 func (q *Queries) CountModerators(ctx context.Context) (int64, error) {
@@ -58,6 +62,7 @@ func (q *Queries) CountModerators(ctx context.Context) (int64, error) {
 const countPendingUsers = `-- name: CountPendingUsers :one
 SELECT COUNT(*) FROM users
 WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 `
 
 func (q *Queries) CountPendingUsers(ctx context.Context) (int64, error) {
@@ -70,6 +75,7 @@ func (q *Queries) CountPendingUsers(ctx context.Context) (int64, error) {
 const countUsersByMinRole = `-- name: CountUsersByMinRole :one
 SELECT COUNT(*) FROM users
 WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 `
 
 func (q *Queries) CountUsersByMinRole(ctx context.Context) (int64, error) {
@@ -82,7 +88,7 @@ func (q *Queries) CountUsersByMinRole(ctx context.Context) (int64, error) {
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until
 `
 
 type CreateUserParams struct {
@@ -128,6 +134,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.TrustBelowSince,
 		&i.MutedUntil,
+		&i.SuspendedUntil,
 	)
 	return i, err
 }
@@ -136,15 +143,26 @@ const deactivateUser = `-- name: DeactivateUser :exec
 UPDATE users SET is_active = FALSE, updated_at = NOW() WHERE id = $1
 `
 
+// Takes an account out of service indefinitely. Suspension no longer uses this:
+// nothing sets is_active back to TRUE, which is what made every timed
+// suspension permanent. Use SetUserSuspendedUntil for anything that ends.
 func (q *Queries) DeactivateUser(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, deactivateUser, id)
 	return err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until FROM users WHERE id = $1
+
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users WHERE id = $1
 `
 
+// Every query below that asks for the active users means "active and not
+// currently serving a suspension". A suspension is a value with an expiry
+// (suspended_until) rather than a flag, so the clock is part of the question:
+// `is_active = TRUE` alone would count a suspended member among the members,
+// and dropping the pair would leave one still counted a day after their
+// suspension lapsed. Postgres NOW() is the authority, matching
+// domain.User.IsSuspended on the read side.
 func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
 	var i User
@@ -162,12 +180,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 		&i.UpdatedAt,
 		&i.TrustBelowSince,
 		&i.MutedUntil,
+		&i.SuspendedUntil,
 	)
 	return i, err
 }
 
 const getUserByKratosID = `-- name: GetUserByKratosID :one
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until FROM users WHERE kratos_identity_id = $1
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users WHERE kratos_identity_id = $1
 `
 
 func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string) (User, error) {
@@ -187,13 +206,15 @@ func (q *Queries) GetUserByKratosID(ctx context.Context, kratosIdentityID string
 		&i.UpdatedAt,
 		&i.TrustBelowSince,
 		&i.MutedUntil,
+		&i.SuspendedUntil,
 	)
 	return i, err
 }
 
 const listActiveNonBannedUsers = `-- name: ListActiveNonBannedUsers :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
 WHERE is_active = TRUE AND role NOT IN ('pending', 'banned')
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 ORDER BY created_at
 `
 
@@ -220,6 +241,7 @@ func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) 
 			&i.UpdatedAt,
 			&i.TrustBelowSince,
 			&i.MutedUntil,
+			&i.SuspendedUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -232,8 +254,9 @@ func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) 
 }
 
 const listPendingUsers = `-- name: ListPendingUsers :many
-SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until FROM users
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
 WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
 ORDER BY created_at ASC
 `
 
@@ -260,6 +283,7 @@ func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 			&i.UpdatedAt,
 			&i.TrustBelowSince,
 			&i.MutedUntil,
+			&i.SuspendedUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -288,11 +312,27 @@ func (q *Queries) SetUserMutedUntil(ctx context.Context, arg SetUserMutedUntilPa
 	return err
 }
 
+const setUserSuspendedUntil = `-- name: SetUserSuspendedUntil :exec
+UPDATE users SET suspended_until = $2, updated_at = NOW() WHERE id = $1
+`
+
+type SetUserSuspendedUntilParams struct {
+	ID             string             `json:"id"`
+	SuspendedUntil pgtype.Timestamptz `json:"suspended_until"`
+}
+
+// The same contract as SetUserMutedUntil one severity up: NULL lifts the
+// suspension, and a new one overwrites rather than extends.
+func (q *Queries) SetUserSuspendedUntil(ctx context.Context, arg SetUserSuspendedUntilParams) error {
+	_, err := q.db.Exec(ctx, setUserSuspendedUntil, arg.ID, arg.SuspendedUntil)
+	return err
+}
+
 const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET display_name = $2, bio = $3, avatar_url = $4, updated_at = NOW()
 WHERE id = $1
-RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until
+RETURNING id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until
 `
 
 type UpdateUserProfileParams struct {
@@ -324,6 +364,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.UpdatedAt,
 		&i.TrustBelowSince,
 		&i.MutedUntil,
+		&i.SuspendedUntil,
 	)
 	return i, err
 }

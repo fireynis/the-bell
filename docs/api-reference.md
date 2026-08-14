@@ -753,7 +753,10 @@ curl -X POST https://bell.example.com/api/v1/moderation/posts/0193a7b2-.../remov
 Takes a moderation action against a user. Creates the action record and propagates trust penalties through the vouch graph.
 
 **Auth**: Required
-**Role**: `moderator` or higher
+**Role**: `moderator` or higher for `warn`, `mute`, and `suspend`; `ban` requires
+`council`. The council check is enforced in the service, runs before the target
+lookup (so a refused ban does not reveal whether the target exists), and fails
+with `403 Forbidden`.
 
 **Request**:
 
@@ -808,7 +811,7 @@ indefinite mute is a suspension, and suspend is the action for that.
 |--------|------------------|
 | `warn` | None. The penalty is the whole action |
 | `mute` | Sets `muted_until` to the action's `expires_at`, blocking `POST /api/v1/posts` until then. **Does not change the trust score** |
-| `suspend` | Deactivates the account (`is_active` becomes false) |
+| `suspend` | Sets `suspended_until` to the action's `expires_at`. The `is_active` column is not touched; the API's `is_active` field reads `false` while the suspension is in force and reverts to `true` on its own once it lapses |
 | `ban` | Sets the role to `banned` and the trust score to 0 |
 
 The mute's end time is the one the moderator chose: `users.muted_until` and the

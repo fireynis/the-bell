@@ -181,7 +181,10 @@ func TestRoleCheckerRepo_TrustBelowSince_UnknownUserIsNoop(t *testing.T) {
 
 // Promotion to moderator requires vouches from people who already hold power.
 // This count must ignore vouches from ordinary members, revoked vouches, and
-// vouches from a moderator whose own account has been deactivated.
+// vouches from a moderator whose own account has been deactivated or who is
+// serving a suspension — but it must start counting a suspended moderator's
+// vouch again once their suspension lapses, since nothing sweeps the column and
+// the query's comparison against NOW() is the whole of their reinstatement.
 func TestRoleCheckerRepo_CountActiveModeratorVouchesForUser(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
@@ -195,6 +198,8 @@ func TestRoleCheckerRepo_CountActiveModeratorVouchesForUser(t *testing.T) {
 	member := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("rc-voucher-member"), domain.RoleMember, 70)
 	revoker := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("rc-voucher-revoked"), domain.RoleModerator, 90)
 	departed := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("rc-voucher-gone"), domain.RoleModerator, 90)
+	suspended := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("rc-voucher-suspended"), domain.RoleModerator, 90)
+	released := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("rc-voucher-released"), domain.RoleModerator, 90)
 
 	now := time.Now()
 	addVouch(t, vouches, "rcv-mod", mod.ID, candidate.ID, domain.VouchActive, now)
@@ -202,8 +207,19 @@ func TestRoleCheckerRepo_CountActiveModeratorVouchesForUser(t *testing.T) {
 	addVouch(t, vouches, "rcv-member", member.ID, candidate.ID, domain.VouchActive, now)
 	addVouch(t, vouches, "rcv-revoked", revoker.ID, candidate.ID, domain.VouchRevoked, now)
 	addVouch(t, vouches, "rcv-departed", departed.ID, candidate.ID, domain.VouchActive, now)
+	addVouch(t, vouches, "rcv-suspended", suspended.ID, candidate.ID, domain.VouchActive, now)
+	addVouch(t, vouches, "rcv-released", released.ID, candidate.ID, domain.VouchActive, now)
 	if err := users.DeactivateUser(ctx, departed.ID); err != nil {
 		t.Fatalf("DeactivateUser: %v", err)
+	}
+
+	inForce := now.Add(24 * time.Hour)
+	if err := users.SetUserSuspendedUntil(ctx, suspended.ID, &inForce); err != nil {
+		t.Fatalf("SetUserSuspendedUntil: %v", err)
+	}
+	lapsed := now.Add(-time.Hour)
+	if err := users.SetUserSuspendedUntil(ctx, released.ID, &lapsed); err != nil {
+		t.Fatalf("SetUserSuspendedUntil: %v", err)
 	}
 
 	// A vouch the candidate gave to a moderator is the wrong direction and must
@@ -214,8 +230,8 @@ func TestRoleCheckerRepo_CountActiveModeratorVouchesForUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountActiveModeratorVouchesForUser: %v", err)
 	}
-	if got != 2 {
-		t.Errorf("count = %d, want 2 (the active moderator and council vouches)", got)
+	if got != 3 {
+		t.Errorf("count = %d, want 3 (the moderator, the council member, and the moderator whose suspension has lapsed)", got)
 	}
 
 	if got, err := repo.CountActiveModeratorVouchesForUser(ctx, "no-such-user"); err != nil || got != 0 {

@@ -45,6 +45,13 @@ type User struct {
 	// endpoint. The response types opt in instead: see handler's own /users/me
 	// shape.
 	MutedUntil *time.Time `json:"-"`
+
+	// SuspendedUntil is when a suspension expires; nil means not suspended.
+	//
+	// Untagged for the same reason as MutedUntil. The suspension itself is not
+	// a secret — is_active already tells the caller they cannot act — but the
+	// date belongs to the moderators' view, not to every reader of a list.
+	SuspendedUntil *time.Time `json:"-"`
 }
 
 // IsMuted reports whether a moderator's mute is still in force at now.
@@ -53,6 +60,23 @@ type User struct {
 // whole mechanism, so a mute simply stops applying once its time passes.
 func (u *User) IsMuted(now time.Time) bool {
 	return u.MutedUntil != nil && now.Before(*u.MutedUntil)
+}
+
+// IsSuspended reports whether a moderator's suspension is still in force at now.
+//
+// Identical in shape to IsMuted, and for the same reason: a suspension ends by
+// its own timestamp passing, with nothing to run and nothing to remember. It
+// used to be enforced by clearing is_active, which no query ever set back, so
+// every timed suspension was in practice permanent.
+//
+// IsActive is where this is enforced across the codebase — the repository folds
+// a suspension in force into it when it hydrates a user, so every existing gate
+// (CanPost, CanVouch, CanModerate, the RequireActive middleware) refuses a
+// suspended user and admits them again the moment the suspension lapses,
+// without each of them growing a clock. This method is for the paths that need
+// to name the suspension itself rather than its effect.
+func (u *User) IsSuspended(now time.Time) bool {
+	return u.SuspendedUntil != nil && now.Before(*u.SuspendedUntil)
 }
 
 // CanPost reports whether the user may publish a post at now.
@@ -66,9 +90,13 @@ func (u *User) IsMuted(now time.Time) bool {
 // question every caller asks. Splitting the answer across CanPost plus a
 // separate mute check would make correctness depend on each caller remembering
 // both.
+// A suspension is checked here as well as folded into IsActive by the
+// repository, so a User assembled in memory — a test, or any future caller that
+// does not come through a row — cannot post while serving one either.
 func (u *User) CanPost(now time.Time) bool {
 	return u.IsActive &&
 		!u.IsMuted(now) &&
+		!u.IsSuspended(now) &&
 		u.TrustScore >= PostingThreshold &&
 		u.Role != RolePending && u.Role != RoleBanned
 }

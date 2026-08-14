@@ -120,6 +120,32 @@ func (r *UserRepo) SetUserMutedUntil(ctx context.Context, id string, until *time
 	})
 }
 
+// SetUserSuspendedUntil records when a suspension expires. A nil until lifts it.
+func (r *UserRepo) SetUserSuspendedUntil(ctx context.Context, id string, until *time.Time) error {
+	suspended := pgtype.Timestamptz{}
+	if until != nil {
+		suspended = pgtype.Timestamptz{Time: *until, Valid: true}
+	}
+	return r.q.SetUserSuspendedUntil(ctx, SetUserSuspendedUntilParams{
+		ID:             id,
+		SuspendedUntil: suspended,
+	})
+}
+
+// userFromRow builds the domain user, folding a suspension that is still in
+// force into IsActive.
+//
+// IsActive is therefore not a plain mirror of users.is_active: it answers "may
+// this account act right now", which is the question every caller of it was
+// already asking. Deriving it here is what makes a suspension expire on its own
+// everywhere at once — CanVouch, CanModerate and the RequireActive middleware
+// all read this one field and none of them holds a clock. The alternative was a
+// clock parameter on each of them, and a suspension that went on applying
+// wherever one was forgotten.
+//
+// The column keeps its own meaning and is never written back from this value:
+// the only query that writes is_active is DeactivateUser, and nothing
+// round-trips a hydrated user into an update.
 func userFromRow(row User) *domain.User {
 	u := &domain.User{
 		ID:               row.ID,
@@ -129,7 +155,6 @@ func userFromRow(row User) *domain.User {
 		AvatarURL:        row.AvatarUrl,
 		TrustScore:       row.TrustScore,
 		Role:             domain.Role(row.Role),
-		IsActive:         row.IsActive,
 		JoinedAt:         row.JoinedAt.Time,
 		CreatedAt:        row.CreatedAt.Time,
 		UpdatedAt:        row.UpdatedAt.Time,
@@ -142,5 +167,14 @@ func userFromRow(row User) *domain.User {
 		t := row.MutedUntil.Time
 		u.MutedUntil = &t
 	}
+	if row.SuspendedUntil.Valid {
+		t := row.SuspendedUntil.Time
+		u.SuspendedUntil = &t
+	}
+	// time.Now() rather than an injected clock: the queries that filter on this
+	// same condition compare against the database's NOW(), and a second clock
+	// that could be set independently would let the two disagree about who is
+	// suspended.
+	u.IsActive = row.IsActive && !u.IsSuspended(time.Now())
 	return u
 }

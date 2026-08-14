@@ -120,8 +120,8 @@ type enforcementStep int
 const (
 	// enforceMute records when the mute expires on the user row.
 	enforceMute enforcementStep = iota
-	// enforceDeactivate suspends the account.
-	enforceDeactivate
+	// enforceSuspend records when the suspension expires on the user row.
+	enforceSuspend
 	// enforceBanRole moves the user to the banned role.
 	enforceBanRole
 	// enforceZeroTrust wipes the trust score.
@@ -147,12 +147,18 @@ const (
 // The user's current score is no longer an input: a mute applies even to
 // someone already below the threshold, because their score may recover before
 // the mute expires.
+//
+// A suspension writes suspended_until, for the reason it now shares with the
+// mute: it has to end. It used to call DeactivateUser, and is_active is a flag
+// no query ever set back to TRUE, so a suspension the moderator gave seven days
+// lasted until somebody edited the database. Only a ban is meant to be
+// permanent, and a ban is enforced by the role.
 func planEnforcement(actionType domain.ActionType) []enforcementStep {
 	switch actionType {
 	case domain.ActionMute:
 		return []enforcementStep{enforceMute}
 	case domain.ActionSuspend:
-		return []enforcementStep{enforceDeactivate}
+		return []enforcementStep{enforceSuspend}
 	case domain.ActionBan:
 		return []enforcementStep{enforceBanRole, enforceZeroTrust}
 	default:
@@ -213,11 +219,15 @@ type TakeActionResult struct {
 }
 
 // UserEnforcer applies immediate user state changes for moderation actions.
+//
+// DeactivateUser is deliberately absent. Suspension was its only caller, and it
+// writes the one piece of user state nothing in the system can undo; naming it
+// here again would offer the next contributor the same trap.
 type UserEnforcer interface {
-	DeactivateUser(ctx context.Context, id string) error
 	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
 	UpdateUserTrustScore(ctx context.Context, id string, score float64) error
 	SetUserMutedUntil(ctx context.Context, id string, until *time.Time) error
+	SetUserSuspendedUntil(ctx context.Context, id string, until *time.Time) error
 }
 
 // ActionHistoryEntry pairs a moderation action with its trust penalties.
@@ -266,7 +276,12 @@ func NewModerationActionService(
 	}
 }
 
-// TakeAction creates a moderation action and triggers trust penalty propagation.
+// TakeAction authorizes and creates a moderation action, enforces it against
+// the target, and triggers trust penalty propagation.
+//
+// moderatorID is the caller the route guard has already established as a
+// moderator; authorizeAction is what decides whether that rank reaches the
+// action they asked for.
 func (s *ModerationActionService) TakeAction(
 	ctx context.Context,
 	moderatorID, targetUserID string,
@@ -277,6 +292,13 @@ func (s *ModerationActionService) TakeAction(
 ) (*TakeActionResult, error) {
 	req, err := validateActionRequest(moderatorID, targetUserID, actionType, severity, reason, durationSeconds)
 	if err != nil {
+		return nil, err
+	}
+
+	// Before the target is looked up and long before anything is written: a
+	// moderator who may not ban must not learn from the response whether the
+	// account they aimed at exists.
+	if err := s.authorizeAction(ctx, req); err != nil {
 		return nil, err
 	}
 
@@ -369,6 +391,40 @@ func requireModerator(moderator *domain.User) error {
 		return fmt.Errorf("%w: moderator role required", ErrForbidden)
 	}
 	return nil
+}
+
+// requireCouncil is the floor for the one action that exceeds a moderator's
+// authority. Same shape and same error as requireModerator, one rank up.
+func requireCouncil(actor *domain.User) error {
+	if actor == nil || !actor.IsCouncil() {
+		return fmt.Errorf("%w: council role required", ErrForbidden)
+	}
+	return nil
+}
+
+// authorizeAction checks what the moderator's rank permits, beyond what the
+// route group already required of them.
+//
+// Only a ban needs the lookup, so only a ban pays for it. Every other action is
+// within a moderator's authority, and the route group has already established
+// that the caller is one.
+//
+// A ban is the one irreversible act in the system: it is permanent, it
+// propagates a severity-5 penalty three hops through the vouch graph — costing
+// people who merely vouched for the target — and nothing in the codebase
+// reverses any of that. The design doc's authorization matrix reserves it for
+// the council, and until now nothing enforced that: POST /v1/moderation/actions
+// requires only the moderator role, and validateActionRequest never asked who
+// was calling.
+func (s *ModerationActionService) authorizeAction(ctx context.Context, req actionRequest) error {
+	if req.ActionType != domain.ActionBan {
+		return nil
+	}
+	moderator, err := s.users.GetUserByID(ctx, req.ModeratorID)
+	if err != nil {
+		return fmt.Errorf("looking up the acting moderator: %w", err)
+	}
+	return requireCouncil(moderator)
 }
 
 // MuteStatus reports when a user's mute expires, or nil when they are not
@@ -620,7 +676,9 @@ func (s *ModerationHistoryService) GetActionHistory(
 //
 // expiresAt is the action's own expiry, computed once in TakeAction from the
 // duration the moderator chose. Reusing it rather than recomputing keeps the
-// action row's expires_at and the user's muted_until from ever disagreeing.
+// action row's expires_at and the user's muted_until or suspended_until from
+// ever disagreeing — the moderator UI shows the former and the gates read the
+// latter, so a second clock reading would let the two tell different stories.
 func (s *ModerationActionService) enforce(ctx context.Context, actionType domain.ActionType, user *domain.User, expiresAt *time.Time) error {
 	if s.enforcer == nil {
 		return nil
@@ -631,8 +689,8 @@ func (s *ModerationActionService) enforce(ctx context.Context, actionType domain
 		switch step {
 		case enforceMute:
 			err = s.enforcer.SetUserMutedUntil(ctx, user.ID, expiresAt)
-		case enforceDeactivate:
-			err = s.enforcer.DeactivateUser(ctx, user.ID)
+		case enforceSuspend:
+			err = s.enforcer.SetUserSuspendedUntil(ctx, user.ID, expiresAt)
 		case enforceBanRole:
 			err = s.enforcer.UpdateUserRole(ctx, user.ID, domain.RoleBanned)
 		case enforceZeroTrust:

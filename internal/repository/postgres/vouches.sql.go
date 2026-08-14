@@ -18,8 +18,14 @@ WHERE v.vouchee_id = $1
   AND v.status = 'active'
   AND u.role IN ('moderator', 'council')
   AND u.is_active = TRUE
+  AND (u.suspended_until IS NULL OR u.suspended_until <= NOW())
 `
 
+// The suspension clause pairs with is_active for the reason spelled out at the
+// top of users.sql: a suspension is an expiry rather than a flag, so asking
+// only `is_active = TRUE` would let a suspended moderator's vouch carry someone
+// to promotion, and dropping the pair would keep discounting it long after the
+// suspension lapsed.
 func (q *Queries) CountActiveModeratorVouchesForUser(ctx context.Context, voucheeID string) (int64, error) {
 	row := q.db.QueryRow(ctx, countActiveModeratorVouchesForUser, voucheeID)
 	var count int64

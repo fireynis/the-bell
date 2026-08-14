@@ -193,6 +193,57 @@ func TestModerationHandler_TakeAction(t *testing.T) {
 	}
 }
 
+// --- TakeAction: the ban floor at the HTTP boundary ---
+
+// The route group requires only the moderator role, so a moderator reaches this
+// handler and the refusal has to arrive as a 403 rather than as a created
+// action. The rule itself is the service's, and is covered there; this is about
+// the status and the empty audit trail the caller sees.
+func TestModerationHandler_TakeAction_BanByAModeratorIsForbidden(t *testing.T) {
+	actions := newMockActionRepoH()
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, Role: domain.RoleMember}
+	users.users["mod-1"] = testModerator()
+
+	h := handler.NewModerationHandler(newTestModerationActionService(
+		actions, users, newMockPenaltyRepoH(), newMockPenaltyGraphH()))
+
+	body := `{"target_user_id":"target-1","action_type":"ban","severity":5,"reason":"spam"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/actions", strings.NewReader(body))
+	req = withUser(req, testModerator())
+	rec := httptest.NewRecorder()
+
+	h.TakeAction(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if len(actions.actions) != 0 {
+		t.Errorf("%d actions written for a refused ban", len(actions.actions))
+	}
+}
+
+func TestModerationHandler_TakeAction_BanByTheCouncilIsCreated(t *testing.T) {
+	council := &domain.User{ID: "council-1", Role: domain.RoleCouncil, IsActive: true}
+	users := newMockActionUserLookup()
+	users.users["target-1"] = &domain.User{ID: "target-1", IsActive: true, Role: domain.RoleMember}
+	users.users[council.ID] = council
+
+	h := handler.NewModerationHandler(newTestModerationActionService(
+		newMockActionRepoH(), users, newMockPenaltyRepoH(), newMockPenaltyGraphH()))
+
+	body := `{"target_user_id":"target-1","action_type":"ban","severity":5,"reason":"spam"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/moderation/actions", strings.NewReader(body))
+	req = withUser(req, council)
+	rec := httptest.NewRecorder()
+
+	h.TakeAction(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
 // --- TakeAction no user ---
 
 func TestModerationHandler_TakeAction_NoUser(t *testing.T) {
@@ -517,7 +568,9 @@ func (m *mockLiftEnforcer) SetUserMutedUntil(_ context.Context, id string, until
 	return nil
 }
 
-func (m *mockLiftEnforcer) DeactivateUser(_ context.Context, _ string) error { return nil }
+func (m *mockLiftEnforcer) SetUserSuspendedUntil(_ context.Context, _ string, _ *time.Time) error {
+	return nil
+}
 
 func (m *mockLiftEnforcer) UpdateUserRole(_ context.Context, _ string, _ domain.Role) error {
 	return nil

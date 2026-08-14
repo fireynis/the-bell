@@ -29,7 +29,7 @@ import (
 
 // latestVersion is the highest migration version. Kept as a literal so that
 // adding a migration without considering its Down block trips this file.
-const latestVersion = int64(18)
+const latestVersion = int64(19)
 
 // testProvider builds a goose provider over the test's own database.
 //

@@ -193,7 +193,7 @@ func TestPlanEnforcement(t *testing.T) {
 	}{
 		{"warn changes no state", domain.ActionWarn, nil},
 		{"mute records its expiry", domain.ActionMute, []enforcementStep{enforceMute}},
-		{"suspend deactivates", domain.ActionSuspend, []enforcementStep{enforceDeactivate}},
+		{"suspend records its expiry", domain.ActionSuspend, []enforcementStep{enforceSuspend}},
 		{"ban sets role and zeroes trust", domain.ActionBan, []enforcementStep{enforceBanRole, enforceZeroTrust}},
 		{"unknown action changes no state", domain.ActionType("???"), nil},
 		{"empty action changes no state", domain.ActionType(""), nil},

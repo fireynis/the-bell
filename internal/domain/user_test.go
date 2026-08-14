@@ -44,6 +44,16 @@ func TestUser_CanPost(t *testing.T) {
 			domain.User{IsActive: true, TrustScore: 50, Role: domain.RoleMember, MutedUntil: nil},
 			true,
 		},
+		{
+			"suspended member cannot post however high their trust",
+			domain.User{IsActive: true, TrustScore: 95, Role: domain.RoleMember, SuspendedUntil: ptr(canPostNow.Add(time.Hour))},
+			false,
+		},
+		{
+			"expired suspension no longer blocks",
+			domain.User{IsActive: true, TrustScore: 50, Role: domain.RoleMember, SuspendedUntil: ptr(canPostNow.Add(-time.Hour))},
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,6 +164,68 @@ func TestUser_IsMuted_NilIsNeverMuted(t *testing.T) {
 		if u.IsMuted(now) {
 			t.Errorf("IsMuted(%v) = true with a nil muted_until", now)
 		}
+	}
+}
+
+// A suspension has to end on its own. It was enforced by clearing is_active,
+// which nothing ever set back, so "suspended for 7 days" meant suspended
+// forever. The expiry passing is now the whole of the release: no sweep runs,
+// and nothing has to notice.
+func TestUser_IsSuspended_Boundary(t *testing.T) {
+	expiry := canPostNow
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"a nanosecond before expiry", expiry.Add(-time.Nanosecond), true},
+		{"exactly at expiry", expiry, false},
+		{"a nanosecond after expiry", expiry.Add(time.Nanosecond), false},
+		{"the day the suspension was issued", expiry.Add(-7 * 24 * time.Hour), true},
+		{"a week after it lapsed", expiry.Add(7 * 24 * time.Hour), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := domain.User{SuspendedUntil: &expiry}
+			if got := u.IsSuspended(tt.now); got != tt.want {
+				t.Errorf("IsSuspended(%v) = %v, want %v", tt.now, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUser_IsSuspended_NilIsNeverSuspended(t *testing.T) {
+	u := domain.User{}
+	for _, now := range []time.Time{{}, canPostNow, canPostNow.Add(100 * 365 * 24 * time.Hour)} {
+		if u.IsSuspended(now) {
+			t.Errorf("IsSuspended(%v) = true with a nil suspended_until", now)
+		}
+	}
+}
+
+// The mirror of the mute case: a lapsed suspension releases the user from the
+// suspension and from nothing else.
+func TestUser_CanPost_ExpiredSuspensionDoesNotOverrideOtherGates(t *testing.T) {
+	past := canPostNow.Add(-time.Hour)
+
+	tests := []struct {
+		name string
+		user domain.User
+	}{
+		{"banned", domain.User{IsActive: true, TrustScore: 80, Role: domain.RoleBanned, SuspendedUntil: &past}},
+		{"deactivated", domain.User{IsActive: false, TrustScore: 80, Role: domain.RoleMember, SuspendedUntil: &past}},
+		{"still muted", domain.User{IsActive: true, TrustScore: 80, Role: domain.RoleMember, SuspendedUntil: &past, MutedUntil: ptr(canPostNow.Add(time.Hour))}},
+		{"low trust", domain.User{IsActive: true, TrustScore: 10, Role: domain.RoleMember, SuspendedUntil: &past}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.user.CanPost(canPostNow) {
+				t.Error("CanPost() = true; a lapsed suspension revived an account another gate had stopped")
+			}
+		})
 	}
 }
 
