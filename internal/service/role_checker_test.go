@@ -120,9 +120,10 @@ func TestRoleChecker_Run(t *testing.T) {
 				},
 				{
 					// First dip below the threshold: starts the demotion clock.
+					// Members are judged against 35, not the moderator's 70.
 					ID:          "freshly-dipped",
 					DisplayName: "Erin",
-					TrustScore:  65.0,
+					TrustScore:  30.0,
 					Role:        domain.RoleMember,
 					JoinedAt:    roleCheckNow.AddDate(0, 0, -100),
 				},
@@ -139,7 +140,7 @@ func TestRoleChecker_Run(t *testing.T) {
 				{
 					ID:              "demotable-member",
 					DisplayName:     "Bob",
-					TrustScore:      65.0,
+					TrustScore:      25.0,
 					Role:            domain.RoleMember,
 					JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
 					TrustBelowSince: &thirtyOneDaysAgo,
@@ -255,7 +256,7 @@ func TestRoleChecker_DemotionClearsTrustBelowSince(t *testing.T) {
 		{
 			ID:              "user-1",
 			DisplayName:     "Bob",
-			TrustScore:      60.0,
+			TrustScore:      25.0,
 			Role:            domain.RoleMember,
 			JoinedAt:        roleCheckNow.AddDate(0, 0, -100),
 			TrustBelowSince: &thirtyOneDaysAgo,
@@ -440,7 +441,7 @@ func TestRoleChecker_Run_FailedDemotionWriteIsNotReported(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	demotable := []*domain.User{
 		{
-			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
+			ID: "user-1", DisplayName: "Bob", TrustScore: 25,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
 			TrustBelowSince: &thirtyOneDaysAgo,
 		},
@@ -479,7 +480,7 @@ func TestRoleChecker_Run_DemotionSurvivesAFailedTimerClear(t *testing.T) {
 	repo.clearTrustBelowErr = errors.New("db write failed")
 	repo.users = []*domain.User{
 		{
-			ID: "user-1", DisplayName: "Bob", TrustScore: 60,
+			ID: "user-1", DisplayName: "Bob", TrustScore: 25,
 			Role: domain.RoleMember, JoinedAt: roleCheckNow.AddDate(0, 0, -100),
 			TrustBelowSince: &thirtyOneDaysAgo,
 		},
@@ -788,7 +789,7 @@ func TestRoleChecker_Run_WithoutARefresherUsesStoredScores(t *testing.T) {
 	thirtyOneDaysAgo := roleCheckNow.AddDate(0, 0, -31)
 	repo := newMockRoleCheckerRepo()
 	repo.users = []*domain.User{
-		{ID: "user-1", DisplayName: "Bob", TrustScore: 60, Role: domain.RoleMember,
+		{ID: "user-1", DisplayName: "Bob", TrustScore: 25, Role: domain.RoleMember,
 			JoinedAt: roleCheckNow.AddDate(0, 0, -100), TrustBelowSince: &thirtyOneDaysAgo},
 	}
 

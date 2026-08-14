@@ -149,6 +149,7 @@ services:
       PORT: "8080"
       TOWN_NAME: "${TOWN_NAME:-My Town}"
       IMAGE_STORAGE_PATH: /data/images
+      TRUST_SWEEP_INTERVAL: "${TRUST_SWEEP_INTERVAL:-24h}"
       # Empty means production, which is what any networked deployment wants.
       # Set BELL_ENV=dev only for a plain-HTTP trial on localhost: it strips the
       # Secure attribute from session cookies as they pass back through the

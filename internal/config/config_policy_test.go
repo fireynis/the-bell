@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // validConfig is a production-shaped Config: every field set to something a
@@ -10,14 +11,15 @@ import (
 // failure names the field under test rather than a stale neighbour.
 func validConfig() Config {
 	return Config{
-		Port:             8080,
-		Env:              "production",
-		DatabaseURL:      "postgres://bell:secret@db:5432/bell",
-		RedisURL:         "redis://cache:6379",
-		KratosPublicURL:  "http://kratos:4433",
-		KratosAdminURL:   "http://kratos:4434",
-		ImageStoragePath: "/storage/the-bell/images",
-		TownName:         "Bellville",
+		Port:               8080,
+		Env:                "production",
+		DatabaseURL:        "postgres://bell:secret@db:5432/bell",
+		RedisURL:           "redis://cache:6379",
+		KratosPublicURL:    "http://kratos:4433",
+		KratosAdminURL:     "http://kratos:4434",
+		ImageStoragePath:   "/storage/the-bell/images",
+		TownName:           "Bellville",
+		TrustSweepInterval: 24 * time.Hour,
 	}
 }
 
@@ -54,6 +56,24 @@ func TestConfigValidate(t *testing.T) {
 			name:    "negative port",
 			mutate:  func(c *Config) { c.Port = -1 },
 			wantVar: "PORT",
+		},
+		{
+			// Zero is what an operator who spelled the variable wrong gets from
+			// a hand-built Config, and what TrustWorker.SetSweepInterval would
+			// silently swap back to the 24h default. Refusing to boot is the
+			// only outcome that tells them.
+			name:    "zero sweep interval is not a sweep",
+			mutate:  func(c *Config) { c.TrustSweepInterval = 0 },
+			wantVar: "TRUST_SWEEP_INTERVAL",
+		},
+		{
+			name:    "negative sweep interval",
+			mutate:  func(c *Config) { c.TrustSweepInterval = -time.Hour },
+			wantVar: "TRUST_SWEEP_INTERVAL",
+		},
+		{
+			name:   "a short sweep interval is legal, just wasteful",
+			mutate: func(c *Config) { c.TrustSweepInterval = time.Minute },
 		},
 		{
 			name:   "port at the top of the range is fine",

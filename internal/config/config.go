@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +22,17 @@ type Config struct {
 	KratosAdminURL   string `env:"KRATOS_ADMIN_URL,required"`
 	ImageStoragePath string `env:"IMAGE_STORAGE_PATH" envDefault:"/storage/the-bell/images"`
 	TownName         string `env:"TOWN_NAME" envDefault:"My Town"`
+
+	// TrustSweepInterval is how often the Redis-backed trust worker puts every
+	// active user back through the trust calculation. It has no effect without
+	// REDIS_URL, where `bell check-roles` is the only thing that recalculates.
+	//
+	// Daily suits inputs that move with the calendar — the shortest penalty
+	// decay window is 90 days and tenure resolves to a day — so shortening it
+	// mostly costs work. Lengthening it is the change with teeth: penalties
+	// linger past the point the moderator who applied them intended, and role
+	// checks judge scores that are as stale as this interval.
+	TrustSweepInterval time.Duration `env:"TRUST_SWEEP_INTERVAL" envDefault:"24h"`
 }
 
 // IsDev reports whether the server is running against a local development
@@ -151,6 +163,16 @@ func (c Config) validate() error {
 	}
 
 	errs = append(errs, validateImageStoragePath(c.ImageStoragePath))
+
+	// Zero and negative are both rejected here rather than left to
+	// TrustWorker.SetSweepInterval, which ignores them. Ignoring is the right
+	// behaviour for a library guard but the wrong one for an operator: they
+	// would get the 24h default and a single warning line, having asked for
+	// something else. A duration that does not parse at all is caught earlier,
+	// by env.Parse.
+	if c.TrustSweepInterval <= 0 {
+		errs = append(errs, fmt.Errorf("TRUST_SWEEP_INTERVAL must be a positive duration, got %s", c.TrustSweepInterval))
+	}
 
 	// errors.Join drops nils and returns nil when every entry is nil, so the
 	// unconditional appends above cost nothing on a valid config.

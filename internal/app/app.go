@@ -172,7 +172,12 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		// happened to, which is how penalties came to outlive their decay
 		// windows and tenure never accrued.
 		deps.TrustWorker = cache.NewTrustWorker(trustCache, trustInputBundle, userRepo, roleCheckerRepo, logger)
-		logger.Info("trust recalculation enabled")
+		// TRUST_SWEEP_INTERVAL. config.Load rejects a non-positive value, so the
+		// only way to reach the worker's own guard is a hand-built Config that
+		// left the field zero — the test harness does — and that guard keeps the
+		// 24h default for it.
+		deps.TrustWorker.SetSweepInterval(cfg.TrustSweepInterval)
+		logger.Info("trust recalculation enabled", "sweep_interval", deps.TrustWorker.SweepInterval())
 
 		rateLimiter = middleware.NewRateLimiter(middleware.NewRedisRateLimiterClient(rdb), logger)
 		logger.Info("rate limiting enabled")

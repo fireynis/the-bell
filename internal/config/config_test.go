@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/config"
 )
@@ -42,6 +43,63 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.TownName != "My Town" {
 		t.Errorf("TownName = %q, want %q", cfg.TownName, "My Town")
+	}
+	if cfg.TrustSweepInterval != 24*time.Hour {
+		t.Errorf("TrustSweepInterval = %s, want 24h", cfg.TrustSweepInterval)
+	}
+}
+
+// TRUST_SWEEP_INTERVAL is a Go duration rather than a count of seconds, unlike
+// the neighbouring compose-level CHECK_ROLES_INTERVAL_SECONDS. That is worth
+// pinning: an operator who copies the habit and writes "3600" must be told, not
+// handed 3600 nanoseconds and a sweep running three thousand times a second.
+func TestLoad_TrustSweepInterval(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+		// wantNamedVar means Load must fail with a message naming the variable.
+		// The rejections that come from validate() do; a value that is not a
+		// duration at all fails earlier, inside env.Parse, whose message names
+		// the struct field instead — the same as PORT does for "eighty".
+		wantNamedVar bool
+		wantParseErr bool
+	}{
+		{name: "hours", value: "6h", want: 6 * time.Hour},
+		{name: "compound", value: "1h30m", want: 90 * time.Minute},
+		{name: "zero is refused", value: "0s", wantNamedVar: true},
+		{name: "negative is refused", value: "-1h", wantNamedVar: true},
+		{name: "a bare number has no unit", value: "3600", wantParseErr: true},
+		{name: "not a duration at all", value: "daily", wantParseErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("TRUST_SWEEP_INTERVAL", tt.value)
+
+			cfg, err := config.Load()
+
+			if tt.wantNamedVar || tt.wantParseErr {
+				if err == nil {
+					t.Fatalf("Load() accepted TRUST_SWEEP_INTERVAL=%q, got %s", tt.value, cfg.TrustSweepInterval)
+				}
+				if tt.wantNamedVar && !strings.Contains(err.Error(), "TRUST_SWEEP_INTERVAL") {
+					t.Errorf("error %q does not name the variable", err)
+				}
+				if tt.wantParseErr && !strings.Contains(err.Error(), "TrustSweepInterval") {
+					t.Errorf("error %q does not identify the field that failed to parse", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.TrustSweepInterval != tt.want {
+				t.Errorf("TrustSweepInterval = %s, want %s", cfg.TrustSweepInterval, tt.want)
+			}
+		})
 	}
 }
 
@@ -123,6 +181,7 @@ func TestLoad_AllCustomValues(t *testing.T) {
 	t.Setenv("KRATOS_ADMIN_URL", "http://custom:4434")
 	t.Setenv("IMAGE_STORAGE_PATH", "/tmp/images")
 	t.Setenv("TOWN_NAME", "Springfield")
+	t.Setenv("TRUST_SWEEP_INTERVAL", "6h")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -150,20 +209,24 @@ func TestLoad_AllCustomValues(t *testing.T) {
 	if cfg.TownName != "Springfield" {
 		t.Errorf("TownName = %q, want %q", cfg.TownName, "Springfield")
 	}
+	if cfg.TrustSweepInterval != 6*time.Hour {
+		t.Errorf("TrustSweepInterval = %s, want 6h", cfg.TrustSweepInterval)
+	}
 }
 
 // validEnv is a production-shaped environment: every variable set to something
 // a real deployment would actually use.
 func validEnv() map[string]string {
 	return map[string]string{
-		"PORT":               "8080",
-		"BELL_ENV":           "production",
-		"DATABASE_URL":       "postgres://bell:secret@db:5432/bell",
-		"REDIS_URL":          "redis://cache:6379",
-		"KRATOS_PUBLIC_URL":  "http://kratos:4433",
-		"KRATOS_ADMIN_URL":   "http://kratos:4434",
-		"IMAGE_STORAGE_PATH": "/storage/the-bell/images",
-		"TOWN_NAME":          "Bellville",
+		"PORT":                 "8080",
+		"BELL_ENV":             "production",
+		"DATABASE_URL":         "postgres://bell:secret@db:5432/bell",
+		"REDIS_URL":            "redis://cache:6379",
+		"KRATOS_PUBLIC_URL":    "http://kratos:4433",
+		"KRATOS_ADMIN_URL":     "http://kratos:4434",
+		"IMAGE_STORAGE_PATH":   "/storage/the-bell/images",
+		"TOWN_NAME":            "Bellville",
+		"TRUST_SWEEP_INTERVAL": "24h",
 	}
 }
 
@@ -205,7 +268,7 @@ func TestLoad_AcceptsProductionShapedEnvironment(t *testing.T) {
 		},
 		{
 			name:      "defaults for everything optional",
-			overrides: map[string]string{"PORT": "", "BELL_ENV": "", "REDIS_URL": "", "IMAGE_STORAGE_PATH": "", "TOWN_NAME": ""},
+			overrides: map[string]string{"PORT": "", "BELL_ENV": "", "REDIS_URL": "", "IMAGE_STORAGE_PATH": "", "TOWN_NAME": "", "TRUST_SWEEP_INTERVAL": ""},
 		},
 	}
 

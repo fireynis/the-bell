@@ -78,6 +78,16 @@ func (w *TrustWorker) SetSweepInterval(d time.Duration) {
 	w.sweepInterval = d
 }
 
+// SweepInterval reports the interval the sweep loop will use.
+//
+// It exists so the wiring in internal/app can be asserted from outside this
+// package: SetSweepInterval swallows a bad value by design, which makes "the
+// config knob reached the worker" otherwise unobservable. Read it before Run
+// starts; the field is not synchronized, and nothing writes it afterwards.
+func (w *TrustWorker) SweepInterval() time.Duration {
+	return w.sweepInterval
+}
+
 // pollOutcome is what one dequeue attempt means for the loop.
 type pollOutcome int
 

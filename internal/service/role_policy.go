@@ -57,11 +57,23 @@ func nextRoleAfterDemotion(current domain.Role) (domain.Role, bool) {
 }
 
 // evaluateDemotion applies the sustained-low-trust policy: a user must sit
-// below DemotionTrustThreshold continuously for DemotionConsecutiveDays before
-// losing a role. Recovering above the threshold at any point resets the clock,
-// so a single bad week cannot demote someone.
+// below their role's demotion threshold continuously for
+// DemotionConsecutiveDays before losing a role. Recovering above the threshold
+// at any point resets the clock, so a single bad week cannot demote someone.
+//
+// The threshold is per role — see domain.DemotionTrustThresholdFor and the
+// derivation above the constants it returns. A moderator is judged against the
+// standing the role was granted for; a member against the much lower bar that
+// separates a quiet resident from collapsed trust.
 func evaluateDemotion(u *domain.User, now time.Time) demotionDecision {
-	if u.TrustScore >= domain.DemotionTrustThreshold {
+	threshold, demotable := domain.DemotionTrustThresholdFor(u.Role)
+
+	// A role with no threshold is not on any clock, so it is treated exactly
+	// like a user above theirs — including clearing a timer it is still
+	// carrying. A member demoted to pending while below the member threshold
+	// would otherwise keep those spent days, and be demoted again the moment a
+	// vouch restored them to member.
+	if !demotable || u.TrustScore >= threshold {
 		if u.TrustBelowSince != nil {
 			return demotionDecision{Outcome: demotionClear}
 		}
@@ -77,6 +89,9 @@ func evaluateDemotion(u *domain.User, now time.Time) demotionDecision {
 		return demotionDecision{Outcome: demotionWait}
 	}
 
+	// Unreachable while the two agree on which roles are demotable, which they
+	// are documented to. Kept so that adding a role to one and not the other
+	// fails safe — demoting to the zero Role would write an empty role.
 	newRole, ok := nextRoleAfterDemotion(u.Role)
 	if !ok {
 		return demotionDecision{Outcome: demotionWait}
@@ -85,8 +100,8 @@ func evaluateDemotion(u *domain.User, now time.Time) demotionDecision {
 	return demotionDecision{
 		Outcome: demotionDemote,
 		NewRole: newRole,
-		Reason: fmt.Sprintf("auto-demotion: trust %.1f < %.1f for %d consecutive days",
-			u.TrustScore, domain.DemotionTrustThreshold, int(daysBelow)),
+		Reason: fmt.Sprintf("auto-demotion: trust %.1f < %.1f (%s threshold) for %d consecutive days",
+			u.TrustScore, threshold, u.Role, int(daysBelow)),
 	}
 }
 

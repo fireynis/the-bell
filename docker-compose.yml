@@ -26,6 +26,7 @@ services:
       PORT: "8080"
       TOWN_NAME: "${TOWN_NAME:-My Town}"
       IMAGE_STORAGE_PATH: /storage/the-bell/images
+      TRUST_SWEEP_INTERVAL: "${TRUST_SWEEP_INTERVAL:-24h}"
     volumes:
       - /storage/the-bell/images:/storage/the-bell/images
     networks:
