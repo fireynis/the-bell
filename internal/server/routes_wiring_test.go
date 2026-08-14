@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +59,10 @@ func (stubUserRepo) GetUserByKratosID(context.Context, string) (*domain.User, er
 func (stubUserRepo) UpdateUserProfile(context.Context, string, string, string, string) (*domain.User, error) {
 	return &domain.User{ID: "u1"}, nil
 }
+func (stubUserRepo) ListDirectoryUsers(context.Context, string, int, int) ([]*domain.User, error) {
+	return []*domain.User{{ID: "u1", DisplayName: "Stub", Role: domain.RoleMember, IsActive: true}}, nil
+}
+func (stubUserRepo) CountDirectoryUsers(context.Context, string) (int64, error) { return 1, nil }
 
 type stubVouchRepo struct{}
 
@@ -189,6 +194,8 @@ func TestRoutesAreRegistered(t *testing.T) {
 		{"delete post", http.MethodDelete, "/api/v1/posts/p1", "/api/v1/posts/{id}", http.StatusUnauthorized},
 		{"add reaction", http.MethodPost, "/api/v1/posts/p1/reactions", "/api/v1/posts/{postId}/reactions", http.StatusUnauthorized},
 		{"remove reaction", http.MethodDelete, "/api/v1/posts/p1/reactions/like", "/api/v1/posts/{postId}/reactions/{type}", http.StatusUnauthorized},
+		{"user directory", http.MethodGet, "/api/v1/users", "/api/v1/users", http.StatusUnauthorized},
+		{"user directory with a trailing slash", http.MethodGet, "/api/v1/users/", "/api/v1/users/", http.StatusUnauthorized},
 		{"users me", http.MethodGet, "/api/v1/users/me", "/api/v1/users/me", http.StatusUnauthorized},
 		{"update users me", http.MethodPut, "/api/v1/users/me", "/api/v1/users/me", http.StatusUnauthorized},
 		{"report post", http.MethodPost, "/api/v1/posts/p1/report", "/api/v1/posts/{id}/report", http.StatusUnauthorized},
@@ -278,12 +285,99 @@ func TestProtected_ChainComposition(t *testing.T) {
 			g:    guard{role: domain.RoleCouncil, limit: limit},
 			want: 4,
 		},
+		{
+			// REQUIRE_VERIFIED_EMAIL adds a link, and adds it beside the active
+			// check rather than in place of it.
+			name: "verified email adds a link when enabled",
+			srv: &Server{
+				cfg:            config.Config{RequireVerifiedEmail: true},
+				authMiddleware: func(next http.Handler) http.Handler { return next },
+			},
+			g:    guard{},
+			want: 3,
+		},
+		{
+			// And it follows skipActive: the one route that lets a user who may
+			// not participate see their own status must not acquire the guard
+			// that would stop them.
+			name: "verified email is skipped wherever the active check is",
+			srv: &Server{
+				cfg:            config.Config{RequireVerifiedEmail: true},
+				authMiddleware: func(next http.Handler) http.Handler { return next },
+			},
+			g:    guard{skipActive: true},
+			want: 1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := len(tt.srv.protected(tt.g)); got != tt.want {
 				t.Errorf("chain length = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// newVerificationServer wires a server whose auth middleware injects a member
+// along with the verification state Kratos would have reported, so the
+// REQUIRE_VERIFIED_EMAIL gate can be exercised without a Kratos.
+func newVerificationServer(t *testing.T, requireVerified, verified bool) *Server {
+	t.Helper()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	member := &domain.User{ID: "u1", DisplayName: "Stub", Role: domain.RoleMember, IsActive: true}
+
+	return New(config.Config{
+		Port:                 0,
+		ImageStoragePath:     t.TempDir(),
+		RequireVerifiedEmail: requireVerified,
+	}, nil, logger,
+		WithUserService(service.NewUserService(stubUserRepo{}, nil)),
+		WithAuth(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := middleware.WithEmailVerified(middleware.WithUser(r.Context(), member), verified)
+				next.ServeHTTP(w, r.WithContext(ctx))
+			})
+		}),
+	)
+}
+
+// The flag is off by default and its whole reason for being off is that a town
+// with no working SMTP would otherwise lock everyone out — so an unverified
+// resident must behave exactly as they do today until an operator says
+// otherwise.
+func TestVerifiedEmailGate(t *testing.T) {
+	tests := []struct {
+		name            string
+		requireVerified bool
+		verified        bool
+		path            string
+		want            int
+	}{
+		{"flag off lets an unverified resident participate", false, false, "/api/v1/users/me", http.StatusOK},
+		{"flag off lets them browse the directory", false, false, "/api/v1/users", http.StatusOK},
+		{"flag on admits a verified resident", true, true, "/api/v1/users/me", http.StatusOK},
+		{"flag on blocks an unverified resident", true, false, "/api/v1/users/me", http.StatusForbidden},
+		{"flag on blocks them from the directory too", true, false, "/api/v1/users", http.StatusForbidden},
+
+		// GET /v1/me is the exception, and it is the one that matters: a
+		// resident who cannot participate has to be able to load the page that
+		// tells them why. Blocking it would leave them staring at a failed
+		// request with no explanation and no route to the verification flow.
+		{"flag on still lets an unverified resident see their own status", true, false, "/api/v1/me", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newVerificationServer(t, tt.requireVerified, tt.verified)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if rec.Code != tt.want {
+				t.Fatalf("GET %s status = %d, want %d; body: %s", tt.path, rec.Code, tt.want, rec.Body.String())
+			}
+			if tt.want == http.StatusForbidden && !strings.Contains(rec.Body.String(), "email not verified") {
+				t.Errorf("rejection body = %s, want the distinct verification message", rec.Body.String())
 			}
 		})
 	}
@@ -422,6 +516,66 @@ func TestKratosProxyPreservesSecureCookies(t *testing.T) {
 				t.Errorf("Set-Cookie = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// countingRateLimiterClient is a sliding window that never forgets, which is
+// all a wiring test needs: the nth request to one key reports n.
+type countingRateLimiterClient struct {
+	mu     sync.Mutex
+	counts map[string]int64
+}
+
+func (c *countingRateLimiterClient) SlidingWindowCount(_ context.Context, key string, _ time.Time, _ time.Duration) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.counts == nil {
+		c.counts = make(map[string]int64)
+	}
+	c.counts[key]++
+	return c.counts[key], nil
+}
+
+// The middleware tests prove the limiter works; this proves it is installed.
+// The /.ory proxy is registered on its own, outside every guard the API routes
+// share, so a limiter that exists and is never wired to it looks exactly like a
+// working one until somebody scripts the registration endpoint.
+func TestKratosProxyRateLimitsRegistration(t *testing.T) {
+	kratos := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer kratos.Close()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := New(config.Config{Port: 0, KratosPublicURL: kratos.URL, ImageStoragePath: t.TempDir()}, nil, logger,
+		WithRateLimiter(middleware.NewRateLimiter(&countingRateLimiterClient{}, logger)),
+	)
+	h := srv.Handler()
+
+	// One more than the budget, from one address.
+	var last int
+	for range registrationMaxPerIP + 1 {
+		req := httptest.NewRequest(http.MethodPost, "/.ory/self-service/registration", nil)
+		req.RemoteAddr = "203.0.113.20:5000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		last = rec.Code
+	}
+	if last != http.StatusTooManyRequests {
+		t.Errorf("request %d to the registration endpoint = %d, want %d — the proxy is not rate limited",
+			registrationMaxPerIP+1, last, http.StatusTooManyRequests)
+	}
+
+	// The session check a signed-in resident makes on every page load shares
+	// the proxy route and must not share the budget.
+	for i := range registrationMaxPerIP + 5 {
+		req := httptest.NewRequest(http.MethodGet, "/.ory/sessions/whoami", nil)
+		req.RemoteAddr = "203.0.113.20:5000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("session check %d was rate limited", i+1)
+		}
 	}
 }
 

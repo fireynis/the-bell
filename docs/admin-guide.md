@@ -137,6 +137,75 @@ Kratos runs with `--watch-courier`, which starts the delivery worker in the same
 process. Without that flag messages are queued in the database and never sent.
 Delivery errors appear in `docker compose logs kratos`.
 
+### Requiring verified email
+
+By default a resident can participate as soon as they register and the council
+approves them, whether or not they ever opened the verification mail. Setting
+`REQUIRE_VERIFIED_EMAIL=true` changes that: a resident whose Kratos identity has
+no verified address gets `403 {"error": "email not verified"}` from every
+endpoint except `GET /api/v1/me`, which stays reachable so the frontend can tell
+them why and point them at the verification flow.
+
+**Do not enable this before the courier works.** The verification message is the
+only way to clear the flag, so on a town with no SMTP relay — or one whose relay
+is misconfigured — turning it on locks out every resident, including the council
+members who would have to turn it back off. The order is: configure
+`COURIER_SMTP_CONNECTION_URI`, confirm a real verification mail arrives, then
+set the flag.
+
+Two more things worth knowing before flipping it:
+
+- **Residents who registered earlier are affected.** Verification state is read
+  from Kratos on every request, so anyone who skipped the mail when they signed
+  up is blocked from their next request onward, not from their next
+  registration. Expect support questions from existing residents on the day you
+  enable it.
+- **An identity schema with no verifiable addresses counts as unverified.** This
+  is deliberate — "we cannot ask" is not evidence of a confirmed address — but
+  it means a customised `kratos/identity.schema.json` that drops the
+  `verification` block turns the flag into a total lockout.
+
+## Trusted proxies
+
+`TRUSTED_PROXIES` tells The Bell which peers may speak for somebody else. It
+matters for exactly one thing today: the registration rate limit, which is keyed
+by client IP because registration is unauthenticated and there is no user to key
+on.
+
+Left empty — the default — every request is attributed to the address the TCP
+connection came from. Reached directly that is the resident; **behind a reverse
+proxy it is the proxy**, so the whole town shares one registration budget and
+the eleventh sign-up in an hour is refused no matter who is trying. The Traefik
+deployment described under [Reverse Proxy Setup](#reverse-proxy-setup) is
+exactly that case.
+
+Set it to the network your proxy connects from:
+
+```env
+# The Docker network Traefik reaches the app on
+TRUSTED_PROXIES=172.18.0.0/16
+```
+
+Both plain addresses and CIDR blocks are accepted, comma-separated
+(`10.0.0.7,10.1.0.0/16`). A value that does not parse stops the process at
+startup rather than being silently ignored.
+
+Both compose files pass `TRUSTED_PROXIES` and `REQUIRE_VERIFIED_EMAIL` through
+to the `bell` service, defaulting to the safe values (empty, and `false`).
+
+The default is empty rather than "the usual private ranges" because the wrong
+direction of error is unbounded. `X-Forwarded-For` is an ordinary request
+header: if the app is reachable without going through the proxy and this is
+filled in optimistically, any caller can write their own value and mint a fresh
+rate-limit bucket per request, which removes the limit entirely. Trusting only
+the network you actually run means a spoofed header is ignored, and the cost of
+getting it wrong in the other direction is a shared bucket rather than none.
+
+When the peer is trusted, the client is taken from the right-hand end of the
+`X-Forwarded-For` chain — the end a proxy appends to and a caller cannot forge —
+skipping any further trusted proxies. Addresses to the left of that hop are
+whatever the caller claimed and are ignored.
+
 ## Configuration Reference
 
 All configuration is via environment variables. The Bell binary reads them at startup using `github.com/caarlos0/env/v11`.
@@ -152,6 +221,8 @@ All configuration is via environment variables. The Bell binary reads them at st
 | `TRUST_SWEEP_INTERVAL` | No | `24h` | How often the in-process trust worker recalculates every active user. A **Go duration** (`24h`, `12h`, `90m`) -- not a number of seconds, unlike `CHECK_ROLES_INTERVAL_SECONDS` below. Zero or negative is refused at startup. Requires `REDIS_URL`; without Redis there is no worker and `bell check-roles` does the recalculating instead. See [Trust recalculation](#trust-recalculation) |
 | `TOWN_NAME` | No | `My Town` | Display name for the municipality |
 | `BELL_ENV` | No | `production` | Only `dev` or `development` (case-insensitive) select development mode. **Anything else — including unset, empty, or a typo — means production.** In development mode The Bell strips the `Secure` attribute from Kratos session cookies as they pass back through the `/.ory/*` proxy, so login works over plain-HTTP localhost. Never set this on a deployment reachable over the network: it would hand the session cookie to any downgrade attacker |
+| `TRUSTED_PROXIES` | No | (empty) | Comma-separated IP addresses and CIDR blocks whose `X-Forwarded-For` header is believed when attributing a request to a client IP. **Set this if you run behind a reverse proxy** — see [Trusted proxies](#trusted-proxies). Example: `172.18.0.0/16` |
+| `REQUIRE_VERIFIED_EMAIL` | No | `false` | When `true`, a resident whose Kratos identity has no verified address may sign in and read their own status but cannot participate. **Requires a working SMTP relay** — see [Requiring verified email](#requiring-verified-email) before enabling |
 
 ### Compose variables
 

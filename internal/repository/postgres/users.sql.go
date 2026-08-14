@@ -46,6 +46,23 @@ func (q *Queries) CountCouncilMembers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countDirectoryUsers = `-- name: CountDirectoryUsers :one
+SELECT COUNT(*) FROM users
+WHERE is_active = TRUE AND role <> 'banned'
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND ($1::text = '' OR display_name ILIKE '%' || $1::text || '%')
+`
+
+// The same population as ListDirectoryUsers, so the two filters must stay
+// identical: a total that disagrees with the rows is a pager that offers a page
+// which comes back empty.
+func (q *Queries) CountDirectoryUsers(ctx context.Context, query string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDirectoryUsers, query)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countModerators = `-- name: CountModerators :one
 SELECT COUNT(*) FROM users
 WHERE role = 'moderator' AND is_active = TRUE
@@ -220,6 +237,72 @@ ORDER BY created_at
 
 func (q *Queries) ListActiveNonBannedUsers(ctx context.Context) ([]User, error) {
 	rows, err := q.db.Query(ctx, listActiveNonBannedUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.KratosIdentityID,
+			&i.DisplayName,
+			&i.Bio,
+			&i.AvatarUrl,
+			&i.TrustScore,
+			&i.Role,
+			&i.IsActive,
+			&i.JoinedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TrustBelowSince,
+			&i.MutedUntil,
+			&i.SuspendedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDirectoryUsers = `-- name: ListDirectoryUsers :many
+
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until FROM users
+WHERE is_active = TRUE AND role <> 'banned'
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND ($1::text = '' OR display_name ILIKE '%' || $1::text || '%')
+ORDER BY joined_at DESC, id DESC
+LIMIT $3::int OFFSET $2::int
+`
+
+type ListDirectoryUsersParams struct {
+	Query     string `json:"query"`
+	RowOffset int32  `json:"row_offset"`
+	RowLimit  int32  `json:"row_limit"`
+}
+
+// The member directory. Pending users cannot post, so before this existed they
+// were invisible to everyone who might vouch for them — the vouch graph had no
+// way to start. It therefore includes pending accounts deliberately: being
+// findable is the whole point.
+//
+// Banned and deactivated accounts are excluded, as is anyone currently serving
+// a suspension, on the same clock as every other query in this file. An empty
+// @query matches everyone; otherwise it is a case-insensitive substring of the
+// display name. The caller escapes LIKE's own metacharacters before it gets
+// here, so a resident searching for "_" finds an underscore rather than every
+// neighbour.
+//
+// Newest first, because the residents most likely to need a vouch are the ones
+// who just arrived. id breaks ties: joined_at can repeat, and two rows in an
+// ambiguous order would shuffle between pages of an offset-paginated listing.
+func (q *Queries) ListDirectoryUsers(ctx context.Context, arg ListDirectoryUsersParams) ([]User, error) {
+	rows, err := q.db.Query(ctx, listDirectoryUsers, arg.Query, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

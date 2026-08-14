@@ -39,6 +39,7 @@ type Server struct {
 	authMiddleware          func(http.Handler) http.Handler
 	optionalAuth            func(http.Handler) http.Handler
 	rateLimiter             *middleware.RateLimiter
+	trustedProxies          middleware.TrustedProxies
 }
 
 // Option configures the Server.
@@ -136,6 +137,17 @@ func WithSSEBroker(b *sse.Broker) Option {
 // WithRateLimiter sets the rate limiter for request throttling.
 func WithRateLimiter(rl *middleware.RateLimiter) Option {
 	return func(s *Server) { s.rateLimiter = rl }
+}
+
+// WithTrustedProxies sets the peers whose X-Forwarded-For header is believed
+// when attributing a request to a client IP. Only the registration limiter uses
+// it today, that being the only IP-keyed thing the server does.
+//
+// It arrives pre-parsed rather than as the raw TRUSTED_PROXIES string so a
+// malformed value fails at wiring time, where app.Build can report it, instead
+// of being discovered per request.
+func WithTrustedProxies(trusted middleware.TrustedProxies) Option {
+	return func(s *Server) { s.trustedProxies = trusted }
 }
 
 // New creates a Server with configured routes and middleware.

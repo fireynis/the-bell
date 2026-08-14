@@ -33,6 +33,29 @@ type Config struct {
 	// linger past the point the moderator who applied them intended, and role
 	// checks judge scores that are as stale as this interval.
 	TrustSweepInterval time.Duration `env:"TRUST_SWEEP_INTERVAL" envDefault:"24h"`
+
+	// TrustedProxies lists the peers whose X-Forwarded-For header is believed,
+	// as a comma-separated set of IP addresses and CIDR blocks.
+	//
+	// It is what makes the registration rate limit per-resident rather than
+	// per-deployment. Empty — the default — means every request is attributed
+	// to its TCP peer, which behind Traefik is Traefik: correct, in that nobody
+	// can forge their way into a fresh bucket, but it puts the whole town in one
+	// bucket. Set it to the network the proxy connects from.
+	//
+	// The default is empty rather than "trust the usual private ranges" because
+	// the wrong direction of error is unbounded: a deployment that reaches the
+	// app directly from the internet, with this filled in optimistically, would
+	// let any caller set their own key and lift the limit entirely.
+	TrustedProxies string `env:"TRUSTED_PROXIES" envDefault:""`
+
+	// RequireVerifiedEmail gates participation on a verified Kratos address.
+	//
+	// Off by default, and the default is load-bearing: verification mail goes
+	// out through the Kratos courier, so on a town with no working SMTP relay
+	// turning this on locks out every resident, including the council that would
+	// have to turn it back off. See the admin guide before enabling.
+	RequireVerifiedEmail bool `env:"REQUIRE_VERIFIED_EMAIL" envDefault:"false"`
 }
 
 // IsDev reports whether the server is running against a local development

@@ -13,7 +13,10 @@ import (
 
 type contextKey int
 
-const userContextKey contextKey = iota
+const (
+	userContextKey contextKey = iota
+	emailVerifiedContextKey
+)
 
 // WithUser stores a domain.User in the request context.
 func WithUser(ctx context.Context, u *domain.User) context.Context {
@@ -24,6 +27,28 @@ func WithUser(ctx context.Context, u *domain.User) context.Context {
 func UserFromContext(ctx context.Context) (*domain.User, bool) {
 	u, ok := ctx.Value(userContextKey).(*domain.User)
 	return u, ok
+}
+
+// WithEmailVerified records whether the session identity behind this request
+// carries a verified address.
+//
+// It rides in the context rather than on domain.User because it is a fact about
+// the Kratos identity, not about the row in users. A field on domain.User would
+// read as false for every user loaded from the database by anything that is not
+// this middleware — the role checker, the trust worker, `bell check-roles` —
+// and a guard reading it there would be answering a question nobody asked
+// Kratos.
+func WithEmailVerified(ctx context.Context, verified bool) context.Context {
+	return context.WithValue(ctx, emailVerifiedContextKey, verified)
+}
+
+// EmailVerifiedFromContext reports the verification state recorded by
+// WithEmailVerified. The second return distinguishes "unverified" from "no
+// session was resolved at all"; RequireVerifiedEmail treats both as unverified,
+// and the distinction exists so a future caller need not guess.
+func EmailVerifiedFromContext(ctx context.Context) (bool, bool) {
+	verified, ok := ctx.Value(emailVerifiedContextKey).(bool)
+	return verified, ok
 }
 
 // UserFinder looks up a local user by their Kratos identity ID, auto-creating
@@ -49,6 +74,30 @@ func identityDisplayName(identity *kratos.Identity) string {
 	return internalkratos.DisplayNameFromTraits(identity.GetTraits())
 }
 
+// identityEmailVerified reports whether a Kratos identity has at least one
+// verified address.
+//
+// Any verified address counts, rather than only one whose `via` is "email".
+// The identity schema is per-deployment and email is the only address type this
+// application ever provisions, so a stricter test would buy nothing and could
+// lock out a town whose schema words the delivery method differently — the
+// failure mode this whole feature has to avoid, since a locked-out resident
+// cannot even reach the flow that would fix it.
+//
+// An identity with no verifiable addresses at all — a schema that declares
+// none, or a Kratos version that does not return them — is unverified. That is
+// the conservative reading, and it is why the flag defaults to off: a town
+// whose schema cannot express verification must never have it silently
+// enforced.
+func identityEmailVerified(identity *kratos.Identity) bool {
+	for _, addr := range identity.GetVerifiableAddresses() {
+		if addr.Verified {
+			return true
+		}
+	}
+	return false
+}
+
 // authOutcome says why a session lookup did not yield a local user, so that
 // the two middlewares below can share one resolution path and disagree only
 // about what to do with the answer.
@@ -62,22 +111,32 @@ const (
 	authNoLocalUser
 )
 
+// resolved is what a successful session lookup yielded: the local user, plus
+// the identity facts a guard downstream needs and only the session can answer.
+type resolved struct {
+	user *domain.User
+	// emailVerified is the identity's verification state at the moment the
+	// session was validated, which is as fresh as it can be — Kratos is
+	// consulted on every request.
+	emailVerified bool
+}
+
 // resolveUser turns a request's session cookie into the local user it names.
 //
 // It is deliberately decision-free: it reports what happened and lets the
 // caller choose the response. KratosAuth rejects, OptionalAuth shrugs — but
 // both run the same Kratos call and the same local lookup, so a change to how
 // a session is validated cannot fix one and quietly miss the other.
-func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger) (*domain.User, authOutcome) {
+func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger) (resolved, authOutcome) {
 	cookie := r.Header.Get("Cookie")
 	if cookie == "" {
-		return nil, authNoCookie
+		return resolved{}, authNoCookie
 	}
 
 	session, _, err := kratosClient.FrontendAPI.ToSession(r.Context()).Cookie(cookie).Execute()
 	if err != nil {
 		logger.Warn("auth: kratos session validation failed", "error", err)
-		return nil, authInvalidSession
+		return resolved{}, authInvalidSession
 	}
 
 	identity := session.GetIdentity()
@@ -86,14 +145,14 @@ func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFin
 	user, err := finder.FindByKratosID(r.Context(), kratosID, identityDisplayName(&identity))
 	if err != nil {
 		logger.Error("auth: error looking up user", "kratos_id", kratosID, "error", err)
-		return nil, authLookupFailed
+		return resolved{}, authLookupFailed
 	}
 	if user == nil {
 		logger.Warn("auth: no local user for kratos identity", "kratos_id", kratosID)
-		return nil, authNoLocalUser
+		return resolved{}, authNoLocalUser
 	}
 
-	return user, authOK
+	return resolved{user: user, emailVerified: identityEmailVerified(&identity)}, authOK
 }
 
 // KratosAuth validates the Kratos session cookie and populates the request
@@ -102,7 +161,7 @@ func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFin
 func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, outcome := resolveUser(r, kratosClient, finder, logger)
+			res, outcome := resolveUser(r, kratosClient, finder, logger)
 			switch outcome {
 			case authNoCookie:
 				logger.Warn("auth: no cookie header")
@@ -119,8 +178,9 @@ func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.
 				return
 			}
 
-			logger.Debug("auth: authenticated", "user_id", user.ID, "role", user.Role)
-			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
+			logger.Debug("auth: authenticated", "user_id", res.user.ID, "role", res.user.Role)
+			ctx := WithEmailVerified(WithUser(r.Context(), res.user), res.emailVerified)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -145,14 +205,15 @@ func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.
 func OptionalAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, outcome := resolveUser(r, kratosClient, finder, logger)
+			res, outcome := resolveUser(r, kratosClient, finder, logger)
 			if outcome != authOK {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			logger.Debug("auth: optional authentication succeeded", "user_id", user.ID, "role", user.Role)
-			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), user)))
+			logger.Debug("auth: optional authentication succeeded", "user_id", res.user.ID, "role", res.user.Role)
+			ctx := WithEmailVerified(WithUser(r.Context(), res.user), res.emailVerified)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -177,6 +238,35 @@ func RequireActive(next http.Handler) http.Handler {
 
 		if !user.IsActive {
 			writeError(w, http.StatusForbidden, "account suspended")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireVerifiedEmail rejects requests whose session identity has no verified
+// address. It is installed only when REQUIRE_VERIFIED_EMAIL is set, and it sits
+// alongside RequireActive rather than replacing any part of it: the two answer
+// different questions ("is this account in good standing" and "did this person
+// prove the address they signed up with") and either one can fail on its own.
+//
+// The message is distinct from every other 403 on purpose. "forbidden" and
+// "account suspended" tell a resident to ask a moderator; this one tells them
+// to open their inbox, and the client has to be able to tell those apart
+// without inspecting the route.
+func RequireVerifiedEmail(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := UserFromContext(r.Context()); !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		// A context with no recorded state is unverified. The only way to reach
+		// this guard without one is a route wired past the auth middleware, and
+		// "we never asked Kratos" is not evidence of verification.
+		if verified, _ := EmailVerifiedFromContext(r.Context()); !verified {
+			writeError(w, http.StatusForbidden, "email not verified")
 			return
 		}
 

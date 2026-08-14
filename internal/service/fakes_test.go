@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"github.com/fireynis/the-bell/internal/domain"
 )
@@ -20,10 +22,18 @@ type fakeUserStore struct {
 
 	// Error injection. Each field short-circuits the matching method so tests
 	// can drive the failure branches without a real repository.
-	createErr      error
-	getByKratosErr error
-	updateRoleErr  error
-	countErr       error
+	createErr         error
+	getByKratosErr    error
+	updateRoleErr     error
+	countErr          error
+	directoryErr      error
+	countDirectoryErr error
+
+	// What the last directory listing was asked for, so a test can assert the
+	// service's clamping rather than inferring it from the page it got back.
+	directoryQuery  string
+	directoryLimit  int
+	directoryOffset int
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -80,6 +90,57 @@ func (f *fakeUserStore) UpdateUserProfile(_ context.Context, id, displayName, bi
 	u.Bio = bio
 	u.AvatarURL = avatarURL
 	return u, nil
+}
+
+// directoryMatches applies the same filter both directory methods must agree
+// on: active, not banned, and matching the substring when one is given.
+//
+// The comparison is a plain lowercase substring rather than an escaped LIKE.
+// Escaping is the SQL adapter's business — see postgres.escapeLikePattern — and
+// a fake that reimplemented it would be asserting against its own copy of the
+// rule instead of the service's behaviour.
+func (f *fakeUserStore) directoryMatches(query string) []*domain.User {
+	query = strings.ToLower(query)
+	var matched []*domain.User
+	for _, u := range f.users {
+		if !u.IsActive || u.Role == domain.RoleBanned {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(u.DisplayName), query) {
+			continue
+		}
+		matched = append(matched, u)
+	}
+	// Newest first, as the query orders it. The map iteration above is random,
+	// so without this the page a test sees would vary run to run.
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].JoinedAt.Equal(matched[j].JoinedAt) {
+			return matched[i].JoinedAt.After(matched[j].JoinedAt)
+		}
+		return matched[i].ID > matched[j].ID
+	})
+	return matched
+}
+
+func (f *fakeUserStore) ListDirectoryUsers(_ context.Context, query string, limit, offset int) ([]*domain.User, error) {
+	if f.directoryErr != nil {
+		return nil, f.directoryErr
+	}
+	f.directoryQuery, f.directoryLimit, f.directoryOffset = query, limit, offset
+
+	matched := f.directoryMatches(query)
+	if offset >= len(matched) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(matched))
+	return matched[offset:end], nil
+}
+
+func (f *fakeUserStore) CountDirectoryUsers(_ context.Context, query string) (int64, error) {
+	if f.countDirectoryErr != nil {
+		return 0, f.countDirectoryErr
+	}
+	return int64(len(f.directoryMatches(query))), nil
 }
 
 // --- ApprovalUserRepository / UserGetter ---

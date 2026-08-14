@@ -19,6 +19,12 @@ type UserRepository interface {
 	GetUserByID(ctx context.Context, id string) (*domain.User, error)
 	GetUserByKratosID(ctx context.Context, kratosID string) (*domain.User, error)
 	UpdateUserProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error)
+	// ListDirectoryUsers and CountDirectoryUsers page and size the same
+	// population, so an implementation must apply the same filter to both. query
+	// is a plain substring — escaping whatever the storage engine reads as
+	// syntax is the implementation's job.
+	ListDirectoryUsers(ctx context.Context, query string, limit, offset int) ([]*domain.User, error)
+	CountDirectoryUsers(ctx context.Context, query string) (int64, error)
 }
 
 // UserService orchestrates user business logic.
@@ -98,6 +104,59 @@ const (
 	maxDisplayNameLength = 100
 	maxBioLength         = 500
 )
+
+const (
+	// DirectoryDefaultLimit and DirectoryMaxLimit bound one page of the member
+	// directory. 25 is a screenful of neighbours; 100 is the same ceiling the
+	// feed uses, and exists so one request cannot ask for the whole town.
+	DirectoryDefaultLimit = 25
+	DirectoryMaxLimit     = 100
+
+	// maxDirectorySearchLength caps the search term. It is generous next to
+	// maxDisplayNameLength — nothing longer can match a name — and is here to
+	// keep a pathological string out of a LIKE scan, not to police input.
+	maxDirectorySearchLength = 100
+)
+
+// ListDirectory returns one page of the member directory and the total number
+// of people matching the search, so a caller can page through them.
+//
+// A page is bounded rather than rejected when the caller overreaches: a limit
+// of zero or less means "use the default" and one above the ceiling is clamped,
+// matching how the feed treats ?limit=. A negative offset is different — it is
+// not an overreach with an obvious intent, it is a caller that has lost track of
+// where it is — so it is refused.
+//
+// The count is a second query rather than a window function over the page: at
+// an offset past the end the page is empty and there would be no row to carry
+// the total on, which is exactly when a pager needs it most.
+func (s *UserService) ListDirectory(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error) {
+	query = strings.TrimSpace(query)
+	if utf8.RuneCountInString(query) > maxDirectorySearchLength {
+		return nil, 0, fmt.Errorf("%w: search query exceeds %d characters", ErrValidation, maxDirectorySearchLength)
+	}
+	if offset < 0 {
+		return nil, 0, fmt.Errorf("%w: offset must not be negative", ErrValidation)
+	}
+	if limit <= 0 {
+		limit = DirectoryDefaultLimit
+	}
+	if limit > DirectoryMaxLimit {
+		limit = DirectoryMaxLimit
+	}
+
+	users, err := s.repo.ListDirectoryUsers(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing directory users: %w", err)
+	}
+
+	total, err := s.repo.CountDirectoryUsers(ctx, query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting directory users: %w", err)
+	}
+
+	return users, int(total), nil
+}
 
 // UpdateProfile updates a user's display name, bio, and avatar URL.
 func (s *UserService) UpdateProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error) {

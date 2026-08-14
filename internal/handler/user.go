@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/fireynis/the-bell/internal/domain"
 	"github.com/fireynis/the-bell/internal/middleware"
+	"github.com/fireynis/the-bell/internal/service"
 )
 
 // timestampFormat is the wire format for every timestamp this handler emits.
@@ -48,6 +50,7 @@ const maxOwnLifts = 10
 type profileService interface {
 	GetByID(ctx context.Context, id string) (*domain.User, error)
 	UpdateProfile(ctx context.Context, id, displayName, bio, avatarURL string) (*domain.User, error)
+	ListDirectory(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error)
 }
 
 // authorPostLister abstracts listing a single author's posts.
@@ -280,6 +283,78 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, toProfileResponse(user))
+}
+
+// directoryEntry is one neighbour as the directory shows them.
+//
+// It is deliberately four fields. The directory is a browsable list of everyone
+// in town, readable by any signed-in resident including a pending one, so it
+// carries only what a person needs to recognise a neighbour and open their
+// profile: who they are, where they stand, and how new they are. Trust score,
+// mute state and is_active are all readable elsewhere by callers who have a
+// reason to ask for one person — putting them here would publish the town's
+// entire moderation posture in a single unauthenticated-adjacent request.
+//
+// display_name is sent as the empty string rather than omitted when a resident
+// has not set one, matching the vouch listings: the key is always present, so a
+// client falls back to the id for anything falsy.
+type directoryEntry struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+	JoinedAt    string `json:"joined_at"`
+}
+
+// listDirectoryResponse pairs the page with the size of the whole match, which
+// is what lets a client render a pager rather than discovering the end by
+// walking off it.
+type listDirectoryResponse struct {
+	Users []directoryEntry `json:"users"`
+	Total int              `json:"total"`
+}
+
+// parseDirectoryLimit mirrors parseLimit with the directory's own default. The
+// feed's 20 answers a different question — how many posts fill a screen — and
+// the directory's page size is part of its published contract.
+func parseDirectoryLimit(s string) int {
+	if s == "" {
+		return service.DirectoryDefaultLimit
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return service.DirectoryDefaultLimit
+	}
+	if n > service.DirectoryMaxLimit {
+		return service.DirectoryMaxLimit
+	}
+	return n
+}
+
+// ListDirectory handles GET /api/v1/users.
+func (h *UserHandler) ListDirectory(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	users, total, err := h.users.ListDirectory(r.Context(),
+		query.Get("q"),
+		parseDirectoryLimit(query.Get("limit")),
+		parseOffset(query.Get("offset")),
+	)
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	entries := make([]directoryEntry, 0, len(users))
+	for _, u := range users {
+		entries = append(entries, directoryEntry{
+			ID:          u.ID,
+			DisplayName: u.DisplayName,
+			Role:        string(u.Role),
+			JoinedAt:    u.JoinedAt.Format(timestampFormat),
+		})
+	}
+
+	JSON(w, http.StatusOK, listDirectoryResponse{Users: entries, Total: total})
 }
 
 type listUserPostsResponse struct {

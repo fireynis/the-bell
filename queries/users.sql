@@ -88,3 +88,36 @@ WHERE role = 'moderator' AND is_active = TRUE
 SELECT COUNT(*) FROM users
 WHERE role = 'pending' AND is_active = TRUE
   AND (suspended_until IS NULL OR suspended_until <= NOW());
+
+-- The member directory. Pending users cannot post, so before this existed they
+-- were invisible to everyone who might vouch for them — the vouch graph had no
+-- way to start. It therefore includes pending accounts deliberately: being
+-- findable is the whole point.
+--
+-- Banned and deactivated accounts are excluded, as is anyone currently serving
+-- a suspension, on the same clock as every other query in this file. An empty
+-- @query matches everyone; otherwise it is a case-insensitive substring of the
+-- display name. The caller escapes LIKE's own metacharacters before it gets
+-- here, so a resident searching for "_" finds an underscore rather than every
+-- neighbour.
+--
+-- Newest first, because the residents most likely to need a vouch are the ones
+-- who just arrived. id breaks ties: joined_at can repeat, and two rows in an
+-- ambiguous order would shuffle between pages of an offset-paginated listing.
+
+-- name: ListDirectoryUsers :many
+SELECT * FROM users
+WHERE is_active = TRUE AND role <> 'banned'
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND (@query::text = '' OR display_name ILIKE '%' || @query::text || '%')
+ORDER BY joined_at DESC, id DESC
+LIMIT @row_limit::int OFFSET @row_offset::int;
+
+-- name: CountDirectoryUsers :one
+-- The same population as ListDirectoryUsers, so the two filters must stay
+-- identical: a total that disagrees with the rows is a pager that offers a page
+-- which comes back empty.
+SELECT COUNT(*) FROM users
+WHERE is_active = TRUE AND role <> 'banned'
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND (@query::text = '' OR display_name ILIKE '%' || @query::text || '%');

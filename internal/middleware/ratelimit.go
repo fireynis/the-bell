@@ -79,6 +79,54 @@ func (rl *RateLimiter) Limit(endpoint string, maxRequests int, window time.Durat
 	}
 }
 
+// LimitByIP returns chi middleware that restricts one client IP to maxRequests
+// within the given window, namespacing the key as
+// ratelimit:ip:{client_ip}:{endpoint}:{window}.
+//
+// It is the unauthenticated counterpart to Limit, for the routes where there is
+// no user to key on yet — registration being the one that matters, since an
+// unlimited one lets anybody fill the council's approval queue. The `ip:`
+// segment keeps the two keyspaces apart, so a user whose ID ever looked like an
+// address could not land in somebody's IP bucket.
+//
+// The client IP comes from trusted, and everything else matches Limit: a nil
+// Redis client or a failed call allows the request, and a rejection carries the
+// window as Retry-After.
+func (rl *RateLimiter) LimitByIP(endpoint string, maxRequests int, window time.Duration, trusted TrustedProxies) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if rl == nil || rl.client == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			ip := trusted.ClientIP(r)
+			key := fmt.Sprintf("ratelimit:ip:%s:%s:%s", ip, endpoint, formatWindow(window))
+
+			count, err := rl.client.SlidingWindowCount(r.Context(), key, time.Now(), window)
+			if err != nil {
+				// Fail open, for the same reason Limit does: a Redis outage must
+				// not be able to close registration for a whole town.
+				rl.logger.Warn("ratelimit: redis error, allowing request",
+					"error", err,
+					"client_ip", ip,
+					"endpoint", endpoint,
+				)
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if count > int64(maxRequests) {
+				w.Header().Set("Retry-After", strconv.Itoa(int(window.Seconds())))
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // formatWindow returns a human-readable window label for the Redis key.
 func formatWindow(d time.Duration) string {
 	switch {

@@ -190,6 +190,14 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		return nil, fmt.Errorf("initializing image storage: %w", err)
 	}
 
+	// Parsed here rather than per request so a typo in TRUSTED_PROXIES stops
+	// the process instead of silently attributing every registration to the
+	// reverse proxy.
+	trustedProxies, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("parsing TRUSTED_PROXIES: %w", err)
+	}
+
 	kratosCfg := kratos.NewConfiguration()
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}
 	kratosClient := kratos.NewAPIClient(kratosCfg)
@@ -214,6 +222,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		server.WithConfigRepo(configRepo),
 		server.WithTransactor(postgres.NewTransactor(pool)),
 		server.WithRateLimiter(rateLimiter),
+		server.WithTrustedProxies(trustedProxies),
 		server.WithImageStore(imageStore),
 	}
 	// WithSSEBroker is only appended when there is a broker: passing a typed

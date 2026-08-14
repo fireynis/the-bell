@@ -20,6 +20,29 @@ Unauthenticated requests to protected endpoints receive:
 {"error": "unauthorized"}
 ```
 
+### Verified email (`REQUIRE_VERIFIED_EMAIL`)
+
+When the server is started with `REQUIRE_VERIFIED_EMAIL=true`, a session whose
+Kratos identity carries no verified address is authenticated but may not
+participate. Those requests receive `403`:
+
+```json
+{"error": "email not verified"}
+```
+
+The message is distinct from the other `403` bodies (`forbidden`,
+`account suspended`) so a client can tell "confirm your address" apart from
+"speak to a moderator" without inspecting the route.
+
+`GET /api/v1/me` is deliberately exempt and keeps answering `200`, because a
+blocked resident has to be able to load the page that explains why. Everything
+else behind a session — including `GET /api/v1/users/me` and the member
+directory — is gated.
+
+The flag defaults to **off**, and it depends on a working Kratos courier: the
+verification mail is the only way for a resident to clear the check. See the
+admin guide before enabling it.
+
 ## Error Format
 
 All errors are returned as JSON with a single `error` field:
@@ -44,12 +67,40 @@ Standard HTTP status codes:
 
 Rate limiting requires Redis (`REDIS_URL` must be set). Limits are per-user, per-endpoint using a sliding window. When rate limited, the response includes a `Retry-After` header with the window duration in seconds.
 
-| Endpoint | Limit | Window |
-|----------|-------|--------|
-| `POST /api/v1/posts` | 10 requests | 1 hour |
-| `POST /api/v1/posts/{postId}/reactions` | 60 requests | 1 minute |
-| `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour |
-| `POST /api/v1/vouches` and `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours |
+| Endpoint | Limit | Window | Keyed by |
+|----------|-------|--------|----------|
+| `POST /api/v1/posts` | 10 requests | 1 hour | user |
+| `POST /api/v1/posts/{postId}/reactions` | 60 requests | 1 minute | user |
+| `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour | user |
+| `POST /api/v1/vouches` and `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours | user |
+| Kratos registration flows (see below) | 10 requests | 1 hour | client IP |
+
+### Registration
+
+Registration is the one limit keyed by **client IP** rather than by user, for
+the obvious reason: it is what creates the user. It applies to the Kratos
+endpoints reached through the `/.ory/*` proxy that start or submit a
+registration flow:
+
+- `GET /.ory/self-service/registration/browser` (flow init)
+- `GET /.ory/self-service/registration/api` (flow init, native clients)
+- `POST /.ory/self-service/registration` (submit)
+
+Nothing else under `/.ory` is throttled — login, session checks, settings,
+recovery, verification and logout all pass through untouched, as does
+`GET /.ory/self-service/registration/flows`, which is the SPA reading back a
+flow already in progress rather than starting a new one.
+
+Ten per hour is not one account per hour. Kratos v1.x registration is two-step,
+so a completed sign-up costs a flow init plus two submits, and a mistyped
+password costs more. The budget allows roughly three sign-ups an hour from one
+address while capping a scripted flood — the failure mode this exists for is an
+attacker filling the council's manual approval queue with accounts nobody asked
+for.
+
+**Behind a reverse proxy, set `TRUSTED_PROXIES`.** Without it every request is
+attributed to the proxy's own address and the whole town shares one registration
+bucket. See the admin guide.
 
 The council approval endpoints (`GET /api/v1/vouches/pending`,
 `POST /api/v1/vouches/approve/{id}`) are **not** rate limited, even though they
@@ -93,11 +144,16 @@ The response includes a `next_cursor` field when there are more results:
 
 ### Offset-Based Pagination
 
-The moderation queue and action history use offset-based pagination:
+The moderation queue, the action history and the member directory use
+offset-based pagination:
 
 ```
 GET /api/v1/moderation/queue?limit=20&offset=0
+GET /api/v1/users?limit=25&offset=0
 ```
+
+The directory additionally returns a `total`, so a client can size a pager
+without walking off the end of the list.
 
 ---
 
@@ -203,6 +259,87 @@ its own to interpret the field.
 ---
 
 ### Users
+
+#### `GET /api/v1/users`
+
+The member directory: everyone a signed-in resident may browse.
+
+**Auth**: Required
+**Role**: Any active user, **including pending** — there is deliberately no role
+floor here.
+
+**Query Parameters**:
+
+| Param | Type | Default | Max | Notes |
+|-------|------|---------|-----|-------|
+| `limit` | int | 25 | 100 | Values outside the range are clamped, not rejected |
+| `offset` | int | 0 | -- | Offset-based, like the moderation queue |
+| `q` | string | (empty) | 100 chars | Case-insensitive substring of `display_name`. Empty lists everyone |
+
+**Response** `200 OK`:
+
+```json
+{
+  "users": [
+    {
+      "id": "0193a7b2-...",
+      "display_name": "Alice Smith",
+      "role": "member",
+      "joined_at": "2025-07-01T12:00:00Z"
+    }
+  ],
+  "total": 57
+}
+```
+
+`total` is the number of people matching `q`, not the size of the page — it is
+what a client renders a pager from. `users` is always an array, never `null`.
+
+```bash
+curl "https://bell.example.com/api/v1/users?q=ali&limit=25&offset=0" \
+  -H "Cookie: ory_kratos_session=..."
+```
+
+##### Who is listed
+
+Pending residents are included **on purpose**. A pending account cannot post, so
+before this endpoint existed there was no way to find one — and finding one is
+the entire prerequisite for vouching. The vouch graph's cold start depends on
+residents being able to browse their neighbours and share a profile URL.
+
+Excluded: banned accounts, deactivated accounts, and anyone currently serving a
+suspension. A suspension that has lapsed is not a suspension, so those residents
+are listed again the moment it expires — the clock is part of the filter, on the
+same `NOW()` every other user query uses.
+
+A resident who has never set a display name is still listed, with
+`display_name` as the **empty string**. They are usually the newest arrivals, so
+dropping them would hide exactly the people the directory exists to surface. As
+elsewhere, the key is always present and a client falls back to the id for
+anything falsy. Such a resident is not reachable by a `q` search, because there
+is no name to match.
+
+##### Order
+
+`joined_at` descending — newest neighbours first, since they are the ones
+needing a vouch. Ties break on id, so paging with `offset` cannot silently
+repeat or skip a row.
+
+##### What it does not carry
+
+`trust_score`, `muted_until` and `is_active` are **not** in this response. The
+directory is the one listing readable by any signed-in resident including a
+pending one, and it is not where the town's trust scores and moderation posture
+get published. `GET /api/v1/users/{id}` owns the public profile;
+`GET /api/v1/me` owns the self view.
+
+##### Search
+
+`q` is matched literally. The `%` and `_` characters mean nothing special here —
+a resident searching for `_` finds an underscore in somebody's name rather than
+every neighbour in town.
+
+---
 
 #### `GET /api/v1/users/me`
 

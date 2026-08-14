@@ -25,6 +25,24 @@ type stubProfileService struct {
 	gotDisplayName string
 	gotBio         string
 	gotAvatarURL   string
+
+	// Directory listing. directory and total are what ListDirectory returns;
+	// the got* fields record what the handler asked for, which is where the
+	// query-string parsing is actually observable.
+	directory    []*domain.User
+	total        int
+	gotQuery     string
+	gotLimit     int
+	gotOffset    int
+	directoryErr error
+}
+
+func (s *stubProfileService) ListDirectory(_ context.Context, query string, limit, offset int) ([]*domain.User, int, error) {
+	s.gotQuery, s.gotLimit, s.gotOffset = query, limit, offset
+	if s.directoryErr != nil {
+		return nil, 0, s.directoryErr
+	}
+	return s.directory, s.total, nil
 }
 
 func (s *stubProfileService) GetByID(_ context.Context, id string) (*domain.User, error) {

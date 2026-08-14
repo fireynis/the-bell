@@ -70,7 +70,13 @@ func (s *Server) routes() http.Handler {
 				}
 				return nil
 			}
-			r.HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
+			// Registration is throttled per IP before the request reaches
+			// Kratos. Everything else under /.ory passes through, including the
+			// login and session paths a signed-in resident hits constantly —
+			// see middleware.KratosRegistrationLimit.
+			r.With(middleware.KratosRegistrationLimit(
+				s.rateLimiter, s.trustedProxies, registrationMaxPerIP, registrationWindow,
+			)).HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
 				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/.ory")
 				if req.URL.Path == "" {
 					req.URL.Path = "/"
@@ -111,6 +117,22 @@ type rateSpec struct {
 	window   time.Duration
 }
 
+// The registration budget, per client IP.
+//
+// Ten an hour is not one account an hour. Kratos v1.x registration is two-step,
+// so completing a sign-up costs a flow init plus two submits — three requests —
+// and a resident who mistypes their password spends more. Ten leaves room for
+// roughly three sign-ups an hour from one address, which covers a household or
+// a library terminal, while capping a scripted flood at a couple of hundred
+// pending accounts a day per address instead of an unbounded number per minute.
+//
+// The window is what a rejected caller is told to wait, so a longer one would
+// hand a mistyped password a punishment out of proportion to it.
+const (
+	registrationMaxPerIP = 10
+	registrationWindow   = time.Hour
+)
+
 // guard describes what a route group requires of its caller. The zero value is
 // the safe one: authenticated and active, with no role floor and no rate limit.
 type guard struct {
@@ -129,7 +151,7 @@ type guard struct {
 }
 
 // protected builds the middleware chain for a guarded route group, always in
-// the order auth → active → role → rate limit.
+// the order auth → active → verified email → role → rate limit.
 //
 // Auth and the rate limiter are installed only when configured so the server
 // still boots without Kratos or Redis (tests and the setup wizard rely on it).
@@ -140,6 +162,15 @@ func (s *Server) protected(g guard) []func(http.Handler) http.Handler {
 	}
 	if !g.skipActive {
 		mws = append(mws, middleware.RequireActive)
+		// Verification gates participation, not self-inspection, so it rides
+		// with RequireActive: skipActive already marks the routes where a user
+		// who may not participate still has to learn why, and GET /v1/me is the
+		// only one. Giving verification its own opt-out would leave two flags
+		// that must be set together on every such route, and one of them would
+		// eventually be forgotten.
+		if s.cfg.RequireVerifiedEmail {
+			mws = append(mws, middleware.RequireVerifiedEmail)
+		}
 	}
 	if g.role != "" {
 		mws = append(mws, middleware.RequireRole(g.role))
@@ -238,6 +269,11 @@ func (s *Server) apiRoutes(r chi.Router) {
 		r.Route("/v1/users", func(r chi.Router) {
 			r.Group(func(r chi.Router) {
 				r.Use(s.protected(guard{})...)
+				// The directory carries no role floor on purpose. A pending
+				// resident has to be able to browse — finding somebody to vouch
+				// for them is how they stop being pending — and they have to be
+				// findable in it for the same reason.
+				r.Get("/", uh.ListDirectory)
 				r.Get("/me", uh.GetMe)
 				r.Put("/me", uh.UpdateMe)
 			})

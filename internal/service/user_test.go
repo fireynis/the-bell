@@ -458,6 +458,16 @@ func (s *backfillStore) UpdateUserProfile(_ context.Context, id, displayName, bi
 	return u, nil
 }
 
+// The backfill never browses the directory; these satisfy UserRepository so the
+// store can still be handed to a UserService.
+func (s *backfillStore) ListDirectoryUsers(_ context.Context, _ string, _, _ int) ([]*domain.User, error) {
+	return nil, nil
+}
+
+func (s *backfillStore) CountDirectoryUsers(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (s *backfillStore) ListPendingUsers(_ context.Context) ([]*domain.User, error) {
 	if s.pendingErr != nil {
 		return nil, s.pendingErr

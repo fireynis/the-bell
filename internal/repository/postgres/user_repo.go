@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
@@ -84,6 +85,47 @@ func (r *UserRepo) ListPendingUsers(ctx context.Context) ([]*domain.User, error)
 		users[i] = userFromRow(row)
 	}
 	return users, nil
+}
+
+// ListDirectoryUsers returns one page of the member directory, filtered by a
+// case-insensitive substring of the display name. An empty query lists
+// everyone.
+func (r *UserRepo) ListDirectoryUsers(ctx context.Context, query string, limit, offset int) ([]*domain.User, error) {
+	rows, err := r.q.ListDirectoryUsers(ctx, ListDirectoryUsersParams{
+		Query:     escapeLikePattern(query),
+		RowLimit:  int32Bound(limit),
+		RowOffset: int32Bound(offset),
+	})
+	if err != nil {
+		return nil, err
+	}
+	users := make([]*domain.User, len(rows))
+	for i, row := range rows {
+		users[i] = userFromRow(row)
+	}
+	return users, nil
+}
+
+// CountDirectoryUsers counts everyone ListDirectoryUsers would page through for
+// the same query.
+func (r *UserRepo) CountDirectoryUsers(ctx context.Context, query string) (int64, error) {
+	return r.q.CountDirectoryUsers(ctx, escapeLikePattern(query))
+}
+
+// escapeLikePattern neutralises the three characters LIKE reads as syntax, so a
+// search term is matched literally.
+//
+// Without it "%" matches every resident and "_" matches any single character —
+// a search that quietly returns the wrong people rather than failing. The
+// escape character is backslash, which is what Postgres LIKE uses by default,
+// so it must be escaped first or it would escape the escapes.
+//
+// Escaping happens here rather than in the service because it is a property of
+// the SQL operator, not of the caller's intent: a service passing a plain
+// substring is right, and a second storage backend would need its own rule.
+func escapeLikePattern(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(s)
 }
 
 func (r *UserRepo) CountActiveMembers(ctx context.Context) (int64, error) {
