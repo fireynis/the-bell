@@ -118,12 +118,26 @@ func makeWebP() []byte {
 
 func buildMultipartRequest(t *testing.T, bodyText string, imageData []byte, imageFilename string) *http.Request {
 	t.Helper()
+	return buildMultipartRequestWithAlt(t, bodyText, "", imageData, imageFilename)
+}
+
+// buildMultipartRequestWithAlt is buildMultipartRequest plus the alt_text field.
+// An empty altText writes no field at all, which is the shape of a request from
+// a client that never heard of image descriptions.
+func buildMultipartRequestWithAlt(t *testing.T, bodyText, altText string, imageData []byte, imageFilename string) *http.Request {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
 
 	if bodyText != "" {
 		if err := w.WriteField("body", bodyText); err != nil {
 			t.Fatalf("writing body field: %v", err)
+		}
+	}
+
+	if altText != "" {
+		if err := w.WriteField("alt_text", altText); err != nil {
+			t.Fatalf("writing alt_text field: %v", err)
 		}
 	}
 
@@ -341,6 +355,95 @@ func TestPostHandler_Create_StoredNameIsGenerated(t *testing.T) {
 		if !strings.HasSuffix(name, ".jpg") {
 			t.Errorf("stored name %q does not carry the detected extension", name)
 		}
+	}
+}
+
+// --- alt text on the multipart create path ---
+
+func TestPostHandler_Create_MultipartWithAltText(t *testing.T) {
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	req := buildMultipartRequestWithAlt(t, "Look at this", "A heron on the frozen millpond", makeJPEG(t), "heron.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var post domain.Post
+	decodeBody(t, rec, &post)
+	if post.AltText != "A heron on the frozen millpond" {
+		t.Errorf("alt_text = %q, want the description that was sent", post.AltText)
+	}
+}
+
+// Describing the image stays optional: a post must not need one to go up.
+func TestPostHandler_Create_MultipartWithoutAltText(t *testing.T) {
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	req := buildMultipartRequest(t, "Look at this", makeJPEG(t), "heron.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var post domain.Post
+	decodeBody(t, rec, &post)
+	if post.AltText != "" {
+		t.Errorf("alt_text = %q, want empty", post.AltText)
+	}
+}
+
+// A description with no image attached means the upload the author thought they
+// were describing never arrived. Saying so beats storing a sentence about an
+// image that does not exist.
+func TestPostHandler_Create_MultipartAltTextWithoutImage(t *testing.T) {
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	req := buildMultipartRequestWithAlt(t, "Text only", "A heron on the frozen millpond", nil, "")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(repo.posts) != 0 {
+		t.Errorf("%d posts were created, want the request rejected outright", len(repo.posts))
+	}
+}
+
+func TestPostHandler_Create_MultipartAltTextTooLong(t *testing.T) {
+	repo := newMockPostRepo()
+	store := newMockStorage()
+	h := handler.NewPostHandler(newTestPostService(repo), handler.WithStorage(store))
+
+	tooLong := strings.Repeat("a", domain.MaxAltTextRunes+1)
+	req := buildMultipartRequestWithAlt(t, "Look at this", tooLong, makeJPEG(t), "heron.jpg")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Create(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(repo.posts) != 0 {
+		t.Errorf("%d posts were created despite the description being rejected", len(repo.posts))
 	}
 }
 

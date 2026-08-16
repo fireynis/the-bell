@@ -41,7 +41,7 @@ func (stubPostRepo) ListPosts(context.Context, string, int) ([]*domain.Post, err
 func (stubPostRepo) ListPostsByAuthor(context.Context, string, int) ([]*domain.Post, error) {
 	return nil, nil
 }
-func (stubPostRepo) UpdatePostBody(context.Context, string, string) (*domain.Post, error) {
+func (stubPostRepo) UpdatePostContent(context.Context, string, string, string) (*domain.Post, error) {
 	return &domain.Post{ID: "p1"}, nil
 }
 func (stubPostRepo) UpdatePostStatus(context.Context, string, domain.PostStatus, string, string) error {

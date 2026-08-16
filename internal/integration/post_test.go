@@ -5,6 +5,9 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/jpeg"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -318,4 +321,184 @@ func TestPostAuthorizationLowTrust(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403 for low-trust user, got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+// The image-description path end to end: a real multipart upload against the
+// wired server, a real column, and the four reads that have to carry it back.
+//
+// The unit tests cover the rules; what only a full stack can show is that the
+// description survives the round trip through Postgres and the feed cache, and
+// that a PATCH which never mentions it leaves it alone once a real UPDATE is
+// doing the writing.
+func TestPostAltTextLifecycle(t *testing.T) {
+	pool := testsupport.TestDB(t)
+
+	const alt = "A heron standing on the frozen millpond"
+	user := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("describer"), domain.RoleMember, 80.0)
+	srv := testServer(t, pool, user)
+	handler := srv.Handler()
+
+	var postID string
+
+	t.Run("create with an image and a description", func(t *testing.T) {
+		req := multipartPost(t, "Look at this", alt, testJPEG(t))
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var post domain.Post
+		if err := json.NewDecoder(w.Body).Decode(&post); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if post.ImagePath == "" {
+			t.Fatal("no image_path on a post created with an image")
+		}
+		if post.AltText != alt {
+			t.Errorf("alt_text = %q, want %q", post.AltText, alt)
+		}
+		postID = post.ID
+	})
+
+	t.Run("description comes back on every read", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/posts/"+postID, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var single domain.Post
+		if err := json.NewDecoder(w.Body).Decode(&single); err != nil {
+			t.Fatalf("decoding single post: %v", err)
+		}
+		if single.AltText != alt {
+			t.Errorf("single read alt_text = %q, want %q", single.AltText, alt)
+		}
+
+		for _, path := range []string{"/api/v1/posts", "/api/v1/users/" + user.ID + "/posts"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s: expected 200, got %d: %s", path, w.Code, w.Body.String())
+			}
+			var resp struct {
+				Posts []domain.Post `json:"posts"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("%s: decoding response: %v", path, err)
+			}
+			found := false
+			for _, p := range resp.Posts {
+				if p.ID != postID {
+					continue
+				}
+				found = true
+				if p.AltText != alt {
+					t.Errorf("%s: alt_text = %q, want %q", path, p.AltText, alt)
+				}
+			}
+			if !found {
+				t.Errorf("%s: created post %s missing from the response", path, postID)
+			}
+		}
+	})
+
+	t.Run("editing the body leaves the description alone", func(t *testing.T) {
+		body := `{"body":"Look at this heron"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/posts/"+postID, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var post domain.Post
+		if err := json.NewDecoder(w.Body).Decode(&post); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if post.AltText != alt {
+			t.Errorf("alt_text = %q after a body-only edit, want %q", post.AltText, alt)
+		}
+	})
+
+	t.Run("sending an empty description clears it", func(t *testing.T) {
+		body := `{"body":"Look at this heron","alt_text":""}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/posts/"+postID, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var post domain.Post
+		if err := json.NewDecoder(w.Body).Decode(&post); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if post.AltText != "" {
+			t.Errorf("alt_text = %q, want it cleared", post.AltText)
+		}
+	})
+
+	t.Run("a description with no image is refused", func(t *testing.T) {
+		req := multipartPost(t, "Text only", alt, nil)
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// multipartPost builds a POST /api/v1/posts carrying the compose form's fields.
+// A nil image writes no file part, which is what the composer sends for a
+// text-only post.
+func multipartPost(t *testing.T, body, altText string, image []byte) *http.Request {
+	t.Helper()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("body", body); err != nil {
+		t.Fatalf("writing body field: %v", err)
+	}
+	if err := w.WriteField("alt_text", altText); err != nil {
+		t.Fatalf("writing alt_text field: %v", err)
+	}
+	if image != nil {
+		part, err := w.CreateFormFile("image", "photo.jpg")
+		if err != nil {
+			t.Fatalf("creating image part: %v", err)
+		}
+		if _, err := part.Write(image); err != nil {
+			t.Fatalf("writing image data: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/posts", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return req
+}
+
+// testJPEG is a one-pixel JPEG, which is enough for the magic-byte check the
+// upload path performs.
+func testJPEG(t *testing.T) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 1, 1)), nil); err != nil {
+		t.Fatalf("encoding jpeg: %v", err)
+	}
+	return buf.Bytes()
 }

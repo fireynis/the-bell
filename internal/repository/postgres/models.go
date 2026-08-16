@@ -48,6 +48,7 @@ type Post struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	EditedAt      pgtype.Timestamptz `json:"edited_at"`
 	RemovedBy     pgtype.Text        `json:"removed_by"`
+	AltText       string             `json:"alt_text"`
 }
 
 type Proposal struct {

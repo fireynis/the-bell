@@ -13,6 +13,7 @@ import type {
   Proposal,
   ProposalsResponse,
   Report,
+  SuspensionStatus,
   TakeActionRequest,
   TownConfig,
   UpdateProfileRequest,
@@ -237,9 +238,18 @@ export const postApi = {
    * the whole updated post — read the body back from the response rather than
    * assuming the sent text, since edited_at only exists on the server's copy.
    *
-   * Answers 409 once the window has closed; see postMutationErrorMessage.
+   * altText is genuinely optional, and passing `undefined` is not the same as
+   * passing `""`: the field is left out of the payload entirely, which tells
+   * the server to leave the stored description alone. Sending `""` clears it.
+   * A caller that always passed the current value back would erase the
+   * description of every post whose author edited it from a client that had
+   * not loaded one.
+   *
+   * Answers 409 once the window has closed; see postMutationErrorMessage. A
+   * description over 500 runes, or one sent for a post with no image, is a 400.
    */
-  update: (postId: string, body: string) => api.patch<Post>(`/posts/${postId}`, { body }),
+  update: (postId: string, body: string, altText?: string) =>
+    api.patch<Post>(`/posts/${postId}`, altText === undefined ? { body } : { body, alt_text: altText }),
 
   /**
    * Takes an author's own post down. Answers 204 with no body: the post still
@@ -298,6 +308,25 @@ export const moderationApi = {
    * reaction DELETE has for a reaction that was never left.
    */
   liftMute: (userId: string) => api.delete(`/moderation/users/${userId}/mute`),
+
+  /**
+   * When a user's suspension expires, for a moderator looking at someone else.
+   *
+   * Ask this rather than reading `is_active` off their profile: that flag does
+   * read false while a suspension is in force, but it reads false for an
+   * account deactivated for any other reason too, and it never says when the
+   * suspension ends.
+   */
+  getSuspensionStatus: (userId: string) =>
+    api.get<SuspensionStatus>(`/moderation/users/${userId}/suspension`),
+
+  /**
+   * Lifts a suspension before its duration runs out.
+   *
+   * Answers 204 with no body, including for a user who was not suspended — the
+   * same idempotence, for the same reason, as liftMute above.
+   */
+  liftSuspension: (userId: string) => api.delete(`/moderation/users/${userId}/suspension`),
 };
 
 export const configApi = {

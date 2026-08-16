@@ -62,12 +62,13 @@ func (m *mockPostRepo) ListPostsByAuthor(_ context.Context, authorID string, lim
 	return result, nil
 }
 
-func (m *mockPostRepo) UpdatePostBody(_ context.Context, id string, body string) (*domain.Post, error) {
+func (m *mockPostRepo) UpdatePostContent(_ context.Context, id, body, altText string) (*domain.Post, error) {
 	p, ok := m.posts[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	p.Body = body
+	p.AltText = altText
 	now := time.Now()
 	p.EditedAt = &now
 	return p, nil
@@ -93,6 +94,8 @@ func TestPostService_Create(t *testing.T) {
 		authorID  string
 		body      string
 		imagePath string
+		altText   string
+		wantAlt   string
 		wantErr   error
 	}{
 		{
@@ -100,6 +103,76 @@ func TestPostService_Create(t *testing.T) {
 			authorID:  "user-1",
 			body:      "Hello, world!",
 			imagePath: "/images/photo.jpg",
+		},
+		{
+			name:      "image described",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   "A heron on the frozen millpond",
+			wantAlt:   "A heron on the frozen millpond",
+		},
+		{
+			name:      "description is trimmed before storage",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   "  A heron on the frozen millpond \n",
+			wantAlt:   "A heron on the frozen millpond",
+		},
+		{
+			name:      "whitespace-only description stores nothing",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   "   \t\n ",
+			wantAlt:   "",
+		},
+		{
+			name:      "description at the rune limit",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   strings.Repeat("é", domain.MaxAltTextRunes),
+			wantAlt:   strings.Repeat("é", domain.MaxAltTextRunes),
+		},
+		{
+			// Twice the byte budget, half the rune budget: a bytes-based bound
+			// would reject this, and rejecting it would give a description
+			// written in one alphabet less room than the same sentence in
+			// another.
+			name:      "multi-byte description inside the rune limit",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   strings.Repeat("é", domain.MaxAltTextRunes/2),
+			wantAlt:   strings.Repeat("é", domain.MaxAltTextRunes/2),
+		},
+		{
+			name:      "description exceeds the rune limit",
+			authorID:  "user-1",
+			body:      "Look at this",
+			imagePath: "/images/photo.jpg",
+			altText:   strings.Repeat("a", domain.MaxAltTextRunes+1),
+			wantErr:   ErrValidation,
+		},
+		{
+			name:      "description without an image",
+			authorID:  "user-1",
+			body:      "Just text",
+			imagePath: "",
+			altText:   "A heron on the frozen millpond",
+			wantErr:   ErrValidation,
+		},
+		{
+			// The imageless case has to tolerate an empty field, or a client
+			// that always sends alt_text cannot make a text-only post.
+			name:      "empty description without an image is accepted",
+			authorID:  "user-1",
+			body:      "Just text",
+			imagePath: "",
+			altText:   "  ",
+			wantAlt:   "",
 		},
 		{
 			name:      "valid post without image",
@@ -138,7 +211,7 @@ func TestPostService_Create(t *testing.T) {
 			repo := newMockPostRepo()
 			svc := NewPostService(repo, clock)
 
-			post, err := svc.Create(context.Background(), postingUser(tt.authorID), tt.body, tt.imagePath)
+			post, err := svc.Create(context.Background(), postingUser(tt.authorID), tt.body, tt.imagePath, tt.altText)
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -160,6 +233,9 @@ func TestPostService_Create(t *testing.T) {
 			}
 			if post.ImagePath != tt.imagePath {
 				t.Errorf("ImagePath = %q, want %q", post.ImagePath, tt.imagePath)
+			}
+			if post.AltText != tt.wantAlt {
+				t.Errorf("AltText = %q, want %q", post.AltText, tt.wantAlt)
 			}
 			if post.Status != domain.PostVisible {
 				t.Errorf("Status = %q, want %q", post.Status, domain.PostVisible)
@@ -296,7 +372,12 @@ func TestPostService_ListFeed_PropagatesCacheErrors(t *testing.T) {
 	}
 }
 
-func TestPostService_UpdateBody(t *testing.T) {
+// sent marks a table case as having supplied alt_text, so that `sent("")` — an
+// author clearing the description — reads differently from `nil`, which is a
+// PATCH that never mentioned it.
+func sent(altText string) *string { return &altText }
+
+func TestPostService_UpdateContent(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -304,6 +385,8 @@ func TestPostService_UpdateBody(t *testing.T) {
 		post    *domain.Post
 		userID  string
 		body    string
+		altText *string
+		wantAlt string
 		clock   time.Time
 		wantErr error
 	}{
@@ -411,6 +494,112 @@ func TestPostService_UpdateBody(t *testing.T) {
 			clock:   now,
 			wantErr: ErrValidation,
 		},
+		{
+			// The contract the whole feature turns on: an edit that says
+			// nothing about the description must not remove it.
+			name: "omitted alt text survives a body edit",
+			post: &domain.Post{
+				ID:        "post-8",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				AltText:   "A heron on the frozen millpond",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-5 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original, with the typo fixed",
+			altText: nil,
+			wantAlt: "A heron on the frozen millpond",
+			clock:   now,
+		},
+		{
+			name: "alt text replaced when sent",
+			post: &domain.Post{
+				ID:        "post-9",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				AltText:   "A bird",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-5 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original",
+			altText: sent("A heron on the frozen millpond"),
+			wantAlt: "A heron on the frozen millpond",
+			clock:   now,
+		},
+		{
+			// An empty string is the only way to say "I had it wrong, describe
+			// nothing", so it has to reach the column rather than being read as
+			// an omission.
+			name: "empty alt text clears the description",
+			post: &domain.Post{
+				ID:        "post-10",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				AltText:   "A heron on the frozen millpond",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-5 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original",
+			altText: sent(""),
+			wantAlt: "",
+			clock:   now,
+		},
+		{
+			name: "alt text on a post with no image",
+			post: &domain.Post{
+				ID:        "post-11",
+				AuthorID:  "user-1",
+				Body:      "original",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-5 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original",
+			altText: sent("A heron on the frozen millpond"),
+			clock:   now,
+			wantErr: ErrValidation,
+		},
+		{
+			name: "alt text exceeds the rune limit",
+			post: &domain.Post{
+				ID:        "post-12",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-5 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original",
+			altText: sent(strings.Repeat("a", domain.MaxAltTextRunes+1)),
+			clock:   now,
+			wantErr: ErrValidation,
+		},
+		{
+			// Same window as the body, and it closes on both at once: there is
+			// one edit, not an edit and a separate description edit.
+			name: "alt text is not editable once the window closes",
+			post: &domain.Post{
+				ID:        "post-13",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				AltText:   "A bird",
+				Status:    domain.PostVisible,
+				CreatedAt: now.Add(-20 * time.Minute),
+			},
+			userID:  "user-1",
+			body:    "original",
+			altText: sent("A heron on the frozen millpond"),
+			clock:   now,
+			wantErr: ErrEditWindow,
+		},
 	}
 
 	for _, tt := range tests {
@@ -424,21 +613,55 @@ func TestPostService_UpdateBody(t *testing.T) {
 				postID = tt.post.ID
 			}
 
-			updated, err := svc.UpdateBody(context.Background(), postID, tt.userID, tt.body)
+			updated, err := svc.UpdateContent(context.Background(), postID, tt.userID, tt.body, tt.altText)
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("UpdateBody() error = %v, wantErr %v", err, tt.wantErr)
+					t.Fatalf("UpdateContent() error = %v, wantErr %v", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("UpdateBody() unexpected error: %v", err)
+				t.Fatalf("UpdateContent() unexpected error: %v", err)
 			}
 			if updated.Body != tt.body {
 				t.Errorf("Body = %q, want %q", updated.Body, tt.body)
 			}
+			if updated.AltText != tt.wantAlt {
+				t.Errorf("AltText = %q, want %q", updated.AltText, tt.wantAlt)
+			}
 		})
+	}
+}
+
+// A rejected description must leave the post exactly as it was — including its
+// body, which is validated first and would otherwise be written by an edit the
+// service went on to refuse.
+func TestPostService_UpdateContent_RejectedAltTextWritesNothing(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "original",
+		ImagePath: "/uploads/heron.jpg",
+		AltText:   "A heron on the frozen millpond",
+		Status:    domain.PostVisible,
+		CreatedAt: now.Add(-5 * time.Minute),
+	}
+	svc := NewPostService(repo, func() time.Time { return now })
+
+	tooLong := strings.Repeat("a", domain.MaxAltTextRunes+1)
+	if _, err := svc.UpdateContent(context.Background(), "post-1", "user-1", "new body", &tooLong); !errors.Is(err, ErrValidation) {
+		t.Fatalf("UpdateContent() error = %v, want %v", err, ErrValidation)
+	}
+
+	stored := repo.posts["post-1"]
+	if stored.Body != "original" {
+		t.Errorf("Body = %q, want the edit rolled back to %q", stored.Body, "original")
+	}
+	if stored.AltText != "A heron on the frozen millpond" {
+		t.Errorf("AltText = %q, want it untouched", stored.AltText)
 	}
 }
 
@@ -544,7 +767,7 @@ func TestPostService_Create_CachesPostWithAuthorFields(t *testing.T) {
 		IsActive: true, TrustScore: 50, Role: domain.RoleMember,
 	}
 
-	post, err := svc.Create(context.Background(), author, "hello town", "")
+	post, err := svc.Create(context.Background(), author, "hello town", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -566,7 +789,7 @@ func TestPostService_Create_CachesPostWithAuthorFields(t *testing.T) {
 
 // The cache holds whole posts, not IDs, so an edit that skips invalidation
 // keeps serving the pre-edit body until the entry is evicted by length.
-func TestPostService_UpdateBody_InvalidatesFeedCache(t *testing.T) {
+func TestPostService_UpdateContent_InvalidatesFeedCache(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 	repo := newMockPostRepo()
@@ -582,8 +805,8 @@ func TestPostService_UpdateBody_InvalidatesFeedCache(t *testing.T) {
 	svc := NewPostService(repo, func() time.Time { return now })
 	svc.SetFeedCache(cache)
 
-	if _, err := svc.UpdateBody(context.Background(), "post-1", "user-1", "edited"); err != nil {
-		t.Fatalf("UpdateBody() unexpected error: %v", err)
+	if _, err := svc.UpdateContent(context.Background(), "post-1", "user-1", "edited", nil); err != nil {
+		t.Fatalf("UpdateContent() unexpected error: %v", err)
 	}
 
 	if cache.updated == nil {
@@ -595,7 +818,7 @@ func TestPostService_UpdateBody_InvalidatesFeedCache(t *testing.T) {
 }
 
 // A rejected edit must not invalidate: the feed still holds the current body.
-func TestPostService_UpdateBody_DoesNotInvalidateWhenEditRejected(t *testing.T) {
+func TestPostService_UpdateContent_DoesNotInvalidateWhenEditRejected(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 	repo := newMockPostRepo()
@@ -611,8 +834,8 @@ func TestPostService_UpdateBody_DoesNotInvalidateWhenEditRejected(t *testing.T) 
 	svc := NewPostService(repo, func() time.Time { return now })
 	svc.SetFeedCache(cache)
 
-	if _, err := svc.UpdateBody(context.Background(), "post-1", "user-1", "too late"); !errors.Is(err, ErrEditWindow) {
-		t.Fatalf("UpdateBody() error = %v, want %v", err, ErrEditWindow)
+	if _, err := svc.UpdateContent(context.Background(), "post-1", "user-1", "too late", nil); !errors.Is(err, ErrEditWindow) {
+		t.Fatalf("UpdateContent() error = %v, want %v", err, ErrEditWindow)
 	}
 
 	if cache.updated != nil {
@@ -656,7 +879,7 @@ func TestPostService_Create_RefusesUsersWhoCannotPost(t *testing.T) {
 			repo := newMockPostRepo()
 			svc := NewPostService(repo, func() time.Time { return now })
 
-			post, err := svc.Create(context.Background(), tt.author, "hello town", "")
+			post, err := svc.Create(context.Background(), tt.author, "hello town", "", "")
 			if !errors.Is(err, ErrForbidden) {
 				t.Fatalf("Create() error = %v, want ErrForbidden", err)
 			}
@@ -683,7 +906,7 @@ func TestPostService_Create_ExpiredMuteDoesNotBlock(t *testing.T) {
 		ID: "u1", IsActive: true, TrustScore: 50, Role: domain.RoleMember, MutedUntil: &expired,
 	}
 
-	if _, err := svc.Create(context.Background(), author, "hello town", ""); err != nil {
+	if _, err := svc.Create(context.Background(), author, "hello town", "", ""); err != nil {
 		t.Fatalf("Create() error = %v, want the expired mute ignored", err)
 	}
 }

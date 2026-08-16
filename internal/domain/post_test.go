@@ -79,6 +79,64 @@ func TestPost_CanEdit(t *testing.T) {
 	})
 }
 
+// The image description is part of the post on the wire, always — an absent
+// key would reach a client as `undefined` and drop the alt attribute entirely,
+// which makes a screen reader read the image's filename instead of staying
+// silent. So no omitempty, and a post with no image sends "".
+func TestPost_AltTextIsAlwaysSerialized(t *testing.T) {
+	// No image, no description: the emptiest a post gets.
+	encoded, err := json.Marshal(domain.Post{ID: "post-1", AuthorID: "author-1", Body: "text only"})
+	if err != nil {
+		t.Fatalf("marshalling post: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("post is not valid JSON: %v", err)
+	}
+	alt, present := decoded["alt_text"]
+	if !present {
+		t.Fatalf("serialized post carries no alt_text key: %s", encoded)
+	}
+	if alt != "" {
+		t.Errorf("alt_text = %v, want the empty string", alt)
+	}
+}
+
+// Why the feed cache needs no migration of its own.
+//
+// internal/cache/feed.go stores whole marshalled domain.Post JSON in a Redis
+// sorted set under a 60-second TTL, and reads it back with json.Unmarshal. Any
+// entry written before this field existed therefore has no alt_text key — and
+// this is what happens when one is read by the new code: the field decodes to
+// "", the same value an undescribed image has, and the post renders alt="".
+//
+// That makes adding the field backward-compatible by construction, so nothing
+// flushes the cache on deploy. The worst case is an image described in the
+// sixty seconds after rollout whose cached copy predates the description, and
+// it cannot happen: a description can only be written after the migration, and
+// a post created after it is appended to the cache with the new marshal.
+func TestPost_CachedEntriesWithoutAltTextDecodeToEmpty(t *testing.T) {
+	// A post exactly as the feed cache marshalled it before this field existed.
+	preAltText := `{"id":"post-1","author_id":"author-1","body":"look at this",` +
+		`"image_path":"/uploads/heron.jpg","status":"visible",` +
+		`"created_at":"2026-03-01T12:00:00Z","author_display_name":"Ada"}`
+
+	var post domain.Post
+	if err := json.Unmarshal([]byte(preAltText), &post); err != nil {
+		t.Fatalf("a cached entry from before alt_text no longer decodes: %v", err)
+	}
+
+	if post.AltText != "" {
+		t.Errorf("AltText = %q, want the empty string", post.AltText)
+	}
+	// And the rest of the entry survives, so an old cache page is still a usable
+	// page rather than a set of blank posts.
+	if post.Body != "look at this" || post.ImagePath != "/uploads/heron.jpg" {
+		t.Errorf("decoded post = %+v, want the cached fields preserved", post)
+	}
+}
+
 // RemovalReason is a moderator's private note. It rides on the same struct the
 // public read paths return, so the guarantee that it cannot be serialized
 // belongs next to the struct rather than in whichever handler happens to be

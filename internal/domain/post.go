@@ -17,6 +17,18 @@ type Post struct {
 	ImagePath string     `json:"image_path,omitempty"`
 	Status    PostStatus `json:"status"`
 
+	// AltText describes the image for a reader who cannot see it.
+	//
+	// Serialized on every post read, without omitempty, so a client can render
+	// alt={post.alt_text} unconditionally. An undescribed image and a post with
+	// no image both send "", and both must reach the page as alt="" — an <img>
+	// with no alt attribute at all is announced by its filename, which is worse
+	// than silence.
+	//
+	// Only ever non-empty on a post that has an image; PostService rejects a
+	// description of an image that does not exist rather than storing it.
+	AltText string `json:"alt_text"`
+
 	// RemovalReason is a moderator's private note and is never serialized.
 	//
 	// It is populated by GetPostByID, which deliberately has no status filter
@@ -56,6 +68,17 @@ type Post struct {
 
 const MaxPostBodyLength = 1000
 const EditWindowMinutes = 15
+
+// MaxAltTextRunes bounds an image description, counted in runes rather than
+// bytes.
+//
+// Runes because this bound exists to keep a description to something a screen
+// reader can speak in one go, and that is a count of characters, not of the
+// UTF-8 they happen to encode to. Bounding bytes would give a Kanji or Cyrillic
+// description a third of the room an English one gets, for a limit that has
+// nothing to do with storage — the column is TEXT. The body limit above is bytes
+// only because it has always been, and moving it is a separate decision.
+const MaxAltTextRunes = 500
 
 func (p *Post) CanEdit(userID string, now time.Time) bool {
 	if p.AuthorID != userID {

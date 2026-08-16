@@ -5,11 +5,15 @@ import ErrorBanner from "./ErrorBanner.tsx";
 import Spinner from "./Spinner.tsx";
 import { useModalDialog } from "../hooks/useModalDialog.ts";
 import {
+  MAX_ALT_TEXT_LENGTH,
   MAX_POST_BODY_LENGTH,
   counterColor,
   counterOpacity,
   postMutationErrorMessage,
+  remainingAltTextChars,
   remainingChars,
+  runeLength,
+  validateAltText,
   validatePostBody,
 } from "../lib/post.ts";
 
@@ -27,12 +31,18 @@ interface EditPostDialogProps {
  * that reorders under the reader as posts arrive, and a form that is part of a
  * card can be scrolled away or pushed down mid-sentence.
  *
- * Only the body is editable. PATCH /v1/posts/{id} takes nothing else — an image
- * cannot be swapped or removed after the fact — so the image is left visible on
- * the card behind rather than shown here as if it could be changed.
+ * The body and, on a post that has one, the image's description are editable.
+ * The image itself is not — PATCH /v1/posts/{id} cannot swap or remove it — so
+ * it stays visible on the card behind rather than appearing here as if it could
+ * be changed. The description is the second chance at the thing the composer
+ * asks for and an author in a hurry skips.
  */
 export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialogProps) {
+  const hasImage = Boolean(post.image_path);
+  const originalAltText = post.alt_text ?? "";
+
   const [body, setBody] = useState(post.body);
+  const [altText, setAltText] = useState(originalAltText);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,9 +51,12 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
   });
 
   const check = validatePostBody(body);
-  const unchanged = body === post.body;
-  const canSave = check.valid && !saving && !unchanged;
+  const altCheck = validateAltText(altText, hasImage);
+  const altChanged = hasImage && altText !== originalAltText;
+  const unchanged = body === post.body && !altChanged;
+  const canSave = check.valid && altCheck.valid && !saving && !unchanged;
   const remaining = remainingChars(body);
+  const altRemaining = remainingAltTextChars(altText);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,12 +65,25 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
       setError(check.error ?? null);
       return;
     }
+    if (!altCheck.valid) {
+      setError(altCheck.error ?? null);
+      return;
+    }
 
     setSaving(true);
     setError(null);
 
     try {
-      const updated = await postApi.update(post.id, body.trim());
+      // Sent only when this dialog actually changed it. An unchanged field is
+      // left out of the payload entirely, which tells the server to keep what
+      // it has — the difference matters because sending the description back
+      // unchanged would make this dialog the authority on a field it may have
+      // loaded from a stale copy of the post.
+      const updated = await postApi.update(
+        post.id,
+        body.trim(),
+        altChanged ? altText.trim() : undefined,
+      );
       onSaved(updated);
       onClose();
     } catch (err) {
@@ -120,6 +146,53 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
               {body.length} / {MAX_POST_BODY_LENGTH}
             </p>
           </div>
+
+          {/*
+            Only for a post that has an image. On a text-only post there is
+            nothing to describe, and the server answers a description sent for
+            one with a 400 — so showing the field would be offering an edit that
+            cannot be saved.
+          */}
+          {hasImage && (
+            <div>
+              <label
+                htmlFor="edit-post-alt-text"
+                className="mb-1 block text-sm font-medium"
+                style={{ color: "var(--color-text-secondary)" }}
+              >
+                Describe this image
+              </label>
+              <textarea
+                id="edit-post-alt-text"
+                value={altText}
+                onChange={(e) => setAltText(e.target.value)}
+                rows={2}
+                disabled={saving}
+                placeholder="The bandstand in Wilson Park, freshly painted green"
+                aria-describedby="edit-post-alt-text-help"
+                className="field w-full resize-none rounded-[var(--radius-md)] px-3 py-2 text-sm"
+              />
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <p
+                  id="edit-post-alt-text-help"
+                  className="text-xs"
+                  style={{ color: "var(--color-text-tertiary)" }}
+                >
+                  For neighbours using screen readers.
+                </p>
+                <p
+                  className="shrink-0 text-xs"
+                  style={{
+                    color: counterColor(altRemaining),
+                    opacity: counterOpacity(altRemaining),
+                    transition: "color 0.3s, opacity 0.3s",
+                  }}
+                >
+                  {runeLength(altText)} / {MAX_ALT_TEXT_LENGTH}
+                </p>
+              </div>
+            </div>
+          )}
 
           {error && <ErrorBanner message={error} />}
 

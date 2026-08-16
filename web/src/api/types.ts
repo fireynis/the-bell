@@ -3,6 +3,17 @@ export interface Post {
   author_id: string;
   body: string;
   image_path: string;
+  /**
+   * The author's description of the image, for a reader who cannot see it.
+   *
+   * Always sent by the server, as the empty string when the post has no image
+   * or nobody described it — but typed as optional anyway, because a post can
+   * also arrive from the feed cache, which holds JSON marshalled before this
+   * field existed. Render it as `post.alt_text ?? ""`: an empty alt is the
+   * correct treatment for an undescribed image, while an <img> with no alt
+   * attribute is announced by its filename.
+   */
+  alt_text?: string;
   status: string;
   created_at: string;
   edited_at: string | null;
@@ -136,6 +147,8 @@ export interface FeedResponse {
 export interface CreatePostRequest {
   body: string;
   image_path?: string;
+  /** Rejected with 400 unless the post has an image. */
+  alt_text?: string;
 }
 
 export interface Vouch {

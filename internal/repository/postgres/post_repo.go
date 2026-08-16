@@ -25,6 +25,7 @@ func (r *PostRepo) CreatePost(ctx context.Context, post *domain.Post) error {
 		AuthorID:      post.AuthorID,
 		Body:          post.Body,
 		ImagePath:     post.ImagePath,
+		AltText:       post.AltText,
 		Status:        string(post.Status),
 		RemovalReason: post.RemovalReason,
 		CreatedAt:     pgtype.Timestamptz{Time: post.CreatedAt, Valid: true},
@@ -93,10 +94,11 @@ func (r *PostRepo) CountPostsByAuthorSince(ctx context.Context, authorID string,
 	})
 }
 
-func (r *PostRepo) UpdatePostBody(ctx context.Context, id string, body string) (*domain.Post, error) {
-	row, err := r.q.UpdatePostBody(ctx, UpdatePostBodyParams{
-		ID:   id,
-		Body: body,
+func (r *PostRepo) UpdatePostContent(ctx context.Context, id, body, altText string) (*domain.Post, error) {
+	row, err := r.q.UpdatePostContent(ctx, UpdatePostContentParams{
+		ID:      id,
+		Body:    body,
+		AltText: altText,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -130,6 +132,7 @@ func postFromRow(row Post, authorDisplayName, authorAvatarURL string) *domain.Po
 		AuthorID:          row.AuthorID,
 		Body:              row.Body,
 		ImagePath:         row.ImagePath,
+		AltText:           row.AltText,
 		Status:            domain.PostStatus(row.Status),
 		RemovalReason:     row.RemovalReason,
 		RemovedBy:         row.RemovedBy.String,

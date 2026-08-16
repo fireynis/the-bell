@@ -81,12 +81,13 @@ func (m *mockPostRepo) ListPostsByAuthor(_ context.Context, authorID string, lim
 	return result, nil
 }
 
-func (m *mockPostRepo) UpdatePostBody(_ context.Context, id string, body string) (*domain.Post, error) {
+func (m *mockPostRepo) UpdatePostContent(_ context.Context, id, body, altText string) (*domain.Post, error) {
 	p, ok := m.posts[id]
 	if !ok {
 		return nil, service.ErrNotFound
 	}
 	p.Body = body
+	p.AltText = altText
 	now := time.Now()
 	p.EditedAt = &now
 	return p, nil
@@ -672,6 +673,202 @@ func TestPostHandler_Update(t *testing.T) {
 	if post.Body != "updated body" {
 		t.Errorf("body = %q, want %q", post.Body, "updated body")
 	}
+}
+
+// The PATCH contract, at the layer that decodes it: alt_text is optional, and
+// an edit that leaves it out is asking to change the body and nothing else.
+//
+// A plain string field would decode a missing key to "" and hand that to the
+// service as an instruction, silently stripping the description off the image
+// every time an author fixed a typo.
+func TestPostHandler_Update_OmittedAltTextIsNotAnInstructionToClearIt(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "original",
+		ImagePath: "/uploads/heron.jpg",
+		AltText:   "A heron on the frozen millpond",
+		Status:    domain.PostVisible,
+		CreatedAt: fixedNow.Add(-5 * time.Minute),
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/posts/post-1", strings.NewReader(`{"body":"original, with the typo fixed"}`))
+	req = withChiURLParam(req, "id", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var post domain.Post
+	decodeBody(t, rec, &post)
+	if post.AltText != "A heron on the frozen millpond" {
+		t.Errorf("alt_text = %q, want the stored description untouched", post.AltText)
+	}
+}
+
+func TestPostHandler_Update_AltText(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		wantCode int
+		wantAlt  string
+	}{
+		{
+			name:     "replaces the description",
+			payload:  `{"body":"original","alt_text":"A heron on the frozen millpond"}`,
+			wantCode: http.StatusOK,
+			wantAlt:  "A heron on the frozen millpond",
+		},
+		{
+			// Explicitly sent and empty is the one way to say "describe
+			// nothing", and it has to be distinguishable from an omission.
+			name:     "empty string clears the description",
+			payload:  `{"body":"original","alt_text":""}`,
+			wantCode: http.StatusOK,
+			wantAlt:  "",
+		},
+		{
+			name:     "over the rune limit is rejected",
+			payload:  fmt.Sprintf(`{"body":"original","alt_text":%q}`, strings.Repeat("a", domain.MaxAltTextRunes+1)),
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newMockPostRepo()
+			repo.posts["post-1"] = &domain.Post{
+				ID:        "post-1",
+				AuthorID:  "user-1",
+				Body:      "original",
+				ImagePath: "/uploads/heron.jpg",
+				AltText:   "A bird",
+				Status:    domain.PostVisible,
+				CreatedAt: fixedNow.Add(-5 * time.Minute),
+			}
+			h := handler.NewPostHandler(newTestPostService(repo))
+
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/posts/post-1", strings.NewReader(tt.payload))
+			req = withChiURLParam(req, "id", "post-1")
+			req = withUser(req, testUser())
+			rec := httptest.NewRecorder()
+
+			h.Update(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			if tt.wantCode != http.StatusOK {
+				return
+			}
+
+			var post domain.Post
+			decodeBody(t, rec, &post)
+			if post.AltText != tt.wantAlt {
+				t.Errorf("alt_text = %q, want %q", post.AltText, tt.wantAlt)
+			}
+		})
+	}
+}
+
+// A description sent for a post with no image is a client bug, and it is worth
+// a 400 rather than a write nobody can ever hear.
+func TestPostHandler_Update_AltTextOnImagelessPost(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "original",
+		Status:    domain.PostVisible,
+		CreatedAt: fixedNow.Add(-5 * time.Minute),
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/posts/post-1", strings.NewReader(`{"body":"original","alt_text":"A heron"}`))
+	req = withChiURLParam(req, "id", "post-1")
+	req = withUser(req, testUser())
+	rec := httptest.NewRecorder()
+
+	h.Update(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if got := repo.posts["post-1"].Body; got != "original" {
+		t.Errorf("body = %q, want the whole edit refused", got)
+	}
+}
+
+// alt_text rides out on every read, and always as a key — a client renders
+// alt={post.alt_text} without checking whether the field arrived.
+func TestPostHandler_ReadsAlwaysCarryAltText(t *testing.T) {
+	repo := newMockPostRepo()
+	repo.posts["post-1"] = &domain.Post{
+		ID:        "post-1",
+		AuthorID:  "user-1",
+		Body:      "described",
+		ImagePath: "/uploads/heron.jpg",
+		AltText:   "A heron on the frozen millpond",
+		Status:    domain.PostVisible,
+		CreatedAt: fixedNow,
+	}
+	// Text-only, so its description is the empty string rather than absent.
+	repo.posts["post-2"] = &domain.Post{
+		ID:        "post-2",
+		AuthorID:  "user-1",
+		Body:      "no image here",
+		Status:    domain.PostVisible,
+		CreatedAt: fixedNow,
+	}
+	h := handler.NewPostHandler(newTestPostService(repo))
+
+	t.Run("single post", func(t *testing.T) {
+		req := withChiURLParam(httptest.NewRequest(http.MethodGet, "/api/v1/posts/post-1", nil), "id", "post-1")
+		rec := httptest.NewRecorder()
+
+		h.GetByID(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		var got map[string]any
+		decodeBody(t, rec, &got)
+		if got["alt_text"] != "A heron on the frozen millpond" {
+			t.Errorf("alt_text = %v, want the stored description", got["alt_text"])
+		}
+	})
+
+	t.Run("feed", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ListFeed(rec, httptest.NewRequest(http.MethodGet, "/api/v1/posts", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		var got struct {
+			Posts []map[string]any `json:"posts"`
+		}
+		decodeBody(t, rec, &got)
+		if len(got.Posts) != 2 {
+			t.Fatalf("feed returned %d posts, want 2", len(got.Posts))
+		}
+		for _, p := range got.Posts {
+			alt, ok := p["alt_text"]
+			if !ok {
+				t.Errorf("post %v carries no alt_text key", p["id"])
+				continue
+			}
+			if p["id"] == "post-2" && alt != "" {
+				t.Errorf("alt_text = %v on a post with no image, want the empty string", alt)
+			}
+		}
+	})
 }
 
 func TestPostHandler_Update_NotFound(t *testing.T) {

@@ -1,6 +1,6 @@
 -- name: CreatePost :one
-INSERT INTO posts (id, author_id, body, image_path, status, removal_reason, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO posts (id, author_id, body, image_path, alt_text, status, removal_reason, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetPostByID :one
@@ -28,11 +28,16 @@ WHERE p.status = 'visible'
 ORDER BY p.id DESC
 LIMIT $1;
 
--- name: UpdatePostBody :one
+-- name: UpdatePostContent :one
 -- The updated row is joined back to users so that the post returned by an edit
 -- carries the same author fields as every read path. Without it the edit
 -- response alone would come back with a blank author name.
-UPDATE posts p SET body = $2, edited_at = NOW()
+--
+-- Body and alt text are written together in one statement because they are one
+-- edit: PATCH takes both, the service resolves an omitted alt_text to the value
+-- already stored, and a second UPDATE would give an edit two edited_at stamps
+-- and a window in which the post carries the new body with the old description.
+UPDATE posts p SET body = $2, alt_text = $3, edited_at = NOW()
 FROM users u
 WHERE p.id = $1 AND u.id = p.author_id
 RETURNING sqlc.embed(p),

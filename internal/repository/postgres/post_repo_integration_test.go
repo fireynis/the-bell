@@ -244,7 +244,7 @@ func TestPostRepo_ListPostsByAuthor_OrdersAndLimits(t *testing.T) {
 	}
 }
 
-func TestPostRepo_UpdatePostBody(t *testing.T) {
+func TestPostRepo_UpdatePostContent(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 	repo := postgres.NewPostRepo(postgres.New(pool))
@@ -252,9 +252,9 @@ func TestPostRepo_UpdatePostBody(t *testing.T) {
 	author := testsupport.TestUser(t, pool, testsupport.UniqueKratosID("post-author"), domain.RoleMember, 50)
 	newPost(t, pool, "post-1", author.ID, domain.PostVisible, time.Now())
 
-	updated, err := repo.UpdatePostBody(ctx, "post-1", "edited body")
+	updated, err := repo.UpdatePostContent(ctx, "post-1", "edited body", "")
 	if err != nil {
-		t.Fatalf("UpdatePostBody: %v", err)
+		t.Fatalf("UpdatePostContent: %v", err)
 	}
 	if updated.Body != "edited body" {
 		t.Errorf("body = %q, want %q", updated.Body, "edited body")
@@ -277,7 +277,7 @@ func TestPostRepo_UpdatePostBody(t *testing.T) {
 // The edit response is handed straight to the client, so it must carry the same
 // author fields as every read path. It previously did not — the UPDATE had no
 // users join — and editing a post made the author's name vanish from the card.
-func TestPostRepo_UpdatePostBody_ReturnsAuthorFields(t *testing.T) {
+func TestPostRepo_UpdatePostContent_ReturnsAuthorFields(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 	repo := postgres.NewPostRepo(postgres.New(pool))
@@ -285,9 +285,9 @@ func TestPostRepo_UpdatePostBody_ReturnsAuthorFields(t *testing.T) {
 	author := authorNamed(t, pool, "post-author", "Ada")
 	newPost(t, pool, "post-1", author.ID, domain.PostVisible, time.Now())
 
-	updated, err := repo.UpdatePostBody(ctx, "post-1", "edited body")
+	updated, err := repo.UpdatePostContent(ctx, "post-1", "edited body", "")
 	if err != nil {
-		t.Fatalf("UpdatePostBody: %v", err)
+		t.Fatalf("UpdatePostContent: %v", err)
 	}
 	if updated.AuthorDisplayName != "Ada" || updated.AuthorAvatarURL != author.AvatarURL {
 		t.Errorf("author fields = %q/%q, want Ada/%s", updated.AuthorDisplayName, updated.AuthorAvatarURL, author.AvatarURL)
@@ -317,7 +317,7 @@ func TestPostRepo_UpdatePostBody_ReturnsAuthorFields(t *testing.T) {
 // update nothing. Every post has an author FK, making that unreachable — but an
 // unknown post id must still come back as ErrNotFound rather than as a silently
 // empty result.
-func TestPostRepo_UpdatePostBody_JoinDoesNotHideMissingPosts(t *testing.T) {
+func TestPostRepo_UpdatePostContent_JoinDoesNotHideMissingPosts(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	ctx := context.Background()
 	repo := postgres.NewPostRepo(postgres.New(pool))
@@ -325,7 +325,7 @@ func TestPostRepo_UpdatePostBody_JoinDoesNotHideMissingPosts(t *testing.T) {
 	author := authorNamed(t, pool, "post-author", "Ada")
 	newPost(t, pool, "post-1", author.ID, domain.PostVisible, time.Now())
 
-	got, err := repo.UpdatePostBody(ctx, "no-such-post", "body")
+	got, err := repo.UpdatePostContent(ctx, "no-such-post", "body", "")
 	if !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("err = %v, want service.ErrNotFound", err)
 	}
@@ -343,11 +343,137 @@ func TestPostRepo_UpdatePostBody_JoinDoesNotHideMissingPosts(t *testing.T) {
 	}
 }
 
-func TestPostRepo_UpdatePostBody_NotFound(t *testing.T) {
+// An image description has to survive every way a post is read back, for the
+// same reason edited_at does: the four read statements map their rows
+// separately, so any one of them can drop a column on its own. A description
+// that reaches the single-post view but not the feed is worse than none — the
+// image is announced properly on one page and silently on the next.
+func TestPostRepo_AltTextReachesEveryReadPath(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewPostRepo(postgres.New(pool))
+
+	const alt = "A heron on the frozen millpond"
+	author := authorNamed(t, pool, "post-author", "Ada")
+	now := time.Now()
+
+	described := &domain.Post{
+		ID:        "post-described",
+		AuthorID:  author.ID,
+		Body:      "look at this",
+		ImagePath: "/uploads/heron.jpg",
+		AltText:   alt,
+		Status:    domain.PostVisible,
+		CreatedAt: now,
+	}
+	if err := repo.CreatePost(ctx, described); err != nil {
+		t.Fatalf("CreatePost: %v", err)
+	}
+	// A second, newer post so the cursored feed page has something to page past.
+	newPost(t, pool, "post-later", author.ID, domain.PostVisible, now.Add(time.Minute))
+
+	single, err := repo.GetPostByID(ctx, "post-described")
+	if err != nil {
+		t.Fatalf("GetPostByID: %v", err)
+	}
+	if single.AltText != alt {
+		t.Errorf("GetPostByID alt_text = %q, want %q", single.AltText, alt)
+	}
+
+	firstPage, err := repo.ListPosts(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("ListPosts: %v", err)
+	}
+	cursored, err := repo.ListPosts(ctx, "post-later", 10)
+	if err != nil {
+		t.Fatalf("ListPosts (cursored): %v", err)
+	}
+	byAuthor, err := repo.ListPostsByAuthor(ctx, author.ID, 10)
+	if err != nil {
+		t.Fatalf("ListPostsByAuthor: %v", err)
+	}
+
+	for name, posts := range map[string][]*domain.Post{
+		"feed first page": firstPage,
+		"feed next page":  cursored,
+		"author listing":  byAuthor,
+	} {
+		found := false
+		for _, p := range posts {
+			if p.ID != "post-described" {
+				continue
+			}
+			found = true
+			if p.AltText != alt {
+				t.Errorf("%s: alt_text = %q, want %q", name, p.AltText, alt)
+			}
+		}
+		if !found {
+			t.Errorf("%s: post-described missing from %s", name, postIDs(posts))
+		}
+	}
+
+	// And the edit response, which is the fifth mapping of the same row.
+	edited, err := repo.UpdatePostContent(ctx, "post-described", "look at this again", alt)
+	if err != nil {
+		t.Fatalf("UpdatePostContent: %v", err)
+	}
+	if edited.AltText != alt {
+		t.Errorf("edit response alt_text = %q, want %q", edited.AltText, alt)
+	}
+}
+
+// The column is written by the edit, not merely echoed back from the argument:
+// a RETURNING clause that forgot alt_text would still hand the caller the value
+// it was given, so the check that matters is a fresh read.
+func TestPostRepo_UpdatePostContent_PersistsAltText(t *testing.T) {
+	pool := testsupport.TestDB(t)
+	ctx := context.Background()
+	repo := postgres.NewPostRepo(postgres.New(pool))
+
+	author := authorNamed(t, pool, "post-author", "Ada")
+	if err := repo.CreatePost(ctx, &domain.Post{
+		ID:        "post-1",
+		AuthorID:  author.ID,
+		Body:      "look at this",
+		ImagePath: "/uploads/heron.jpg",
+		AltText:   "A bird",
+		Status:    domain.PostVisible,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreatePost: %v", err)
+	}
+
+	if _, err := repo.UpdatePostContent(ctx, "post-1", "look at this", "A heron on the frozen millpond"); err != nil {
+		t.Fatalf("UpdatePostContent: %v", err)
+	}
+
+	reread, err := repo.GetPostByID(ctx, "post-1")
+	if err != nil {
+		t.Fatalf("GetPostByID: %v", err)
+	}
+	if reread.AltText != "A heron on the frozen millpond" {
+		t.Errorf("stored alt_text = %q, want the edited description", reread.AltText)
+	}
+
+	// And clearing it writes the empty string rather than leaving the old one.
+	if _, err := repo.UpdatePostContent(ctx, "post-1", "look at this", ""); err != nil {
+		t.Fatalf("UpdatePostContent (clearing): %v", err)
+	}
+	cleared, err := repo.GetPostByID(ctx, "post-1")
+	if err != nil {
+		t.Fatalf("GetPostByID: %v", err)
+	}
+	if cleared.AltText != "" {
+		t.Errorf("stored alt_text = %q after clearing, want empty", cleared.AltText)
+	}
+}
+
+func TestPostRepo_UpdatePostContent_NotFound(t *testing.T) {
 	pool := testsupport.TestDB(t)
 	repo := postgres.NewPostRepo(postgres.New(pool))
 
-	got, err := repo.UpdatePostBody(context.Background(), "no-such-post", "body")
+	got, err := repo.UpdatePostContent(context.Background(), "no-such-post", "body", "")
 	if !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("err = %v, want service.ErrNotFound", err)
 	}
@@ -369,8 +495,8 @@ func TestPostRepo_EditedAtReachesEveryReadPath(t *testing.T) {
 	newPost(t, pool, "post-edited", author.ID, domain.PostVisible, now)
 	newPost(t, pool, "post-untouched", author.ID, domain.PostVisible, now)
 
-	if _, err := repo.UpdatePostBody(ctx, "post-edited", "edited body"); err != nil {
-		t.Fatalf("UpdatePostBody: %v", err)
+	if _, err := repo.UpdatePostContent(ctx, "post-edited", "edited body", ""); err != nil {
+		t.Fatalf("UpdatePostContent: %v", err)
 	}
 
 	// First feed page (no cursor), a cursored feed page, and the author listing.

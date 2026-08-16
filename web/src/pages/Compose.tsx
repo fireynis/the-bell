@@ -6,10 +6,14 @@ import ErrorBanner from "../components/ErrorBanner.tsx";
 import Spinner from "../components/Spinner.tsx";
 import {
   ALLOWED_IMAGE_TYPES,
+  MAX_ALT_TEXT_LENGTH,
   MAX_POST_BODY_LENGTH,
   counterColor,
   counterOpacity,
+  remainingAltTextChars,
   remainingChars,
+  runeLength,
+  validateAltText,
   validateImageFile,
   validatePostBody,
 } from "../lib/post.ts";
@@ -26,6 +30,7 @@ export default function Compose() {
   const [error, setError] = useState<string | null>(null);
   const [image, setImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [altText, setAltText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Null when the user may post. The server is still the authority; this only
@@ -37,8 +42,10 @@ export default function Compose() {
   const postBlock = postingBlockReason(user, { profileUnavailable: profileError });
 
   const bodyCheck = validatePostBody(body);
-  const canSubmit = bodyCheck.valid && !submitting && postBlock === null;
+  const altCheck = validateAltText(altText, image !== null);
+  const canSubmit = bodyCheck.valid && altCheck.valid && !submitting && postBlock === null;
   const remaining = remainingChars(body);
+  const altRemaining = remainingAltTextChars(altText);
 
   // Clean up object URL on unmount or when preview changes
   useEffect(() => {
@@ -77,6 +84,11 @@ export default function Compose() {
     }
     setImage(null);
     setImagePreview(null);
+    // The description goes with the image it described. Keeping it would leave
+    // the post carrying a sentence about a picture that is no longer attached —
+    // which the server rejects outright, so the alternative is a submit that
+    // fails for a reason nothing on screen explains.
+    setAltText("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -93,6 +105,10 @@ export default function Compose() {
       setError(bodyCheck.error ?? null);
       return;
     }
+    if (!altCheck.valid) {
+      setError(altCheck.error ?? null);
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -102,6 +118,7 @@ export default function Compose() {
         const formData = new FormData();
         formData.append("body", body.trim());
         formData.append("image", image);
+        formData.append("alt_text", altText.trim());
         await postApi.createWithImage(formData);
       } else {
         await postApi.create({ body: body.trim() });
@@ -184,25 +201,76 @@ export default function Compose() {
 
           {/* Image preview */}
           {imagePreview && (
-            <div className="relative mt-2 inline-block">
-              <img
-                src={imagePreview}
-                alt="Upload preview"
-                className="rounded-lg object-cover"
-                style={{ width: "96px", height: "96px" }}
-              />
-              <button
-                type="button"
-                onClick={removeImage}
-                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shadow-md"
-                style={{
-                  backgroundColor: "var(--color-danger)",
-                  color: "var(--color-text-inverse)",
-                }}
-                aria-label="Remove image"
-              >
-                &times;
-              </button>
+            <div className="mt-2">
+              <div className="relative inline-block">
+                <img
+                  src={imagePreview}
+                  alt="Upload preview"
+                  className="rounded-lg object-cover"
+                  style={{ width: "96px", height: "96px" }}
+                />
+                <button
+                  type="button"
+                  onClick={removeImage}
+                  className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shadow-md"
+                  style={{
+                    backgroundColor: "var(--color-danger)",
+                    color: "var(--color-text-inverse)",
+                  }}
+                  aria-label="Remove image"
+                >
+                  &times;
+                </button>
+              </div>
+
+              {/*
+                Only once there is an image to describe, and never as a gate on
+                posting: the field is optional and the submit button does not
+                wait for it. What it does do is sit in the way — under the
+                preview, labelled and explained — because the whole reason every
+                image in this feed used to reach a screen reader as silence is
+                that nothing ever asked.
+              */}
+              <div className="mt-3">
+                <label
+                  htmlFor="compose-alt-text"
+                  className="mb-1 block text-sm font-medium"
+                  style={{ color: "var(--color-text-secondary)" }}
+                >
+                  Describe this image
+                </label>
+                <textarea
+                  id="compose-alt-text"
+                  value={altText}
+                  onChange={(e) => setAltText(e.target.value)}
+                  rows={2}
+                  disabled={postBlock !== null}
+                  placeholder="The bandstand in Wilson Park, freshly painted green"
+                  aria-describedby="compose-alt-text-help"
+                  className="field w-full resize-none rounded-[var(--radius-md)] px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <div className="mt-1 flex items-baseline justify-between gap-3">
+                  <p
+                    id="compose-alt-text-help"
+                    className="text-xs"
+                    style={{ color: "var(--color-text-tertiary)" }}
+                  >
+                    For neighbours using screen readers.
+                  </p>
+                  {/* The composer's own counter, on this field's limit: quiet
+                      until the limit is close, then increasingly insistent. */}
+                  <p
+                    className="shrink-0 text-xs"
+                    style={{
+                      color: counterColor(altRemaining),
+                      opacity: counterOpacity(altRemaining),
+                      transition: "color 0.3s, opacity 0.3s",
+                    }}
+                  >
+                    {runeLength(altText)} / {MAX_ALT_TEXT_LENGTH}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 

@@ -652,6 +652,7 @@ excluded, the same way they are excluded from the feed.
       "author_id": "0193a7b2-...",
       "body": "Hello, Springfield!",
       "image_path": "/uploads/0193a7b2-xxxx.jpg",
+      "alt_text": "The bandstand in Wilson Park, freshly painted green",
       "status": "visible",
       "created_at": "2025-07-01T12:00:00Z",
       "edited_at": null
@@ -730,6 +731,7 @@ Returns the public post feed (visible posts in reverse chronological order).
       "author_id": "0193a7b2-...",
       "body": "Beautiful day in Springfield!",
       "image_path": "",
+      "alt_text": "",
       "status": "visible",
       "created_at": "2025-07-01T14:30:00Z",
       "edited_at": null,
@@ -760,6 +762,15 @@ a Kratos session cookie, if you send one, is read rather than ignored:
 |-------|------------------|----------------------|
 | `reaction_counts` | Present | Present |
 | `user_reactions` | **Always absent** | The caller's own reactions on that post |
+
+##### Image descriptions
+
+`alt_text` is what the author wrote to describe their image, for a reader who
+cannot see it. It is present on **every** post on every read, as the empty
+string when the post has no image or the author described none — never omitted —
+so a client can render `alt={post.alt_text}` without a fallback. An empty
+`alt_text` must reach the page as `alt=""`; an `<img>` with no `alt` attribute at
+all is announced by its filename, which is worse than silence.
 
 `user_reactions` is the caller's own reactions and nobody else's, so without an
 identity there is no answer to give. Both fields are omitted entirely when
@@ -823,7 +834,8 @@ Creates a new post. Accepts either `application/json` or `multipart/form-data`.
 ```json
 {
   "body": "Hello, Springfield!",
-  "image_path": ""
+  "image_path": "",
+  "alt_text": ""
 }
 ```
 
@@ -833,16 +845,35 @@ Creates a new post. Accepts either `application/json` or `multipart/form-data`.
 curl -X POST https://bell.example.com/api/v1/posts \
   -H "Cookie: ory_kratos_session=..." \
   -F "body=Check out this sunset!" \
-  -F "image=@sunset.jpg"
+  -F "image=@sunset.jpg" \
+  -F "alt_text=The sun setting behind the water tower, sky orange"
 ```
 
 | Field | Type | Required | Constraints |
 |-------|------|----------|-------------|
 | `body` | string | Yes | Non-empty, max 1,000 characters |
 | `image` | file | No | JPEG, PNG, or WebP. Max 5 MB |
+| `alt_text` | string | No | Trimmed, max 500 **characters** (runes). Only with an image |
 
 **Response** `201 Created`: The created post object.
 **Response** `403 Forbidden`: `posting not allowed`.
+
+##### Describing the image
+
+`alt_text` is the author's description of the image, read aloud in place of it
+by a screen reader. It is optional — posting stays frictionless, and a post
+with an undescribed image is still a post — but a client should ask for one
+whenever an image is attached.
+
+Two rules are worth knowing before you send it:
+
+- It is bounded at **500 runes**, not bytes, unlike `body`'s 1,000-byte bound.
+  A description in Kanji or Cyrillic gets the same room as one in English.
+- Sending a non-empty `alt_text` on a post with **no image** is `400`, and no
+  post is written. There is nothing for the description to describe, and storing
+  it would leave a string on the record that no reader ever hears. An empty or
+  whitespace-only value is fine either way, so a client that always sends the
+  field does not have to special-case a text-only post.
 
 A `403` means the author failed at least one posting gate. All of these produce
 it, and **no post is written** in any case:
@@ -866,7 +897,9 @@ here as "you may not post right now" and check `muted_until`, `role`,
 
 #### `PATCH /api/v1/posts/{id}`
 
-Updates a post's body text. Only the author can edit, and only within 15 minutes of creation.
+Updates a post's body text and, on a post that has an image, its description.
+Only the author can edit, and only within 15 minutes of creation. The image
+itself cannot be changed or removed.
 
 **Auth**: Required
 **Role**: `member` or higher
@@ -875,19 +908,44 @@ Updates a post's body text. Only the author can edit, and only within 15 minutes
 
 ```json
 {
-  "body": "Updated text here"
+  "body": "Updated text here",
+  "alt_text": "A new description of the image"
 }
 ```
 
+| Field | Type | Required | Meaning |
+|-------|------|----------|---------|
+| `body` | string | Yes | The new body. Same rules as on create |
+| `alt_text` | string | No | **Omit** to leave the description as it is; send `""` to clear it |
+
 **Response** `200 OK`: Updated post object.
-**Response** `409 Conflict`: Edit window expired.
+**Response** `400 Bad Request`: `alt_text` over 500 runes, or non-empty on a post
+with no image. Nothing is written — the body is not updated either.
+**Response** `409 Conflict`: Edit window expired. The description is editable in
+exactly the same window as the body; there is one edit, not two.
 
 ```bash
+# Fix a typo, leaving the image description untouched.
 curl -X PATCH https://bell.example.com/api/v1/posts/0193a7b2-... \
   -H "Content-Type: application/json" \
   -H "Cookie: ory_kratos_session=..." \
   -d '{"body":"Fixed a typo"}'
+
+# Improve the description as well.
+curl -X PATCH https://bell.example.com/api/v1/posts/0193a7b2-... \
+  -H "Content-Type: application/json" \
+  -H "Cookie: ory_kratos_session=..." \
+  -d '{"body":"Fixed a typo","alt_text":"A heron on the frozen millpond"}'
 ```
+
+##### Why `alt_text` is optional and `body` is not
+
+An absent `alt_text` means "leave it alone"; an `alt_text` of `""` means "clear
+it". The two must be distinguishable, because the alternative is that every
+client editing a typo has to remember to resend the description — and the one
+that forgets silently strips it off the image, with no error and nothing in the
+UI to notice. `body` has no such treatment: it has always been required on
+every PATCH, and sending it unchanged is how you edit only the description.
 
 ---
 

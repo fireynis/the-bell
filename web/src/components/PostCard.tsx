@@ -47,6 +47,12 @@ export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) 
   const authorName = post.author_display_name || post.author_id.slice(0, 8);
   const viewerId = user?.id ?? null;
 
+  // Coalesced once here rather than at each use: the field is absent on posts
+  // served from a feed-cache entry marshalled before it existed, and `undefined`
+  // reaching an alt attribute would drop the attribute entirely — which makes a
+  // screen reader read the filename instead of staying silent.
+  const altText = post.alt_text ?? "";
+
   const items: PostMenuItem[] = [];
   if (canEditPost(post, viewerId, now)) {
     items.push({ label: "Edit post", onSelect: () => setDialog("edit") });
@@ -128,7 +134,17 @@ export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) 
           <button
             type="button"
             onClick={() => setLightbox(true)}
-            aria-label={`View ${authorName}'s image full size`}
+            // The description belongs on the button, because the button is what
+            // a screen reader announces — the img inside it is decorative from
+            // the accessibility tree's point of view, and an alt here as well
+            // would have the description read out twice. Without a description
+            // this falls back to naming the action alone, which is what it has
+            // always said.
+            aria-label={
+              altText
+                ? `View ${authorName}'s image full size: ${altText}`
+                : `View ${authorName}'s image full size`
+            }
             className="mb-4 mt-3 block w-full overflow-hidden rounded-lg"
           >
             <img
@@ -139,7 +155,15 @@ export default function PostCard({ post, onUpdated, onRemoved }: PostCardProps) 
             />
           </button>
           {lightbox && (
-            <ImageLightbox src={post.image_path} onClose={() => setLightbox(false)} />
+            <ImageLightbox
+              src={post.image_path}
+              // Here the image is the content rather than the label on a
+              // control, so the description goes on the img itself. An
+              // undescribed image passes "" and is skipped, which is correct:
+              // announcing a filename would be worse than announcing nothing.
+              alt={altText}
+              onClose={() => setLightbox(false)}
+            />
           )}
         </>
       )}

@@ -85,10 +85,21 @@ func NewPostHandler(posts *service.PostService, opts ...PostHandlerOption) *Post
 type createPostRequest struct {
 	Body      string `json:"body"`
 	ImagePath string `json:"image_path,omitempty"`
+	AltText   string `json:"alt_text,omitempty"`
 }
 
+// updatePostRequest is the PATCH body.
+//
+// AltText is a pointer so that an absent field and an empty one are different
+// instructions: omitting it leaves the description as it is, sending "" clears
+// it. A plain string would make every edit that did not resend the alt text
+// erase it — so fixing a typo would silently strip the description off the image
+// for every reader who needs it, which is the failure this whole feature exists
+// to end. Body has no such treatment: it is required on every PATCH, as it
+// always has been.
 type updatePostRequest struct {
-	Body string `json:"body"`
+	Body    string  `json:"body"`
+	AltText *string `json:"alt_text"`
 }
 
 type listFeedResponse struct {
@@ -140,7 +151,7 @@ func (h *PostHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	post, err := h.posts.Create(r.Context(), user, req.Body, req.ImagePath)
+	post, err := h.posts.Create(r.Context(), user, req.Body, req.ImagePath, req.AltText)
 	if err != nil {
 		serviceError(w, err)
 		return
@@ -168,6 +179,10 @@ func (h *PostHandler) parseMultipartCreate(r *http.Request, req *createPostReque
 	}
 
 	req.Body = r.FormValue("body")
+	// Read whether or not an image turns up. A description sent without one is
+	// rejected by the service rather than dropped here, so an author who
+	// described an image that failed to attach is told so.
+	req.AltText = r.FormValue("alt_text")
 
 	imgData, ext, err := parseImageUpload(r, maxImageSize)
 	if err != nil {
@@ -295,7 +310,7 @@ func (h *PostHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	post, err := h.posts.UpdateBody(r.Context(), id, user.ID, req.Body)
+	post, err := h.posts.UpdateContent(r.Context(), id, user.ID, req.Body, req.AltText)
 	if err != nil {
 		serviceError(w, err)
 		return

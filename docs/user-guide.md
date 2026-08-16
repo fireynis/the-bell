@@ -70,6 +70,24 @@ Navigate to `/compose` or click "New Post" from the feed. Posts support:
 
 - **Text**: Up to 1,000 characters
 - **Images**: Optional image upload (JPEG, PNG, or WebP, max 5 MB). Use multipart/form-data with a `body` field and an `image` file field
+- **Image descriptions**: Optional, up to 500 characters, in the `alt_text` field alongside the image
+
+### Describing your image
+
+When you attach an image, the composer asks you to describe it. That
+description is what a neighbour using a screen reader hears in place of the
+picture -- without one, the image is announced as nothing at all and your post
+reaches them as text with a silent gap in it.
+
+It takes a sentence. Say what someone would need to know if they were standing
+next to you and could not see the screen: "The bandstand in Wilson Park,
+freshly painted green" rather than "photo" or "image of the park". If words in
+the picture matter -- a notice, a date on a poster, a road-closure sign --
+include them, because nothing else on the page carries them.
+
+You are never blocked from posting without one. It is a courtesy to the people
+in town who need it, and the composer keeps asking because it is easy to forget
+that someone is reading with their ears.
 
 Requirements:
 - You must be a `member`, `moderator`, or `council` (not `pending` or `banned`)
@@ -80,6 +98,11 @@ Requirements:
 ### Editing Posts
 
 You can edit a post's text within **15 minutes** of creation. After that window closes, the post is locked. Only the author can edit their own posts.
+
+If the post has an image, its description can be edited in the same window and
+in the same dialog -- so a description you skipped in a hurry can still be added,
+as long as you get to it within the fifteen minutes. The image itself cannot be
+changed or removed; delete the post and post again instead.
 
 ### Deleting Posts
 

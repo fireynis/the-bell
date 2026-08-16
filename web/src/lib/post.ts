@@ -7,6 +7,9 @@ export const MAX_POST_BODY_LENGTH = 1000;
 /** Mirrors domain.EditWindowMinutes in internal/domain/post.go. */
 export const EDIT_WINDOW_MINUTES = 15;
 
+/** Mirrors domain.MaxAltTextRunes in internal/domain/post.go. */
+export const MAX_ALT_TEXT_LENGTH = 500;
+
 /** Mirrors maxImageSize in internal/handler/upload.go (5 MB). */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
@@ -105,6 +108,52 @@ export function counterOpacity(remaining: number): number {
   if (remaining > 100) return 0;
   if (remaining > 80) return (100 - remaining) / 20;
   return 1;
+}
+
+/**
+ * validateAltText mirrors validateAltText in internal/service/post.go: an image
+ * description is trimmed, bounded at 500 runes, and only meaningful on a post
+ * that has an image.
+ *
+ * Empty is valid whether or not there is an image — describing your image is
+ * encouraged, never required, and a form that always sends the field is
+ * clearing nothing rather than making a mistake. What the server refuses, and
+ * this refuses first, is a description attached to a post with no image.
+ *
+ * Runes rather than bytes, matching the server: this is the one free-text bound
+ * on the platform counted in characters, so it uses runeLength where the body
+ * check uses raw length. See domain.MaxAltTextRunes for why.
+ */
+export function validateAltText(altText: string, hasImage: boolean): ValidationResult {
+  const trimmed = altText.trim();
+  if (trimmed.length === 0) {
+    return { valid: true };
+  }
+  if (!hasImage) {
+    return { valid: false, error: "Add an image before describing one." };
+  }
+
+  const runes = runeLength(trimmed);
+  if (runes > MAX_ALT_TEXT_LENGTH) {
+    return {
+      valid: false,
+      error: `Description is ${runes} characters; the maximum is ${MAX_ALT_TEXT_LENGTH}.`,
+    };
+  }
+  return { valid: true };
+}
+
+/**
+ * remainingAltTextChars reports how many characters of a description are left,
+ * going negative when over.
+ *
+ * Counts the raw value rather than the trimmed one, so the number moves as the
+ * author types instead of freezing on a trailing space. The bound is enforced on
+ * the trimmed string, which only ever makes the real limit more generous than
+ * what the counter shows.
+ */
+export function remainingAltTextChars(altText: string): number {
+  return MAX_ALT_TEXT_LENGTH - runeLength(altText);
 }
 
 /**

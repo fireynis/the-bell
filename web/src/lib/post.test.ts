@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Post } from "../api/types";
 import {
   EDIT_WINDOW_MINUTES,
+  MAX_ALT_TEXT_LENGTH,
   MAX_IMAGE_BYTES,
   MAX_POST_BODY_LENGTH,
   appendFeedPage,
@@ -11,9 +12,11 @@ import {
   counterColor,
   counterOpacity,
   postMutationErrorMessage,
+  remainingAltTextChars,
   remainingChars,
   replacePost,
   runeLength,
+  validateAltText,
   validateImageFile,
   validatePostBody,
   validationDetail,
@@ -78,6 +81,62 @@ describe("remainingChars", () => {
 
   it("goes negative once over the limit, so the counter can warn", () => {
     expect(remainingChars("a".repeat(MAX_POST_BODY_LENGTH + 5))).toBe(-5);
+  });
+});
+
+describe("validateAltText", () => {
+  it("accepts a description of an image", () => {
+    expect(validateAltText("A heron on the frozen millpond", true)).toEqual({ valid: true });
+  });
+
+  // Describing your image is encouraged, never required — a validator that
+  // treated an empty field as an error would make it required by the back door.
+  it("accepts an empty description whether or not there is an image", () => {
+    expect(validateAltText("", true)).toEqual({ valid: true });
+    expect(validateAltText("", false)).toEqual({ valid: true });
+    expect(validateAltText("   \n ", false)).toEqual({ valid: true });
+  });
+
+  it("rejects a description with no image to describe", () => {
+    expect(validateAltText("A heron on the frozen millpond", false).valid).toBe(false);
+  });
+
+  it("accepts a description of exactly the maximum length", () => {
+    expect(validateAltText("a".repeat(MAX_ALT_TEXT_LENGTH), true).valid).toBe(true);
+  });
+
+  it("rejects one character over the maximum", () => {
+    expect(validateAltText("a".repeat(MAX_ALT_TEXT_LENGTH + 1), true).valid).toBe(false);
+  });
+
+  // The server counts runes here, unlike every other bound on the platform. A
+  // byte count would reject this and disagree with the server about a
+  // description the server would happily store.
+  it("counts characters rather than bytes", () => {
+    const emoji = "\u{1F514}".repeat(MAX_ALT_TEXT_LENGTH);
+    expect(validateAltText(emoji, true).valid).toBe(true);
+    expect(validateAltText(emoji + "\u{1F514}", true).valid).toBe(false);
+  });
+
+  // The server trims before bounding, so a description that only exceeds the
+  // limit with its trailing whitespace is one the server accepts.
+  it("measures the trimmed description", () => {
+    expect(validateAltText("  " + "a".repeat(MAX_ALT_TEXT_LENGTH) + "  ", true).valid).toBe(true);
+  });
+});
+
+describe("remainingAltTextChars", () => {
+  it("counts down from the maximum", () => {
+    expect(remainingAltTextChars("")).toBe(MAX_ALT_TEXT_LENGTH);
+    expect(remainingAltTextChars("abc")).toBe(MAX_ALT_TEXT_LENGTH - 3);
+  });
+
+  it("counts an astral character once, the way the server does", () => {
+    expect(remainingAltTextChars("\u{1F514}")).toBe(MAX_ALT_TEXT_LENGTH - 1);
+  });
+
+  it("goes negative past the limit", () => {
+    expect(remainingAltTextChars("a".repeat(MAX_ALT_TEXT_LENGTH + 5))).toBe(-5);
   });
 });
 
