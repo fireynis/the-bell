@@ -8,19 +8,24 @@ import {
   actionBlockReason,
   actionConsequence,
   activeMuteExpiry,
+  activeSuspensionExpiry,
   buildActionRequest,
   canRemovePost,
   describeHistorySubject,
   severityChoiceLabel,
   severityConsequence,
-  liftMuteBlockReason,
+  liftRestrictionBlockReason,
   needsDuration,
   ownMuteNotice,
   reportResolutionOutcome,
+  restrictionCopy,
+  restrictionHeadline,
+  restrictionReadFailure,
   severitiesFor,
   validateAction,
   validateRemovalReason,
   type ActionInput,
+  type RestrictionKind,
 } from "./moderation";
 import type { ActionHistoryEntry, ApiError, Post, User } from "../api/types";
 
@@ -74,31 +79,76 @@ describe("severitiesFor", () => {
 // These numbers are the ones internal/domain/moderation.go applies. A dialog
 // that quotes them wrongly is worse than one that says nothing, so they are
 // pinned against the Go source rather than against each other.
-describe("severityConsequence", () => {
-  it.each([
-    [1, 5, 90, 1, 0.5],
-    [2, 10, 180, 1, 0.7],
-    [3, 25, 270, 2, 0.6],
-    [4, 40, 365, 2, 0.7],
-  ])(
-    "mirrors severity %i: %i points, %i days, %i hops, %f per hop",
-    (severity, penalty, decayDays, depth, hopSurvival) => {
-      expect(severityConsequence(severity)).toEqual({ penalty, decayDays, depth, hopSurvival });
+/*
+ * ============================================================================
+ * DRIFT GUARD — mirrors internal/domain/moderation.go
+ * ============================================================================
+ *
+ * SEVERITY_CONSEQUENCES in lib/moderation.ts hand-copies four tables from
+ * internal/domain/moderation.go — DirectPenalty, PenaltyDecayDays,
+ * PropagationDepth and PropagationDecay. The web build cannot read Go, so
+ * nothing makes the copy follow the original: change a penalty on the Go side
+ * and the moderation dialog goes on quoting the old number to moderators
+ * deciding whether to use it, with no build error anywhere.
+ *
+ * This block is the guard. The Go values are restated HERE and only here — the
+ * tests below drive off GO_SEVERITY_TABLE rather than repeating literals — so a
+ * Go-side change breaks exactly one clearly-labelled test.
+ *
+ * IF THIS TEST FAILS: the numbers in internal/domain/moderation.go and the
+ * numbers in web/src/lib/moderation.ts disagree. Read the Go file, decide which
+ * is right, and update BOTH this table and SEVERITY_CONSEQUENCES to match it.
+ * Do not "fix" the lib to match this table without checking the Go source; this
+ * table is a copy too.
+ *
+ * Last reconciled against internal/domain/moderation.go on 2026-08-16.
+ */
+const GO_SEVERITY_TABLE = {
+  // severity: [DirectPenalty, PenaltyDecayDays, PropagationDepth, PropagationDecay]
+  1: [5, 90, 1, 0.5],
+  2: [10, 180, 1, 0.7],
+  3: [25, 270, 2, 0.6],
+  // PenaltyDecayDays returns 0 for a ban and relies on its second return value
+  // to say that means permanent, so the lib carries null: 0 days would read as
+  // "gone immediately", the opposite of what it means.
+  4: [40, 365, 2, 0.7],
+  5: [100, 0, 3, 0.75],
+} as const satisfies Record<number, readonly [number, number, number, number]>;
+
+const GO_MODERATION_FILE = "internal/domain/moderation.go";
+
+describe(`severity consequences match ${GO_MODERATION_FILE}`, () => {
+  it.each(Object.entries(GO_SEVERITY_TABLE))(
+    "severity %s costs what the Go tables say it costs",
+    (severity, [penalty, decayDays, depth, hopSurvival]) => {
+      expect(
+        severityConsequence(Number(severity)),
+        `severity ${severity} disagrees with ${GO_MODERATION_FILE} — reconcile that file with SEVERITY_CONSEQUENCES in web/src/lib/moderation.ts`,
+      ).toEqual({
+        penalty,
+        // A ban's 0 from PenaltyDecayDays means permanent, which is null here.
+        decayDays: decayDays === 0 ? null : decayDays,
+        depth,
+        hopSurvival,
+      });
     },
   );
 
-  // PenaltyDecayDays returns 0 for a ban and relies on its second return value
-  // to say that means permanent. Null carries that here, because 0 days would
-  // read as "gone immediately" — the opposite of what it means.
-  it("records a ban's penalty as never decaying", () => {
-    expect(severityConsequence(5)).toEqual({
-      penalty: 100,
-      decayDays: null,
-      depth: 3,
-      hopSurvival: 0.75,
-    });
+  it("knows every severity the Go tables recognize, and no others", () => {
+    // The Go functions accept 1 through 5 and answer ok=false for everything
+    // else; a lib that recognized a sixth would be describing an action the
+    // server would reject.
+    for (const severity of [1, 2, 3, 4, 5]) {
+      expect(
+        severityConsequence(severity),
+        `severity ${severity} is recognized in ${GO_MODERATION_FILE} but not in web/src/lib/moderation.ts`,
+      ).not.toBeNull();
+    }
+    expect(Object.keys(GO_SEVERITY_TABLE)).toHaveLength(5);
   });
+});
 
+describe("severityConsequence", () => {
   it.each([0, 6, -1, 1.5, Number.NaN])(
     "refuses the unrecognized severity %o rather than answering with zeros",
     (severity) => {
@@ -197,6 +247,12 @@ describe("actionConsequence", () => {
 
   // penalty * decayRate^depth, per planPropagatedPenalties. The first hop is
   // the number a moderator can check against a real voucher's score.
+  //
+  // These are the rendered form of the arithmetic over GO_SEVERITY_TABLE above,
+  // kept literal because what they pin is the rendering — 28 rather than
+  // 28.000000000000004 — and computing them here would only reimplement it. If
+  // one of these fails alongside the drift guard, the guard is the failure to
+  // read: reconcile internal/domain/moderation.go first and these follow.
   it.each([
     ["warn", 1, "2.5"],
     ["warn", 2, "7"],
@@ -221,9 +277,12 @@ describe("actionConsequence", () => {
 
 describe("severityChoiceLabel", () => {
   // "Level 1" and "Level 2" gave a moderator nothing to choose between.
+  // The penalties come from GO_SEVERITY_TABLE rather than being written out
+  // again: the Go numbers are restated in exactly one place in this file, so a
+  // change on that side breaks the drift guard and nothing else.
   it("names the severity and what it costs", () => {
-    expect(severityChoiceLabel(1)).toBe("Minor — 5 trust points");
-    expect(severityChoiceLabel(2)).toBe("Moderate — 10 trust points");
+    expect(severityChoiceLabel(1)).toBe(`Minor — ${GO_SEVERITY_TABLE[1][0]} trust points`);
+    expect(severityChoiceLabel(2)).toBe(`Moderate — ${GO_SEVERITY_TABLE[2][0]} trust points`);
   });
 
   it("falls back to the bare level for a severity it does not know", () => {
@@ -639,21 +698,127 @@ describe("activeMuteExpiry", () => {
   });
 });
 
-describe("liftMuteBlockReason", () => {
-  it("allows a moderator to lift someone else's mute", () => {
-    expect(liftMuteBlockReason("mod-1", "target-1")).toBeNull();
+describe("activeSuspensionExpiry", () => {
+  const now = new Date("2026-08-11T12:00:00Z");
+
+  it("reports the expiry of a suspension that is still running", () => {
+    const expiry = activeSuspensionExpiry({ suspended_until: "2026-08-12T12:00:00Z" }, now);
+    expect(expiry?.toISOString()).toBe("2026-08-12T12:00:00.000Z");
   });
 
-  it("refuses a moderator lifting their own mute, which the server rejects outright", () => {
-    expect(liftMuteBlockReason("mod-1", "mod-1")).toBe("You cannot moderate yourself.");
+  it("reports no suspension when the field is absent, which is how the server says so", () => {
+    expect(activeSuspensionExpiry({}, now)).toBeNull();
+  });
+
+  it("reports no suspension before the status has loaded", () => {
+    expect(activeSuspensionExpiry(null, now)).toBeNull();
+    expect(activeSuspensionExpiry(undefined, now)).toBeNull();
+  });
+
+  it("reports no suspension for an expiry that has passed while the page was open", () => {
+    // The server reports a lapsed suspension as none at all, but a page left
+    // open outlives the response that loaded it.
+    expect(activeSuspensionExpiry({ suspended_until: "2026-08-11T11:59:00Z" }, now)).toBeNull();
+  });
+
+  it("reports no suspension for a timestamp it cannot parse, rather than an Invalid Date", () => {
+    expect(activeSuspensionExpiry({ suspended_until: "not a date" }, now)).toBeNull();
+  });
+});
+
+describe("liftRestrictionBlockReason", () => {
+  it("allows a moderator to lift someone else's restriction", () => {
+    expect(liftRestrictionBlockReason("mod-1", "target-1")).toBeNull();
+  });
+
+  it("refuses a moderator lifting their own, which the server rejects outright", () => {
+    expect(liftRestrictionBlockReason("mod-1", "mod-1")).toBe("You cannot moderate yourself.");
   });
 
   it("allows the action while the viewer's identity is still unknown", () => {
     // Two empty strings are unknown, not self — the same rule validateAction
     // applies, so a viewer whose identity has not loaded is not told they are
     // moderating themselves.
-    expect(liftMuteBlockReason("", "")).toBeNull();
-    expect(liftMuteBlockReason("", "target-1")).toBeNull();
+    expect(liftRestrictionBlockReason("", "")).toBeNull();
+    expect(liftRestrictionBlockReason("", "target-1")).toBeNull();
+  });
+});
+
+const RESTRICTION_KINDS: RestrictionKind[] = ["mute", "suspension"];
+
+describe("restrictionCopy", () => {
+  it.each(RESTRICTION_KINDS)("names the %s and the control that ends it", (kind) => {
+    const copy = restrictionCopy(kind);
+    expect(copy.noun).toBe(kind);
+    expect(copy.liftLabel.toLowerCase()).toContain(kind);
+    expect(copy.liftFailure.toLowerCase()).toContain(kind);
+  });
+
+  // The confirm has to inform the decision rather than just interrupt it: the
+  // member takes part again at once, they see the release on their own profile
+  // (moderation_reliefs is the only member-visible trace of it), and it costs no
+  // trust and is filed as no action — LiftMute and LiftSuspension write no
+  // moderation_actions row, deliberately.
+  it.each(RESTRICTION_KINDS)("tells a moderator what lifting a %s does before they agree", (kind) => {
+    const body = restrictionCopy(kind).confirmBody.toLowerCase();
+    expect(body).toContain("immediately");
+    expect(body).toContain("their own profile");
+    expect(body).toContain("no trust");
+    expect(body).toContain("not filed as an action");
+  });
+
+  it("distinguishes the two, since a suspension blocks more than posting", () => {
+    // A mute is checked by domain.User.CanPost alone; a suspension meets
+    // middleware.RequireActive on every guarded route.
+    expect(restrictionCopy("suspension").confirmBody).toContain("react, vouch and report");
+    expect(restrictionCopy("mute").confirmBody).not.toContain("vouch");
+    expect(restrictionCopy("mute").confirmTitle).not.toBe(restrictionCopy("suspension").confirmTitle);
+  });
+
+  it("hands back a copy, so no caller can edit what every moderator is told", () => {
+    restrictionCopy("mute").liftLabel = "Something else";
+    expect(restrictionCopy("mute").liftLabel).toBe("Lift mute");
+  });
+});
+
+describe("restrictionHeadline", () => {
+  const expiry = new Date("2026-08-12T12:00:00Z");
+
+  it.each(RESTRICTION_KINDS)("says a %s is in force now, not merely on record", (kind) => {
+    const headline = restrictionHeadline(kind, expiry);
+    // "Currently" is the point: the history below the banner keeps its original
+    // expiry forever, so this is the page's only claim about the present.
+    expect(headline).toMatch(/^Currently /);
+    expect(headline).toContain("until");
+  });
+
+  it("uses the participle that belongs to each restriction", () => {
+    expect(restrictionHeadline("mute", expiry)).toContain("muted");
+    expect(restrictionHeadline("suspension", expiry)).toContain("suspended");
+  });
+
+  it("dates the end of the restriction to the minute", () => {
+    // formatDateTime, the same rendering the audit trail uses, because "3d" is
+    // not specific enough to defend a decision.
+    expect(restrictionHeadline("mute", expiry)).toContain(
+      expiry.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }),
+    );
+  });
+});
+
+describe("restrictionReadFailure", () => {
+  it.each(RESTRICTION_KINDS)("says the %s status could not be read", (kind) => {
+    expect(restrictionReadFailure(kind, "internal error")).toBe(
+      `This user's ${kind} status could not be read: internal error`,
+    );
+  });
+
+  it("still says something when the failure carried no detail", () => {
+    // Silence would read as "not restricted", which is the answer the banner
+    // must never invent.
+    expect(restrictionReadFailure("suspension", "")).toBe(
+      "This user's suspension status could not be read.",
+    );
   });
 });
 

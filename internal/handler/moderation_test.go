@@ -87,8 +87,14 @@ func (m *mockPenaltyListerH) CreateTrustPenalty(_ context.Context, p *domain.Tru
 	return nil
 }
 
-func (m *mockPenaltyListerH) ListPenaltiesByActionID(_ context.Context, actionID string) ([]domain.TrustPenalty, error) {
-	return m.penalties[actionID], nil
+// Returned flat and in the order asked for, as the batched query does; grouping
+// them back onto their actions is the service's job, not the store's.
+func (m *mockPenaltyListerH) ListPenaltiesByActionIDs(_ context.Context, actionIDs []string) ([]domain.TrustPenalty, error) {
+	var out []domain.TrustPenalty
+	for _, id := range actionIDs {
+		out = append(out, m.penalties[id]...)
+	}
+	return out, nil
 }
 
 // --- mock PenaltyGraphQuerier ---

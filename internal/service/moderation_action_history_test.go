@@ -47,6 +47,9 @@ func (m *mockActionHistoryRepo) ListActionsByModerator(_ context.Context, _ stri
 type mockPenaltyListerS struct {
 	penalties map[string][]domain.TrustPenalty
 	listErr   error
+	// calls counts round trips, which is what the batching is for: the history
+	// pairs a whole page of actions with their penalties in one of these.
+	calls int
 }
 
 func newMockPenaltyListerS() *mockPenaltyListerS {
@@ -57,11 +60,19 @@ func (m *mockPenaltyListerS) CreateTrustPenalty(_ context.Context, _ *domain.Tru
 	return nil
 }
 
-func (m *mockPenaltyListerS) ListPenaltiesByActionID(_ context.Context, actionID string) ([]domain.TrustPenalty, error) {
+func (m *mockPenaltyListerS) ListPenaltiesByActionIDs(_ context.Context, actionIDs []string) ([]domain.TrustPenalty, error) {
+	m.calls++
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
-	return m.penalties[actionID], nil
+
+	// Returned as one flat set, in the id order asked for, exactly as the SQL
+	// does — the service is what groups them back onto their actions.
+	var out []domain.TrustPenalty
+	for _, id := range actionIDs {
+		out = append(out, m.penalties[id]...)
+	}
+	return out, nil
 }
 
 // --- helper ---
@@ -92,7 +103,8 @@ func TestModerationActionService_GetActionHistory_DelegatesToHistoryService(t *t
 
 	svc := NewModerationActionService(actionRepo, newMockActionUserLookup(), nil, nil, penaltyLister, nil, fixedClock)
 
-	entries, err := svc.GetActionHistory(context.Background(), "user-1", false, 20, 0)
+	council := &domain.User{ID: "council-1", Role: domain.RoleCouncil, IsActive: true}
+	entries, err := svc.GetActionHistory(context.Background(), council, "user-1", false, 20, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,6 +235,82 @@ func TestModerationActionService_GetActionHistory_PenaltyError(t *testing.T) {
 	_, err := svc.GetActionHistory(context.Background(), "user-1", false, 20, 0)
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// The penalties for a whole page are read in one query, not one per action.
+// The page limit is 100, so the read this replaces was 101 round trips to
+// render one screen — and the member's own history walks the same path.
+func TestModerationHistoryService_GetActionHistory_ReadsPenaltiesInOneQuery(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	actionRepo := newMockActionHistoryRepo()
+	penaltyLister := newMockPenaltyListerS()
+	for _, id := range []string{"act-1", "act-2", "act-3"} {
+		actionRepo.actionsByTarget = append(actionRepo.actionsByTarget, &domain.ModerationAction{
+			ID: id, TargetUserID: "user-1", ModeratorID: "mod-1",
+			Action: domain.ActionWarn, Severity: 1, Reason: "spam", CreatedAt: now,
+		})
+		penaltyLister.penalties[id] = []domain.TrustPenalty{
+			{ID: "pen-" + id, UserID: "user-1", ModerationActionID: id, PenaltyAmount: 5.0, CreatedAt: now},
+		}
+	}
+
+	entries, err := newTestHistoryService(actionRepo, penaltyLister).
+		GetActionHistory(context.Background(), "user-1", false, 20, 0)
+	if err != nil {
+		t.Fatalf("GetActionHistory() unexpected error: %v", err)
+	}
+
+	if penaltyLister.calls != 1 {
+		t.Errorf("penalty queries = %d, want 1 for %d actions", penaltyLister.calls, len(entries))
+	}
+	// Grouping the flat result set back onto the right action is the part the
+	// batching could get wrong, so every entry's penalty must be its own.
+	for _, entry := range entries {
+		if len(entry.Penalties) != 1 {
+			t.Fatalf("action %q has %d penalties, want 1", entry.Action.ID, len(entry.Penalties))
+		}
+		if got := entry.Penalties[0].ModerationActionID; got != entry.Action.ID {
+			t.Errorf("action %q carries a penalty from %q", entry.Action.ID, got)
+		}
+	}
+}
+
+// The council-only rule on the by-moderator direction is the service's, not
+// just the handler's: a route registered without the handler check must still
+// not report which moderator handled which case.
+func TestModerationActionService_GetActionHistory_ByModeratorRequiresCouncil(t *testing.T) {
+	actionRepo := newMockActionHistoryRepo()
+	actionRepo.actionsByModerator = []*domain.ModerationAction{
+		{ID: "act-1", TargetUserID: "user-1", ModeratorID: "mod-1", Action: domain.ActionBan, Severity: 5, Reason: "banned"},
+	}
+	svc := NewModerationActionService(
+		actionRepo, newMockActionUserLookup(), nil, nil, newMockPenaltyListerS(), nil, fixedClock)
+
+	tests := []struct {
+		name  string
+		actor *domain.User
+	}{
+		{"nobody", nil},
+		{"a member", &domain.User{ID: "u-1", Role: domain.RoleMember, IsActive: true}},
+		{"a moderator", &domain.User{ID: "mod-9", Role: domain.RoleModerator, IsActive: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.GetActionHistory(context.Background(), tt.actor, "mod-1", true, 20, 0)
+			if !errors.Is(err, ErrForbidden) {
+				t.Errorf("GetActionHistory() error = %v, want ErrForbidden", err)
+			}
+		})
+	}
+
+	council := &domain.User{ID: "council-1", Role: domain.RoleCouncil, IsActive: true}
+	entries, err := svc.GetActionHistory(context.Background(), council, "mod-1", true, 20, 0)
+	if err != nil {
+		t.Fatalf("council GetActionHistory() unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("council got %d entries, want 1", len(entries))
 	}
 }
 

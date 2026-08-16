@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -49,6 +51,10 @@ func takeActionOutcome(result *service.TakeActionResult, err error) (status int,
 // canQueryByModerator reports whether u may list the actions taken BY a
 // moderator. That view exposes which moderator handled which case, so it is
 // restricted to the council.
+//
+// The service refuses the same request for itself, and this is the early
+// rejection rather than the only one: it is what gives the refusal this
+// handler's error shape instead of the generic forbidden mapping.
 func canQueryByModerator(u *domain.User) bool {
 	return u != nil && u.IsCouncil()
 }
@@ -92,6 +98,31 @@ func (h *ModerationHandler) TakeAction(w http.ResponseWriter, r *http.Request) {
 	JSON(w, status, result)
 }
 
+// restrictionEndpoint is one time-boxed restriction as the HTTP layer sees it:
+// how to read its status, how to lift it, and the response shape that names it.
+//
+// The service already reduced the mute and the suspension to a single
+// restriction descriptor, because the two differ in nothing but the column they
+// read. This is that reduction one layer up. The four routes were four bodies
+// that agreed line for line on the session check, the URL parameter, the error
+// mapping and the status codes, and nothing but review kept them agreeing —
+// a 403 or a 204 that drifted on one of the pair would be a real difference in
+// the API for no reason anybody chose.
+//
+// The response shapes stay distinct, and that is the one thing not shared: the
+// JSON keys `muted_until` and `suspended_until` are the API, so each endpoint
+// supplies its own body rather than a common one with a renamed field.
+type restrictionEndpoint struct {
+	// status and lift are method expressions on the service, so the pairing of
+	// a status read with its matching lift is made once here rather than at
+	// each of the four call sites.
+	status func(*service.ModerationActionService, context.Context, *domain.User, string) (*time.Time, error)
+	lift   func(*service.ModerationActionService, context.Context, *domain.User, string) error
+	// body builds the status response from a formatted timestamp, empty when
+	// the restriction is not in force.
+	body func(until string) any
+}
+
 // muteStatusResponse is what a moderator may learn about someone else's mute:
 // when it ends, and nothing more.
 //
@@ -101,6 +132,73 @@ func (h *ModerationHandler) TakeAction(w http.ResponseWriter, r *http.Request) {
 // a bare timestamp.
 type muteStatusResponse struct {
 	MutedUntil string `json:"muted_until,omitempty"`
+}
+
+// suspensionStatusResponse is the suspension's counterpart to
+// muteStatusResponse, field-for-field: the expiry when one is in force, and an
+// empty object otherwise.
+type suspensionStatusResponse struct {
+	SuspendedUntil string `json:"suspended_until,omitempty"`
+}
+
+var (
+	muteEndpoint = restrictionEndpoint{
+		status: (*service.ModerationActionService).MuteStatus,
+		lift:   (*service.ModerationActionService).LiftMute,
+		body:   func(until string) any { return muteStatusResponse{MutedUntil: until} },
+	}
+
+	suspensionEndpoint = restrictionEndpoint{
+		status: (*service.ModerationActionService).SuspensionStatus,
+		lift:   (*service.ModerationActionService).LiftSuspension,
+		body:   func(until string) any { return suspensionStatusResponse{SuspendedUntil: until} },
+	}
+)
+
+// restrictionStatus answers a status query for either restriction.
+//
+// The service re-checks the moderator role; the route guard is the early
+// rejection. Neither status route refuses a self-query, unlike the lifts.
+func (h *ModerationHandler) restrictionStatus(w http.ResponseWriter, r *http.Request, e restrictionEndpoint) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	until, err := e.status(h.actions, r.Context(), user, chi.URLParam(r, "user_id"))
+	if err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	var formatted string
+	if until != nil {
+		formatted = until.Format(timestampFormat)
+	}
+	JSON(w, http.StatusOK, e.body(formatted))
+}
+
+// liftRestriction lifts either restriction.
+//
+// It answers 204 with no body, including for a user who was not restricted. The
+// service treats that as done rather than as an error, the same as removing a
+// reaction that was never left, and the status has to say the same thing or the
+// endpoint is lying about what it did.
+func (h *ModerationHandler) liftRestriction(w http.ResponseWriter, r *http.Request, e restrictionEndpoint) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	// The service re-checks the role; the route guard is the early rejection.
+	if err := e.lift(h.actions, r.Context(), user, chi.URLParam(r, "user_id")); err != nil {
+		serviceError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // MuteStatus handles GET /api/v1/moderation/users/{user_id}/mute.
@@ -116,24 +214,7 @@ type muteStatusResponse struct {
 // trail, which stays exactly as written after the mute is lifted and would go
 // on reporting a mute that no longer exists.
 func (h *ModerationHandler) MuteStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		Error(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// The service re-checks the role; the route guard is the early rejection.
-	until, err := h.actions.MuteStatus(r.Context(), user, chi.URLParam(r, "user_id"))
-	if err != nil {
-		serviceError(w, err)
-		return
-	}
-
-	var resp muteStatusResponse
-	if until != nil {
-		resp.MutedUntil = until.Format(timestampFormat)
-	}
-	JSON(w, http.StatusOK, resp)
+	h.restrictionStatus(w, r, muteEndpoint)
 }
 
 // LiftMute handles DELETE /api/v1/moderation/users/{user_id}/mute.
@@ -143,31 +224,10 @@ func (h *ModerationHandler) MuteStatus(w http.ResponseWriter, r *http.Request) {
 // removes it. Modelling it as an action would imply a moderation_actions row,
 // which LiftMute deliberately does not write — see its doc comment.
 //
-// It answers 204 with no body, including for a user who was not muted. The
-// service treats that as done rather than as an error, the same as removing a
-// reaction that was never left, and the status has to say the same thing or the
-// endpoint is lying about what it did.
+// It answers 204 with no body, including for a user who was not muted; see
+// liftRestriction.
 func (h *ModerationHandler) LiftMute(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		Error(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// The service re-checks the role; the route guard is the early rejection.
-	if err := h.actions.LiftMute(r.Context(), user, chi.URLParam(r, "user_id")); err != nil {
-		serviceError(w, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// suspensionStatusResponse is the suspension's counterpart to
-// muteStatusResponse, field-for-field: the expiry when one is in force, and an
-// empty object otherwise.
-type suspensionStatusResponse struct {
-	SuspendedUntil string `json:"suspended_until,omitempty"`
+	h.liftRestriction(w, r, muteEndpoint)
 }
 
 // SuspensionStatus handles GET /api/v1/moderation/users/{user_id}/suspension.
@@ -181,24 +241,7 @@ type suspensionStatusResponse struct {
 // Like MuteStatus and unlike the DELETE below, this does not refuse a
 // self-query.
 func (h *ModerationHandler) SuspensionStatus(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		Error(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// The service re-checks the role; the route guard is the early rejection.
-	until, err := h.actions.SuspensionStatus(r.Context(), user, chi.URLParam(r, "user_id"))
-	if err != nil {
-		serviceError(w, err)
-		return
-	}
-
-	var resp suspensionStatusResponse
-	if until != nil {
-		resp.SuspendedUntil = until.Format(timestampFormat)
-	}
-	JSON(w, http.StatusOK, resp)
+	h.restrictionStatus(w, r, suspensionEndpoint)
 }
 
 // LiftSuspension handles DELETE /api/v1/moderation/users/{user_id}/suspension.
@@ -210,19 +253,7 @@ func (h *ModerationHandler) SuspensionStatus(w http.ResponseWriter, r *http.Requ
 //
 // It answers 204 with no body, including for a user who was not suspended.
 func (h *ModerationHandler) LiftSuspension(w http.ResponseWriter, r *http.Request) {
-	user, ok := middleware.UserFromContext(r.Context())
-	if !ok {
-		Error(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	// The service re-checks the role; the route guard is the early rejection.
-	if err := h.actions.LiftSuspension(r.Context(), user, chi.URLParam(r, "user_id")); err != nil {
-		serviceError(w, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+	h.liftRestriction(w, r, suspensionEndpoint)
 }
 
 // ownPenaltyResponse is the trust cost of one action to the member it landed
@@ -354,7 +385,7 @@ func (h *ModerationHandler) ListActions(w http.ResponseWriter, r *http.Request) 
 	limit := parseLimit(r.URL.Query().Get("limit"))
 	offset := parseOffset(r.URL.Query().Get("offset"))
 
-	entries, err := h.actions.GetActionHistory(r.Context(), targetUserID, byModerator, limit, offset)
+	entries, err := h.actions.GetActionHistory(r.Context(), user, targetUserID, byModerator, limit, offset)
 	if err != nil {
 		serviceError(w, err)
 		return

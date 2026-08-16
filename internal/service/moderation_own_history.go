@@ -94,9 +94,9 @@ type OwnModerationEntry struct {
 //
 // It reuses GetActionHistory rather than reading the audit trail a second way,
 // so the member's view and the moderator's view cannot come to disagree about
-// what happened; the stripping is a mapping over the same rows. (That path is
-// N+1 over the penalty reads, which is a known and separate problem — it is
-// bounded by the page limit, as it is for the moderator listing.)
+// what happened; the stripping is a mapping over the same rows. That sharing is
+// also what got this path its batched penalty read: fixing the N+1 once in
+// penaltiesFor fixed it for both views.
 //
 // The byModerator direction is not a parameter here and must not become one.
 // "Actions I took" is a council audit view of a moderator, and the whole point

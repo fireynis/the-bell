@@ -4,12 +4,13 @@ import type {
   MuteLift,
   MuteStatus,
   Post,
+  SuspensionStatus,
   TakeActionRequest,
   User,
 } from "../api/types";
 import { personName, shortId } from "./people";
 import { byteLength, type ValidationResult } from "./post";
-import { activeExpiry } from "./time";
+import { activeExpiry, formatDateTime } from "./time";
 import { isCouncil } from "./trust";
 
 /** Mirrors the ActionType constants in internal/domain/moderation.go. */
@@ -500,21 +501,154 @@ export function activeMuteExpiry(
 }
 
 /**
- * liftMuteBlockReason mirrors canLiftMute in
+ * activeSuspensionExpiry reads GET /api/v1/moderation/users/{id}/suspension and
+ * reports when the suspension ends, or null when there is none in force.
+ *
+ * The mute's counterpart above, and every word of its comment applies: the
+ * server omits suspended_until for a member who is not suspended and for one
+ * whose suspension has lapsed, and the expiry is re-checked against `now`
+ * because a page left open outlives the response that loaded it.
+ *
+ * Ask this rather than reading `is_active` off a profile. That flag does read
+ * false during a suspension, but it reads false for an account deactivated for
+ * any other reason too, and it never says when the suspension ends — the two
+ * points SuspensionStatus exists to answer.
+ */
+export function activeSuspensionExpiry(
+  status: SuspensionStatus | null | undefined,
+  now: Date,
+): Date | null {
+  return activeExpiry(status?.suspended_until, now);
+}
+
+/**
+ * liftRestrictionBlockReason mirrors canLiftRestriction in
  * internal/service/moderation_action.go so the page can explain itself instead
  * of round-tripping to a guaranteed 400.
  *
- * A moderator may not lift a mute placed on themselves: that is the one case no
- * route guard can catch, since a muted moderator satisfies every middleware in
- * the chain. Both ids must be present to count as a match — a viewer whose
- * identity has not loaded yet has two empty strings, and that is unknown, not
- * self, exactly as validateAction treats it.
+ * A moderator may not lift a restriction placed on themselves: that is the one
+ * case no route guard can catch, since a muted or suspended moderator satisfies
+ * every middleware in the chain. Both ids must be present to count as a match —
+ * a viewer whose identity has not loaded yet has two empty strings, and that is
+ * unknown, not self, exactly as validateAction treats it.
+ *
+ * The Go check is one function for both lifts, so this is too: a rule enforced
+ * in one place on the server and two here is a rule with two chances to drift.
  */
-export function liftMuteBlockReason(viewerId: string, targetId: string): string | null {
+export function liftRestrictionBlockReason(viewerId: string, targetId: string): string | null {
   if (viewerId && viewerId === targetId) {
     return "You cannot moderate yourself.";
   }
   return null;
+}
+
+/**
+ * The two time-boxed restrictions a moderator can end early.
+ *
+ * Mirrors the `restriction` descriptor in
+ * internal/service/moderation_action.go and its two values, muteRestriction and
+ * suspensionRestriction. The server reads and lifts both through one code path
+ * because they differ in nothing but which expiry column they clear; the same
+ * holds of the banner that shows them, so the only thing that varies here is
+ * the words.
+ */
+export type RestrictionKind = "mute" | "suspension";
+
+/**
+ * What a moderator is told about one restriction, gathered in one place so the
+ * mute's wording and the suspension's differ where they should and nowhere
+ * else.
+ */
+export interface RestrictionCopy {
+  /** Names it inside a sentence. Mirrors restriction.noun. */
+  noun: string;
+  /** How the headline says it is in force: "Currently muted until ...". */
+  participle: string;
+  /** The control that ends it early, and the confirm button that commits to it. */
+  liftLabel: string;
+  /** Title of the confirm shown before the lift. */
+  confirmTitle: string;
+  /**
+   * What lifting does, in full. Required rather than a bare "are you sure?" for
+   * the reason ConfirmDialog requires a body: the three things a moderator
+   * needs before agreeing — what the member gets back, what the member will see
+   * of it, and what it costs — are none of them obvious from the button.
+   */
+  confirmBody: string;
+  /** Shown in the banner's place once the lift has gone through. */
+  liftedNotice: string;
+  /** Said when the lift fails and the restriction therefore still stands. */
+  liftFailure: string;
+}
+
+/**
+ * The suspension's effect sentence is ACTION_EFFECTS.suspend read from the
+ * other direction — a suspension meets middleware.RequireActive on every
+ * guarded route, so lifting it hands back all of those at once, while a mute is
+ * checked by domain.User.CanPost alone and hands back only posting.
+ *
+ * "Not filed as an action" is not a nicety: LiftMute and LiftSuspension
+ * deliberately write no moderation_actions row, because every severity that
+ * table admits names a trust penalty, so filing a release there would punish
+ * the person released and everyone who vouched for them. It goes to
+ * moderation_reliefs instead, which is what the member reads on their own
+ * profile. A moderator agreeing to this should know both halves.
+ */
+const RESTRICTION_COPY: Record<RestrictionKind, RestrictionCopy> = {
+  mute: {
+    noun: "mute",
+    participle: "muted",
+    liftLabel: "Lift mute",
+    confirmTitle: "Lift this mute?",
+    confirmBody:
+      "They can post again immediately. The release shows on their own profile, it costs them no trust, and it is not filed as an action against them. Muting them again would be a new action, carrying the trust penalty a mute carries.",
+    liftedNotice: "Mute lifted. This user can post again.",
+    liftFailure: "The mute could not be lifted.",
+  },
+  suspension: {
+    noun: "suspension",
+    participle: "suspended",
+    liftLabel: "Lift suspension",
+    confirmTitle: "Lift this suspension?",
+    confirmBody:
+      "They can post, react, vouch and report again immediately. The release shows on their own profile, it costs them no trust, and it is not filed as an action against them. Suspending them again would be a new action, carrying the trust penalty a suspension carries.",
+    liftedNotice: "Suspension lifted. This user can take part again.",
+    liftFailure: "The suspension could not be lifted.",
+  },
+};
+
+/** restrictionCopy hands back the wording for one kind of restriction. */
+export function restrictionCopy(kind: RestrictionKind): RestrictionCopy {
+  // A copy, on the same principle as severityConsequence: a caller cannot edit
+  // what every moderator is told by holding onto what it was told once.
+  return { ...RESTRICTION_COPY[kind] };
+}
+
+/**
+ * restrictionHeadline is the line that says a restriction is in force now.
+ *
+ * "Currently" earns its place: the history below this banner is immutable, so a
+ * suspend action keeps its original expires_at whether or not the suspension
+ * was lifted or has since lapsed. This sentence is the one place on the page
+ * making a claim about the present.
+ */
+export function restrictionHeadline(kind: RestrictionKind, expiry: Date): string {
+  return `Currently ${RESTRICTION_COPY[kind].participle} until ${formatDateTime(expiry.toISOString())}`;
+}
+
+/**
+ * restrictionReadFailure is what the banner says when the live read fails.
+ *
+ * It says so rather than rendering nothing, because silence here reads as "no
+ * restriction" — and that is the one answer the page must never invent, since
+ * neither muted_until nor suspended_until appears on any other response a
+ * moderator can see.
+ */
+export function restrictionReadFailure(kind: RestrictionKind, detail: string): string {
+  const noun = RESTRICTION_COPY[kind].noun;
+  return detail
+    ? `This user's ${noun} status could not be read: ${detail}`
+    : `This user's ${noun} status could not be read.`;
 }
 
 /**

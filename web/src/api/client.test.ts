@@ -330,3 +330,58 @@ describe("moderationApi.getMuteStatus", () => {
     await expect(moderationApi.getMuteStatus("user-1")).resolves.toEqual({});
   });
 });
+
+/**
+ * The suspension read and lift, whose shapes are the mute's one severity up:
+ * `suspended_until` absent rather than null when nothing is in force, and a 204
+ * with no body from the DELETE whether or not the user was suspended.
+ */
+describe("moderationApi.getSuspensionStatus", () => {
+  it("reads the suspension of the user named in the path", async () => {
+    const fetchMock = stubFetch({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ suspended_until: "2026-08-12T12:00:00Z" }),
+    });
+
+    await expect(moderationApi.getSuspensionStatus("user-1")).resolves.toEqual({
+      suspended_until: "2026-08-12T12:00:00Z",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/users/user-1/suspension");
+    expect(init.method ?? "GET").toBe("GET");
+  });
+
+  it("reads an unsuspended user as an object with no expiry at all, not a null", async () => {
+    stubFetch({ ok: true, status: 200, json: () => Promise.resolve({}) });
+
+    await expect(moderationApi.getSuspensionStatus("user-1")).resolves.toEqual({});
+  });
+});
+
+describe("moderationApi.liftSuspension", () => {
+  it("deletes the suspension and does not parse the empty body", async () => {
+    const fetchMock = stubFetch(noContent());
+
+    await expect(moderationApi.liftSuspension("user-1")).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/v1/moderation/users/user-1/suspension");
+    expect(init.method).toBe("DELETE");
+  });
+
+  // The server refuses a moderator lifting their own with a 400, which the UI
+  // avoids reaching but must still report honestly if it does.
+  it("surfaces the server's refusal", async () => {
+    stubFetch({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: "cannot moderate yourself" }),
+    });
+
+    const err = await moderationApi.liftSuspension("user-1").catch((e: ApiError) => e);
+
+    expect(err).toEqual({ error: "cannot moderate yourself", status: 400 });
+  });
+});

@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext.tsx";
 import { useActionHistory } from "../../hooks/useActionHistory.ts";
 import { useIntersectionObserver } from "../../hooks/useIntersectionObserver.ts";
 import ActionHistoryCard from "../../components/ActionHistoryCard.tsx";
-import MuteBanner from "../../components/MuteBanner.tsx";
+import { MuteBanner, SuspensionBanner } from "../../components/RestrictionBanner.tsx";
 import ErrorBanner from "../../components/ErrorBanner.tsx";
 import Spinner from "../../components/Spinner.tsx";
 import { describeHistorySubject } from "../../lib/moderation.ts";
@@ -37,11 +37,14 @@ export default function UserHistory() {
         </p>
       </div>
 
-      {/* Whether this user is muted right now, which the history below
-          cannot answer: a mute action stays in the trail unchanged after the
-          mute is lifted. This is also the only place a mute can be ended
-          early. */}
+      {/* What is in force right now, which the history below cannot answer: a
+          mute or suspend action stays in the trail unchanged after the
+          restriction is lifted or lapses, keeping its original expiry forever.
+          This is also the only place either can be ended early. Both banners
+          render nothing when there is nothing in force, so a member under
+          neither restriction sees no gap here. */}
       <MuteBanner userId={id!} viewerId={user?.id ?? ""} />
+      <SuspensionBanner userId={id!} viewerId={user?.id ?? ""} />
 
       {error && (
         <div className="mb-4">

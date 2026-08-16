@@ -137,6 +137,32 @@ func (rc *RoleChecker) Run(ctx context.Context) (*RoleCheckResult, error) {
 	return result, nil
 }
 
+// sweptUser serves the user the sweep is already holding, so recomputing their
+// trust does not read the same row back out of the database.
+//
+// ListActiveNonBannedUsers is a SELECT *, so every field CalcCompositeTrust
+// looks up is in hand before the loop starts; without this, a run over a town
+// of a thousand members issued a thousand extra single-row lookups, and a
+// council member paid one of them to be told the constant their role pins them
+// to. Reading the row twice also let the two copies disagree: the policy below
+// judges the listed row's role and tenure, while the score was computed from a
+// second read of them.
+//
+// Any other id falls through to the real inputs. Nothing asks for one today —
+// the four remaining reads are all counts and all keyed on the same user — and
+// embedding rather than reimplementing is what keeps that true if one ever does.
+type sweptUser struct {
+	TrustInputs
+	user *domain.User
+}
+
+func (s sweptUser) GetUserByID(ctx context.Context, id string) (*domain.User, error) {
+	if id == s.user.ID {
+		return s.user, nil
+	}
+	return s.TrustInputs.GetUserByID(ctx, id)
+}
+
 // refreshTrust recomputes u.TrustScore before the policy reads it, and persists
 // the result.
 //
@@ -161,7 +187,7 @@ func (rc *RoleChecker) refreshTrust(ctx context.Context, u *domain.User, now tim
 		return nil
 	}
 
-	score, err := CalcCompositeTrust(ctx, rc.inputs, u.ID, now)
+	score, err := CalcCompositeTrust(ctx, sweptUser{rc.inputs, u}, u.ID, now)
 	if err != nil {
 		return fmt.Errorf("recalculating trust: %w", err)
 	}
@@ -170,6 +196,12 @@ func (rc *RoleChecker) refreshTrust(ctx context.Context, u *domain.User, now tim
 	if rc.scores == nil {
 		return nil
 	}
+	// Written even when the number has not moved, and for council even though
+	// the number is a constant. The stored score is what the posting and
+	// vouching gates read, and a council member carrying a score from before
+	// the pin existed is repaired by exactly this write; skipping it on equality
+	// would make that repair depend on the row already being wrong in a way this
+	// run can see.
 	if err := rc.scores.UpdateUserTrustScore(ctx, u.ID, score); err != nil {
 		rc.logger.Error("persisting refreshed trust score failed", "user_id", u.ID, "error", err)
 	}

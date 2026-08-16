@@ -575,14 +575,17 @@ type recalcFixture struct {
 type stubRecalcInputs struct {
 	users    map[string]*domain.User
 	fixtures map[string]recalcFixture
-	// errForUser fails the lookup for named users only.
+	// errForUser fails the recalculation for named users only. It hangs off the
+	// penalty read because the sweep no longer performs a user read at all —
+	// see sweptUser.
 	errForUser map[string]error
+	// lookups counts the user reads the recalculation still makes, which for a
+	// user the sweep is holding must be none.
+	lookups int
 }
 
 func (s *stubRecalcInputs) GetUserByID(_ context.Context, id string) (*domain.User, error) {
-	if err, ok := s.errForUser[id]; ok {
-		return nil, err
-	}
+	s.lookups++
 	u, ok := s.users[id]
 	if !ok {
 		return nil, ErrNotFound
@@ -604,6 +607,9 @@ func (s *stubRecalcInputs) CountActiveVouchesWithAvgTrust(_ context.Context, id 
 }
 
 func (s *stubRecalcInputs) ListActivePenaltiesByUser(_ context.Context, id string) ([]domain.TrustPenalty, error) {
+	if err, ok := s.errForUser[id]; ok {
+		return nil, err
+	}
 	return s.fixtures[id].penalties, nil
 }
 
@@ -877,6 +883,40 @@ func TestRoleChecker_Run_RefreshFailureSkipsTheUser(t *testing.T) {
 	}
 	if len(repo.updatedRoles) != 0 {
 		t.Errorf("roles updated = %v, want none", repo.updatedRoles)
+	}
+}
+
+// The sweep already holds every user it is about to judge —
+// ListActiveNonBannedUsers is a SELECT * — so the recalculation must not read
+// the same rows back. On a town of a thousand members that was a thousand extra
+// single-row lookups per run, one of them per council member just to be handed
+// the constant their role pins them to.
+func TestRoleChecker_Run_DoesNotReReadTheUsersItAlreadyHolds(t *testing.T) {
+	users := []*domain.User{
+		{ID: "user-1", DisplayName: "Alice", TrustScore: 50, Role: domain.RoleMember,
+			IsActive: true, JoinedAt: roleCheckNow.AddDate(-2, 0, 0)},
+		{ID: "council-1", DisplayName: "Frank", TrustScore: 33, Role: domain.RoleCouncil,
+			IsActive: true, JoinedAt: roleCheckNow.AddDate(0, 0, -10)},
+	}
+	established := recalcFixture{posts: 90, reactions: 270, vouches: 7, avgTrust: 100}
+
+	rc, _, writer := withRefresher(t, users, map[string]recalcFixture{"user-1": established})
+	inputs := rc.inputs.(*stubRecalcInputs)
+
+	if _, err := rc.Run(context.Background()); err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+
+	if inputs.lookups != 0 {
+		t.Errorf("user lookups = %d, want 0 — the sweep re-read rows it was already holding", inputs.lookups)
+	}
+	// The scores still come out right, which is the point of reading the row
+	// once rather than not at all: the listed row is the same row.
+	if got := writer.scores["user-1"]; got != 100 {
+		t.Errorf("persisted score for user-1 = %v, want 100", got)
+	}
+	if got := writer.scores["council-1"]; got != 100 {
+		t.Errorf("persisted score for council-1 = %v, want 100", got)
 	}
 }
 

@@ -147,8 +147,16 @@ func (r *PenaltyRepo) ListActivePenaltiesByUser(ctx context.Context, userID stri
 	return penalties, nil
 }
 
-func (r *PenaltyRepo) ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error) {
-	rows, err := r.q.ListTrustPenaltiesByActionID(ctx, moderationActionID(actionID))
+// ListPenaltiesByActionIDs reads the penalties for a whole page of moderation
+// actions at once. The empty case is answered without a round trip: ANY over an
+// empty array is a valid query returning nothing, but the callers that reach
+// here with no actions are pages with no rows to pair anything with.
+func (r *PenaltyRepo) ListPenaltiesByActionIDs(ctx context.Context, actionIDs []string) ([]domain.TrustPenalty, error) {
+	if len(actionIDs) == 0 {
+		return nil, nil
+	}
+
+	rows, err := r.q.ListTrustPenaltiesByActionIDs(ctx, actionIDs)
 	if err != nil {
 		return nil, err
 	}

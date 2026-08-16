@@ -33,6 +33,14 @@ import (
 // resulting server has every feature the deployment's config enables.
 // TrustWorker is nil when Redis is absent — the caller decides whether to run
 // it, because that means starting a goroutine.
+//
+// The remaining fields are the handful a caller needs to reach around the HTTP
+// surface: `bell check-roles` runs the role checker with no server at all, and
+// the integration harness drives users, vouches and moderation directly to set
+// up the state a request is then made against. Services reachable only through
+// a route are not listed — they are already inside ServerOptions, and a second
+// public handle on them is a field nothing reads and a temptation to wire past
+// the server. Add one back when something actually needs it.
 type Deps struct {
 	Config config.Config
 	Logger *slog.Logger
@@ -45,17 +53,9 @@ type Deps struct {
 	RoleChecker *service.RoleChecker
 
 	UserService       *service.UserService
-	PostService       *service.PostService
-	ReactionService   *service.ReactionService
-	ReportService     *service.ReportService
 	VouchService      *service.VouchService
 	ModerationService *service.ModerationActionService
-	ApprovalService   *service.ApprovalService
-	ProposalService   *service.ProposalService
-	StatsService      *service.StatsService
 	ConfigRepo        service.ConfigRepository
-
-	SSEBroker *sse.Broker
 }
 
 // trustInputs assembles the repositories service.TrustInputs spans.
@@ -144,14 +144,8 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		Logger:            logger,
 		RoleChecker:       roleChecker,
 		UserService:       userSvc,
-		PostService:       postSvc,
-		ReactionService:   reactionSvc,
-		ReportService:     reportSvc,
 		VouchService:      vouchSvc,
 		ModerationService: modActionSvc,
-		ApprovalService:   approvalSvc,
-		ProposalService:   proposalSvc,
-		StatsService:      statsSvc,
 		ConfigRepo:        configRepo,
 	}
 
@@ -159,11 +153,12 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	// broker, the trust cache and the rate limiter; a client per feature would
 	// open four independent pools against the same server.
 	var rateLimiter *middleware.RateLimiter
+	var sseBroker *sse.Broker
 	if rdb != nil {
 		postSvc.SetFeedCache(cache.NewFeedCache(rdb, postRepo, logger))
 		logger.Info("feed cache enabled")
 
-		deps.SSEBroker = sse.NewBroker(rdb, logger)
+		sseBroker = sse.NewBroker(rdb, logger)
 		logger.Info("SSE broker enabled")
 
 		// The queue is what makes the trust worker live: without it nothing ever
@@ -235,8 +230,8 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	// WithSSEBroker is only appended when there is a broker: passing a typed
 	// nil would make the server's `!= nil` check register a live SSE route
 	// backed by nothing.
-	if deps.SSEBroker != nil {
-		deps.ServerOptions = append(deps.ServerOptions, server.WithSSEBroker(deps.SSEBroker))
+	if sseBroker != nil {
+		deps.ServerOptions = append(deps.ServerOptions, server.WithSSEBroker(sseBroker))
 	}
 
 	return deps, nil

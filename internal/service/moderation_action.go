@@ -190,9 +190,13 @@ type PenaltyPropagator interface {
 }
 
 // PenaltyLister extends PenaltyRepository with read operations for audit.
+//
+// The read is batched over a page of actions rather than offered per action:
+// the only caller pairs every action it lists with that action's penalties, and
+// a per-action method is an invitation to do that one query at a time.
 type PenaltyLister interface {
 	PenaltyRepository
-	ListPenaltiesByActionID(ctx context.Context, actionID string) ([]domain.TrustPenalty, error)
+	ListPenaltiesByActionIDs(ctx context.Context, actionIDs []string) ([]domain.TrustPenalty, error)
 }
 
 // ModerationReliefRepository persists and reads the record of moderators
@@ -746,18 +750,39 @@ func (s *ModerationActionService) liftsInForce(
 	return lifts, nil
 }
 
-// GetActionHistory delegates to ModerationHistoryService.
+// GetActionHistory delegates to ModerationHistoryService, once actor's rank
+// permits the direction they asked for.
 //
 // Reading the audit trail shares nothing with taking an action, so the logic
 // lives on its own type. This method remains only because the moderation
-// handler and cmd/bell reach for it through *ModerationActionService; once
-// those depend on ModerationHistoryService directly it should be deleted.
+// handler reaches for it through *ModerationActionService; once it depends on
+// ModerationHistoryService directly this should be deleted — and the
+// authorization below has to move with it, not be dropped.
+//
+// "Actions taken BY this moderator" is a council view and nothing less: it
+// reports which moderator handled which case, which is precisely what every
+// member-facing response withholds. The handler refuses it too, and that is the
+// point rather than a duplication to tidy away — a rule enforced only at the
+// HTTP layer is one route registration away from not being enforced at all.
+// Same reasoning as PostService.RemoveByModerator and canLiftRestriction.
+//
+// actor is nil-safe: requireCouncil refuses a nil caller, so an unauthenticated
+// path cannot reach the moderator direction by omitting the argument. The
+// target direction is deliberately not gated here — the route group already
+// requires a moderator for it, and OwnHistory reaches the same read on behalf
+// of a member asking about themselves.
 func (s *ModerationActionService) GetActionHistory(
 	ctx context.Context,
+	actor *domain.User,
 	userID string,
 	byModerator bool,
 	limit, offset int,
 ) ([]ActionHistoryEntry, error) {
+	if byModerator {
+		if err := requireCouncil(actor); err != nil {
+			return nil, err
+		}
+	}
 	return s.history.GetActionHistory(ctx, userID, byModerator, limit, offset)
 }
 
@@ -795,16 +820,14 @@ func (s *ModerationHistoryService) GetActionHistory(
 		return nil, fmt.Errorf("listing moderation actions: %w", err)
 	}
 
+	byAction, err := s.penaltiesFor(ctx, actions)
+	if err != nil {
+		return nil, err
+	}
+
 	entries := make([]ActionHistoryEntry, 0, len(actions))
-	// TODO: batch query — currently N+1, acceptable at pagination limits (~20)
 	for _, action := range actions {
-		var penalties []domain.TrustPenalty
-		if s.penalties != nil {
-			penalties, err = s.penalties.ListPenaltiesByActionID(ctx, action.ID)
-			if err != nil {
-				return nil, fmt.Errorf("listing penalties for action %s: %w", action.ID, err)
-			}
-		}
+		penalties := byAction[action.ID]
 		if penalties == nil {
 			penalties = []domain.TrustPenalty{}
 		}
@@ -815,6 +838,43 @@ func (s *ModerationHistoryService) GetActionHistory(
 	}
 
 	return entries, nil
+}
+
+// penaltiesFor reads the penalties for a whole page of actions in one query and
+// groups them by the action that caused them.
+//
+// One query rather than one per action: a page holds up to 100 actions, and the
+// member-facing history walks the same path, so the read this replaces was 101
+// round trips to render one screen. An action with no penalties is simply
+// absent from the map, which the caller reads as the empty slice it already
+// returned for that case.
+//
+// A nil penalty repository yields no penalties rather than an error, which is
+// the wiring several callers use: the audit trail is still worth reading
+// without the trust cost attached.
+func (s *ModerationHistoryService) penaltiesFor(
+	ctx context.Context,
+	actions []*domain.ModerationAction,
+) (map[string][]domain.TrustPenalty, error) {
+	if s.penalties == nil || len(actions) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, len(actions))
+	for i, action := range actions {
+		ids[i] = action.ID
+	}
+
+	penalties, err := s.penalties.ListPenaltiesByActionIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("listing penalties for %d actions: %w", len(ids), err)
+	}
+
+	byAction := make(map[string][]domain.TrustPenalty, len(actions))
+	for _, p := range penalties {
+		byAction[p.ModerationActionID] = append(byAction[p.ModerationActionID], p)
+	}
+	return byAction, nil
 }
 
 // enforce applies the state changes planned by planEnforcement.
