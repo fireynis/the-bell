@@ -3,7 +3,9 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,6 +136,34 @@ func feedMembers(t *testing.T, rdb *redis.Client) []*domain.Post {
 		posts = append(posts, &p)
 	}
 	return posts
+}
+
+// waitForWarmToFinish blocks until the background rebuild has run to
+// completion. Unlike waitForWarm it does not assume the rebuild publishes
+// anything: a rebuild that discovers the feed changed underneath it leaves the
+// key absent on purpose, and a test for that has to be able to wait for it.
+//
+// warmCacheOnce takes the warming flag synchronously, before it spawns the
+// goroutine, so by the time the GetFeed that triggered a rebuild has returned
+// the flag is already set and this cannot observe a false "finished".
+func waitForWarmToFinish(t *testing.T, fc *FeedCache) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !fc.warming.Load() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the background rebuild to finish")
+}
+
+func postIDs(posts []*domain.Post) []string {
+	ids := make([]string, len(posts))
+	for i, p := range posts {
+		ids[i] = p.ID
+	}
+	return ids
 }
 
 func TestGetFeed_CacheMiss_FallsBackToRepo(t *testing.T) {
@@ -569,6 +599,158 @@ func TestGetFeed_RebuildSlotIsReleasedAfterWarming(t *testing.T) {
 
 	if got := repo.warmCalls.Load(); got < 2 {
 		t.Errorf("rebuilds after two separate misses = %d, want at least 2 (the guard latched)", got)
+	}
+}
+
+// writeDuringWarmRepo reproduces the interleaving that loses a write: the warm
+// path reads its snapshot of Postgres, and only then does the write land and
+// tell the cache about itself. warmCache is the only caller that asks for
+// feedMaxLen posts, so the limit identifies it without the repo having to know
+// who called.
+//
+// The snapshot the warm path is holding is already out of date by the time it
+// reaches Redis, which is the whole point: a rebuild must never publish one.
+type writeDuringWarmRepo struct {
+	*stubPostRepo
+	write func(ctx context.Context, s *stubPostRepo)
+	once  sync.Once
+}
+
+func (r *writeDuringWarmRepo) ListPosts(ctx context.Context, cursor string, limit int) ([]*domain.Post, error) {
+	posts, err := r.stubPostRepo.ListPosts(ctx, cursor, limit)
+	if err != nil || limit != feedMaxLen {
+		return posts, err
+	}
+	r.once.Do(func() { r.write(ctx, r.stubPostRepo) })
+	return posts, err
+}
+
+// A post created between warmCache's snapshot and its write to Redis used to
+// vanish for a full TTL. InvalidateOnCreate cannot save it — it declines to
+// write while the key is absent, and an append that did land would be wiped by
+// the rebuild's own DEL — so the rebuild published a snapshot that predated the
+// post, with a fresh 60s TTL, and GetFeed served that as the authoritative
+// first page. The author reloaded and their own post was not there.
+func TestGetFeed_PostCreatedWhileWarmingIsNotLostBehindAStaleCache(t *testing.T) {
+	ctx := context.Background()
+	newPost := &domain.Post{
+		ID:        "post-new",
+		AuthorID:  "user-1",
+		Body:      "posted while the cache was rebuilding",
+		Status:    domain.PostVisible,
+		CreatedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	repo := &writeDuringWarmRepo{stubPostRepo: &stubPostRepo{posts: makePosts(3)}}
+	fc, rdb := newTestFeedCache(t, repo)
+	repo.write = func(ctx context.Context, s *stubPostRepo) {
+		s.posts = append(s.posts, newPost)
+		fc.InvalidateOnCreate(ctx, newPost)
+	}
+
+	// A cold read serves from Postgres and starts the rebuild the create races.
+	if _, err := fc.GetFeed(ctx, "", 10); err != nil {
+		t.Fatalf("GetFeed() error = %v", err)
+	}
+	waitForWarmToFinish(t, fc)
+
+	// Leaving the key absent is a fine outcome — the next read rebuilds. What is
+	// not fine is a populated key that predates the post, because GetFeed treats
+	// any non-empty key as the authoritative first page until the TTL runs out.
+	if cached := feedMembers(t, rdb); len(cached) > 0 && !slices.Contains(postIDs(cached), newPost.ID) {
+		t.Errorf("the rebuild published %v, which is missing %s; a stale snapshot is now authoritative for %v",
+			postIDs(cached), newPost.ID, feedTTL)
+	}
+
+	posts, err := fc.GetFeed(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("GetFeed() after the rebuild error = %v", err)
+	}
+	if !slices.Contains(postIDs(posts), newPost.ID) {
+		t.Errorf("feed = %v, want it to contain %s, created while the cache was rebuilding",
+			postIDs(posts), newPost.ID)
+	}
+}
+
+// The mirror image, and the more serious one: a post removed between the
+// snapshot and the write. InvalidateOnDelete clears a key that is not there
+// yet, and the rebuild then republishes the removed post — so a moderator's
+// removal is undone by a rebuild that was already in flight, and the town keeps
+// reading the post for another TTL.
+func TestGetFeed_PostRemovedWhileWarmingIsNotRepublished(t *testing.T) {
+	ctx := context.Background()
+	removed := postID(2)
+
+	repo := &writeDuringWarmRepo{stubPostRepo: &stubPostRepo{posts: makePosts(3)}}
+	fc, rdb := newTestFeedCache(t, repo)
+	repo.write = func(ctx context.Context, s *stubPostRepo) {
+		s.posts = slices.DeleteFunc(s.posts, func(p *domain.Post) bool { return p.ID == removed })
+		fc.InvalidateOnDelete(ctx, removed)
+	}
+
+	if _, err := fc.GetFeed(ctx, "", 10); err != nil {
+		t.Fatalf("GetFeed() error = %v", err)
+	}
+	waitForWarmToFinish(t, fc)
+
+	if cached := feedMembers(t, rdb); slices.Contains(postIDs(cached), removed) {
+		t.Errorf("the rebuild republished removed post %s: cache holds %v", removed, postIDs(cached))
+	}
+
+	posts, err := fc.GetFeed(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("GetFeed() after the rebuild error = %v", err)
+	}
+	if slices.Contains(postIDs(posts), removed) {
+		t.Errorf("feed = %v, want removed post %s gone", postIDs(posts), removed)
+	}
+}
+
+// genReadFailsRedis is a real Redis with one fault injected: reading the feed's
+// generation counter fails. Everything else — including the writes the rebuild
+// would perform — still works, which is what makes the assertion mean
+// something.
+type genReadFailsRedis struct {
+	redis.Cmdable
+	err error
+}
+
+func (r genReadFailsRedis) Get(ctx context.Context, key string) *redis.StringCmd {
+	if key == feedGenKey {
+		cmd := redis.NewStringCmd(ctx, "get", key)
+		cmd.SetErr(r.err)
+		return cmd
+	}
+	return r.Cmdable.Get(ctx, key)
+}
+
+// A rebuild that cannot read the generation cannot know whether its snapshot is
+// current, and an unverifiable snapshot must not be published: the degradation
+// for a broken Redis is "no cache, Postgres serves", never "a cache that might
+// be wrong". Publishing anyway would be worse than the bug the generation check
+// was added to fix, because the snapshot gets a fresh TTL either way.
+func TestWarmCache_UnreadableGenerationPublishesNothing(t *testing.T) {
+	ctx := context.Background()
+	repo := &stubPostRepo{posts: makePosts(3)}
+	rdb := testsupport.TestRedis(t)
+	fc := NewFeedCache(genReadFailsRedis{Cmdable: rdb, err: errors.New("redis is having a day")}, repo, testLogger())
+
+	posts, err := fc.GetFeed(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("GetFeed() error = %v", err)
+	}
+	if len(posts) != 3 {
+		t.Errorf("GetFeed() returned %d posts, want 3 from Postgres", len(posts))
+	}
+	waitForWarmToFinish(t, fc)
+
+	exists, err := rdb.Exists(ctx, feedKey).Result()
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists != 0 {
+		t.Errorf("the rebuild published %v without being able to verify it was current",
+			postIDs(feedMembers(t, rdb)))
 	}
 }
 
