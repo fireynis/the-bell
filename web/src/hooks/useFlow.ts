@@ -10,6 +10,21 @@ interface FlowError {
   body?: KratosFlow & { redirect_browser_to?: string; error?: { message?: string } };
 }
 
+/**
+ * Stamps the flow id into the URL without disturbing anything else in it.
+ *
+ * Passing a bare object to setSearchParams replaces the whole query string, and
+ * that is not a cosmetic difference: an invited registration arrives at
+ * `?invite=<token>`, and dropping that parameter the moment the flow is created
+ * takes the page from "here is your invitation" to "this town is
+ * invitation-only" while the reader is looking at it.
+ */
+function withFlowId(previous: URLSearchParams, flowId: string): URLSearchParams {
+  const next = new URLSearchParams(previous);
+  next.set("flow", flowId);
+  return next;
+}
+
 export function useFlow(type: FlowType) {
   const [searchParams, setSearchParams] = useSearchParams();
   const flowId = searchParams.get("flow");
@@ -26,7 +41,7 @@ export function useFlow(type: FlowType) {
       } else {
         const f = await createFlow(type);
         initializedRef.current = f.id;
-        setSearchParams({ flow: f.id }, { replace: true });
+        setSearchParams((prev) => withFlowId(prev, f.id), { replace: true });
         setFlow(f);
       }
       setError(null);
@@ -42,7 +57,7 @@ export function useFlow(type: FlowType) {
         try {
           const f = await createFlow(type);
           initializedRef.current = f.id;
-          setSearchParams({ flow: f.id }, { replace: true });
+          setSearchParams((prev) => withFlowId(prev, f.id), { replace: true });
           setFlow(f);
           setError("Your session expired. Please try again.");
         } catch {

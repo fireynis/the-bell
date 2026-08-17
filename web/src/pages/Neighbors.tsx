@@ -8,8 +8,11 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useNeighbors } from "../hooks/useNeighbors";
 import { NEIGHBORS_INVITE, describeNeighborCount, roleLabel } from "../lib/directory";
 import { awaitingWelcome } from "../lib/gating";
+import { INVITE_CTA, canInvite } from "../lib/invite";
 import { personName } from "../lib/people";
 import { formatMonthYear } from "../lib/time";
+import InviteDialog from "./neighbors/InviteDialog";
+import InvitesSection from "./neighbors/InvitesSection";
 
 /**
  * Neighbors lists everybody on the town's roll.
@@ -24,6 +27,11 @@ import { formatMonthYear } from "../lib/time";
 export default function Neighbors() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
+  const [inviting, setInviting] = useState(false);
+  // Bumped rather than passing the created invitation down: the list is a read
+  // of the server's record, and re-reading it is what keeps a page that has
+  // been open all afternoon from showing a stale one.
+  const [invitesToken, setInvitesToken] = useState(0);
   // Debounced, so typing a name is one request rather than one per letter.
   const query = useDebouncedValue(search.trim());
   const { neighbors, total, loading, hasMore, error, loadMore, retry } = useNeighbors(query);
@@ -34,19 +42,57 @@ export default function Neighbors() {
   // list that has not arrived, not a town with nobody in it.
   const showEmpty = neighbors.length === 0 && !loading && !error;
 
+  // Mirrors the server's gate on POST /v1/invites. Somebody who cannot vouch
+  // cannot invite, because the invitation is the vouch — so the control is not
+  // offered rather than offered and refused.
+  const mayInvite = canInvite(user);
+
   // No inner container: AppLayout already centres the column and supplies
   // the horizontal gutter.
   return (
     <div className="py-5">
-      <h1
-        className="text-2xl font-bold"
-        style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
-      >
-        Neighbours
-      </h1>
-      <p className="mt-1 text-sm" style={{ color: "var(--color-text-secondary)" }}>
-        Everyone on the town's roll, newest arrivals first.
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1
+            className="text-2xl font-bold"
+            style={{ fontFamily: "var(--font-display)", color: "var(--color-text)" }}
+          >
+            Neighbours
+          </h1>
+          <p className="mt-1 text-sm" style={{ color: "var(--color-text-secondary)" }}>
+            Everyone on the town's roll, newest arrivals first.
+          </p>
+        </div>
+
+        {/*
+          Beside the heading, because inviting somebody is the one thing you do
+          on this page that is not looking at it — and because the answer to
+          "there is a neighbour missing from this list" belongs where the list
+          begins.
+        */}
+        {mayInvite && (
+          <button
+            type="button"
+            onClick={() => setInviting(true)}
+            className="flex-shrink-0 rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium"
+            style={{
+              backgroundColor: "var(--color-primary)",
+              color: "var(--color-text-inverse)",
+            }}
+          >
+            {INVITE_CTA}
+          </button>
+        )}
+      </div>
+
+      {mayInvite && <InvitesSection reloadToken={invitesToken} />}
+
+      {inviting && (
+        <InviteDialog
+          onClose={() => setInviting(false)}
+          onInvited={() => setInvitesToken((token) => token + 1)}
+        />
+      )}
 
       {/*
         For somebody the town has not rung in yet. The directory is the one

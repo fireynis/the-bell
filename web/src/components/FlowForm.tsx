@@ -6,6 +6,17 @@ interface FlowFormProps {
   flow: KratosFlow;
   onSubmit: (values: Record<string, unknown>) => void;
   submitting?: boolean;
+  /**
+   * Field values the caller pins, keyed by the Kratos node name — currently
+   * only "traits.email" on an invited registration, whose address the server
+   * requires to match the invitation.
+   *
+   * Rendered read-only rather than disabled, deliberately: a disabled input is
+   * left out of FormData, so locking the field that way would submit a
+   * registration with no email at all. Read-only still submits, and still tells
+   * the reader with the cursor in it that this one is not theirs to change.
+   */
+  lockedValues?: Record<string, string>;
 }
 
 function MessageList({ messages }: { messages?: UiText[] }) {
@@ -34,8 +45,11 @@ function MessageList({ messages }: { messages?: UiText[] }) {
 
 function InputNode({
   node,
+  locked,
 }: {
   node: UiNode;
+  /** The pinned value for this field, when the caller pinned one. */
+  locked?: string;
 }) {
   const attrs = node.attributes as UiNodeInputAttributes;
 
@@ -77,7 +91,13 @@ function InputNode({
         id={attrs.name}
         name={attrs.name}
         type={attrs.type}
-        defaultValue={attrs.value ?? ""}
+        // Keyed on the pinned value as well as rendered with it: the flow is
+        // replaced wholesale on a validation error, and React would otherwise
+        // keep the old uncontrolled input — and with it whatever the reader had
+        // typed before the field was locked.
+        key={locked ?? attrs.value ?? ""}
+        defaultValue={locked ?? attrs.value ?? ""}
+        readOnly={locked !== undefined}
         required={attrs.required}
         disabled={attrs.disabled}
         autoComplete={attrs.autocomplete}
@@ -93,12 +113,14 @@ function InputNode({
   );
 }
 
-function renderNode(node: UiNode) {
+function renderNode(node: UiNode, locked: Record<string, string>) {
   const attrs = node.attributes;
 
   switch (attrs.node_type) {
-    case "input":
-      return <InputNode key={`${(attrs as UiNodeInputAttributes).name}-${node.group}`} node={node} />;
+    case "input": {
+      const name = (attrs as UiNodeInputAttributes).name;
+      return <InputNode key={`${name}-${node.group}`} node={node} locked={locked[name]} />;
+    }
     case "a":
       return null; // anchor nodes handled separately if needed
     case "img":
@@ -112,7 +134,12 @@ function renderNode(node: UiNode) {
 
 const VISIBLE_GROUPS = new Set(["default", "password", "profile", "code", "link"]);
 
-export default function FlowForm({ flow, onSubmit, submitting }: FlowFormProps) {
+export default function FlowForm({
+  flow,
+  onSubmit,
+  submitting,
+  lockedValues = {},
+}: FlowFormProps) {
   const nodes = flow.ui.nodes.filter((n) => VISIBLE_GROUPS.has(n.group));
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
@@ -150,14 +177,14 @@ export default function FlowForm({ flow, onSubmit, submitting }: FlowFormProps) 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <MessageList messages={flow.ui.messages} />
-      {hidden.map(renderNode)}
-      {inputs.map(renderNode)}
+      {hidden.map((n) => renderNode(n, lockedValues))}
+      {inputs.map((n) => renderNode(n, lockedValues))}
       {submitting ? (
         <div className="flex justify-center py-2">
           <Spinner />
         </div>
       ) : (
-        submits.map(renderNode)
+        submits.map((n) => renderNode(n, lockedValues))
       )}
     </form>
   );

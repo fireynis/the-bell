@@ -439,9 +439,109 @@ export interface TakeActionRequest {
   duration_seconds?: number;
 }
 
+/**
+ * How a town admits newcomers.
+ *
+ * "invite" means the only way in is an invitation from someone already here,
+ * and the invitation *is* their vouch. "open" is the original behaviour: anyone
+ * may register and waits as a pending member until a neighbour vouches for them.
+ */
+export type RegistrationMode = "invite" | "open";
+
 export interface TownConfig {
   town_name?: string;
   primary_color?: string;
   accent_color?: string;
+  /**
+   * Typed loosely as the union rather than required, because it is absent from
+   * a server that predates invitations and from the defaults the SPA falls back
+   * on when /config cannot be read. Read it through registrationMode in
+   * lib/invite, which decides what an absent or unrecognised value means.
+   */
+  registration_mode?: RegistrationMode;
   [key: string]: string | undefined;
+}
+
+/**
+ * Where an invitation stands. Only "open" can still be accepted or revoked;
+ * the other three are the record of how it ended.
+ *
+ * "accepted" is the one that changed something: the newcomer registered, the
+ * inviter's vouch was created, and they arrived as a member rather than as
+ * somebody waiting.
+ */
+export type InviteStatus = "open" | "accepted" | "expired" | "revoked";
+
+/**
+ * One invitation as its sender sees it — `GET /api/v1/invites`.
+ *
+ * The raw token is deliberately not here. It is sent exactly once, in the
+ * invite_url of the response that created the invitation, and never again: a
+ * listing that carried it would turn "show me who I invited" into "hand me a
+ * key to every account I have ever invited".
+ */
+export interface Invite {
+  id: string;
+  email: string;
+  /** The sender's personal note, or the empty string when they wrote none. */
+  note: string;
+  /** One of InviteStatus; typed as the union because the server owns all four. */
+  status: InviteStatus;
+  created_at: string;
+  expires_at: string;
+  /** Present only on an accepted invitation. */
+  consumed_at?: string;
+  /**
+   * Who the invitation turned into, by name. Absent on an invitation nobody has
+   * accepted, and absent for a newcomer who has set no display name — so fall
+   * back on anything falsy rather than on `undefined` alone.
+   */
+  consumed_by_display_name?: string;
+}
+
+/** Body of POST /api/v1/invites. The note is optional and bounded at 500 runes. */
+export interface CreateInviteRequest {
+  email: string;
+  note?: string;
+}
+
+/**
+ * What POST /api/v1/invites answers with.
+ *
+ * invite_url carries the raw token and is the only time it is ever sent, which
+ * is why the dialog puts it in front of the sender to copy rather than
+ * mentioning that an email went out and moving on.
+ *
+ * email_sent false is not a failure of the invitation: the invitation exists
+ * and the link works. It means the town has no working mail out, and the sender
+ * has to pass the link along themselves.
+ */
+export interface CreateInviteResponse {
+  invite: Invite;
+  invite_url: string;
+  email_sent: boolean;
+  /** Why the mail did not go, when it did not. Absent when email_sent is true. */
+  email_error?: string;
+}
+
+export interface InvitesResponse {
+  invites: Invite[];
+}
+
+/**
+ * What GET /api/v1/invites/lookup answers for a live invitation — the only
+ * invite read that needs no session, because the person reading it does not
+ * have one yet.
+ *
+ * It says who invited them and to where, and nothing else about the town. A
+ * consumed, revoked, expired or entirely unknown token is a bare 404 in every
+ * case, so the response cannot be used to work out which addresses have been
+ * invited.
+ */
+export interface InviteLookup {
+  email: string;
+  town_name: string;
+  inviter_display_name: string;
+  /** Always "open" — a lookup that answers at all is answering about a live invitation. */
+  status: "open";
 }

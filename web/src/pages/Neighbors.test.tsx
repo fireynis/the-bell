@@ -5,6 +5,8 @@ import type { DirectoryUser } from "../api/types";
 import { AuthProvider } from "../context/AuthContext";
 import { NEIGHBORS_PAGE_SIZE } from "../hooks/useNeighbors";
 import { NEIGHBORS_INVITE } from "../lib/directory";
+import { INVITE_CTA } from "../lib/invite";
+import { VOUCHING_THRESHOLD } from "../lib/trust";
 import Neighbors from "./Neighbors";
 
 /**
@@ -29,6 +31,8 @@ interface StubOptions {
   total?: number;
   /** The signed-in viewer's role, which decides whether the invite is shown. */
   viewerRole?: string;
+  /** The viewer's trust score, which decides whether they may invite anybody. */
+  viewerTrust?: number;
   /** Answers the directory read with a 500 instead. */
   failDirectory?: boolean;
 }
@@ -41,7 +45,12 @@ interface StubOptions {
  * is longer than a page.
  */
 function stubApi(options: StubOptions = {}) {
-  const { users = [neighbor()], total = users.length, viewerRole = "member" } = options;
+  const {
+    users = [neighbor()],
+    total = users.length,
+    viewerRole = "member",
+    viewerTrust = 50,
+  } = options;
   const directoryCalls: string[] = [];
 
   const answer = (body: unknown, ok = true, status = 200) =>
@@ -57,12 +66,13 @@ function stubApi(options: StubOptions = {}) {
           display_name: "Viewer",
           bio: "",
           avatar_url: "",
-          trust_score: 50,
+          trust_score: viewerTrust,
           role: viewerRole,
           is_active: true,
           joined_at: "2026-01-01T00:00:00Z",
         });
       }
+      if (url.startsWith("/api/v1/invites")) return answer({ invites: [] });
       if (url.startsWith("/api/v1/users")) {
         directoryCalls.push(url);
         if (options.failDirectory) return answer({ error: "internal error" }, false, 500);
@@ -251,5 +261,53 @@ describe("Neighbors invitation", () => {
 
     await screen.findByRole("link", { name: /Ada Lovelace/ });
     expect(screen.queryByTestId("neighbors-invite")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Inviting is offered here because this is where somebody notices a neighbour
+ * is missing from the town. The control mirrors the server's gate rather than
+ * appearing for everyone and refusing most of them: the invitation is the
+ * vouch, so whoever cannot vouch cannot invite.
+ */
+describe("Neighbors invite control", () => {
+  const inviteButton = () => screen.queryByRole("button", { name: INVITE_CTA });
+
+  it("offers to invite a neighbour to somebody who could vouch", async () => {
+    stubApi({ viewerTrust: VOUCHING_THRESHOLD });
+
+    renderPage();
+
+    await waitFor(() => expect(inviteButton()).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Your invitations/ })).toBeInTheDocument();
+  });
+
+  it("offers it to council whatever their score", async () => {
+    stubApi({ viewerRole: "council", viewerTrust: 0 });
+
+    renderPage();
+
+    await waitFor(() => expect(inviteButton()).toBeInTheDocument());
+  });
+
+  it("offers nothing to a member short of the vouching threshold", async () => {
+    stubApi({ viewerTrust: VOUCHING_THRESHOLD - 1 });
+
+    renderPage();
+
+    await screen.findByRole("link", { name: /Ada Lovelace/ });
+    expect(inviteButton()).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Your invitations/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the invite dialog, warning what an invitation costs", async () => {
+    stubApi({ viewerTrust: 80 });
+
+    renderPage();
+    await waitFor(() => expect(inviteButton()).toBeInTheDocument());
+    fireEvent.click(inviteButton()!);
+
+    const dialog = await screen.findByRole("dialog", { name: INVITE_CTA });
+    expect(within(dialog).getByText(/Inviting someone is vouching for them/)).toBeInTheDocument();
   });
 });

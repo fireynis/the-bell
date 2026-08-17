@@ -4,13 +4,21 @@ import ErrorBanner from "../../components/ErrorBanner.tsx";
 import FlowForm from "../../components/FlowForm.tsx";
 import Spinner from "../../components/Spinner.tsx";
 import { useAuth } from "../../context/AuthContext.tsx";
+import { useTheme } from "../../context/ThemeContext.tsx";
 import { useFlow } from "../../hooks/useFlow.ts";
+import { LOGIN_INVITE_LINK, LOGIN_INVITE_ONLY, registrationMode } from "../../lib/invite.ts";
 
 export default function Login() {
   const { flow, error, submitting, submit } = useFlow("login");
   const { refreshSession } = useAuth();
+  const { config } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // "Register" promises a form. In a town that admits people by invitation
+  // there is no form behind that link, so the link says what is actually there
+  // — the page explaining how somebody gets invited.
+  const inviteOnly = registrationMode(config) === "invite";
 
   const returnTo = (location.state as { from?: { pathname: string } })?.from?.pathname ?? "/";
 
@@ -28,9 +36,18 @@ export default function Login() {
       subtitle="Welcome back to The Bell"
       footer={
         <>
-          <Link to="/auth/registration" style={{ color: "var(--color-primary)" }}>
-            Don't have an account? Register
-          </Link>
+          {inviteOnly ? (
+            <span>
+              {LOGIN_INVITE_ONLY}.{" "}
+              <Link to="/auth/registration" style={{ color: "var(--color-primary)" }}>
+                {LOGIN_INVITE_LINK}
+              </Link>
+            </span>
+          ) : (
+            <Link to="/auth/registration" style={{ color: "var(--color-primary)" }}>
+              Don't have an account? Register
+            </Link>
+          )}
           <br />
           <Link to="/auth/recovery" style={{ color: "var(--color-primary)" }}>
             Forgot your password?

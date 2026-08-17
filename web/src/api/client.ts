@@ -5,7 +5,11 @@ import type {
   CreatePostRequest,
   CreateProposalRequest,
   CreateVouchRequest,
+  CreateInviteRequest,
+  CreateInviteResponse,
   DirectoryResponse,
+  InviteLookup,
+  InvitesResponse,
   ModerationQueueResponse,
   MuteStatus,
   OwnModerationHistoryResponse,
@@ -359,6 +363,55 @@ export const moderationApi = {
    * same idempotence, for the same reason, as liftMute above.
    */
   liftSuspension: (userId: string) => api.delete(`/moderation/users/${userId}/suspension`),
+};
+
+export const inviteApi = {
+  /**
+   * Invites somebody by email, answering 201 with the invitation, the link that
+   * accepts it, and whether the town managed to email it.
+   *
+   * This is a vouch made in advance — accepting it creates the vouch and lands
+   * the newcomer as a member — so it is refused for the same reasons a vouch is:
+   * too little trust, and the daily budget the two share. Council are exempt
+   * from the budget. A live invitation already out to that address is refused
+   * too, and the server's own sentence says which of these it was; pass it
+   * through inviteErrorMessage rather than guessing from the status.
+   *
+   * The note is omitted from the payload entirely when blank, rather than sent
+   * as the empty string, so an invitation with no note carries no note.
+   */
+  create: (req: CreateInviteRequest) =>
+    api.post<CreateInviteResponse>("/invites", {
+      email: req.email.trim(),
+      ...(req.note?.trim() ? { note: req.note.trim() } : {}),
+    }),
+
+  /** The caller's own invitations, newest first. Nobody can read anyone else's. */
+  list: () => api.get<InvitesResponse>("/invites"),
+
+  /**
+   * Withdraws an invitation that has not been accepted yet. Answers 204 with no
+   * body — the invitation still exists, revoked, and there is nothing about that
+   * the sender does not already know.
+   */
+  revoke: (inviteId: string) => api.delete(`/invites/${inviteId}`),
+
+  /**
+   * Reads a raw invitation token, for the registration page — the one invite
+   * call that works without a session, since the person following the link does
+   * not have one.
+   *
+   * A 404 is the answer for consumed, revoked, expired and unknown tokens
+   * alike, deliberately: distinguishing them would let anyone with a list of
+   * addresses learn which of them the town has invited. Treat it as "this link
+   * is no longer good" and nothing more precise.
+   *
+   * Built through URLSearchParams because the token comes off a URL the visitor
+   * was sent and cannot be trusted to be free of characters that would corrupt
+   * the query.
+   */
+  lookup: (token: string) =>
+    api.get<InviteLookup>(`/invites/lookup?${new URLSearchParams({ token }).toString()}`),
 };
 
 export const configApi = {
