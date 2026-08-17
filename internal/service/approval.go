@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/fireynis/the-bell/internal/domain"
+	"github.com/google/uuid"
 )
 
 const bootstrapExitThreshold = 20
@@ -25,16 +27,37 @@ type ApprovalUserRepository interface {
 
 // ApprovalService handles council approval of pending users during bootstrap.
 type ApprovalService struct {
-	users  ApprovalUserRepository
-	config ConfigRepository
-	logger *slog.Logger
+	users       ApprovalUserRepository
+	config      ConfigRepository
+	roleHistory RoleHistoryWriter
+	now         func() time.Time
+	logger      *slog.Logger
 }
 
 func NewApprovalService(users ApprovalUserRepository, config ConfigRepository) *ApprovalService {
 	return &ApprovalService{
 		users:  users,
 		config: config,
+		now:    time.Now,
 		logger: slog.Default(),
+	}
+}
+
+// SetRoleHistory attaches the audit trail, on the same terms as
+// VouchService.SetRoleHistory: a setter for wiring convenience, but a council
+// approval is a role change and belongs in role_history like every other. Until
+// this was wired, the two ways a resident actually becomes a member — a vouch
+// and a bootstrap approval — were the only role changes the trail did not
+// record. Approving with no writer attached logs a warning.
+func (s *ApprovalService) SetRoleHistory(w RoleHistoryWriter) {
+	s.roleHistory = w
+}
+
+// SetClock overrides the clock used to stamp role history entries. Tests use
+// it; nothing else does.
+func (s *ApprovalService) SetClock(clock func() time.Time) {
+	if clock != nil {
+		s.now = clock
 	}
 }
 
@@ -94,8 +117,19 @@ func (s *ApprovalService) Approve(ctx context.Context, userID string) (*domain.U
 		return nil, fmt.Errorf("%w: user is not active", ErrValidation)
 	}
 
+	// Captured before the write. old_role is a fact about the moment before the
+	// update, and reading it off user afterwards would depend on the repository
+	// not having touched the value in hand — an in-memory one does, and the
+	// entry silently becomes member -> member.
+	oldRole := user.Role
 	if err := s.users.UpdateUserRole(ctx, userID, domain.RoleMember); err != nil {
 		return nil, fmt.Errorf("updating user role: %w", err)
+	}
+	// A failure here is post-commit and reported for the same reason the
+	// bootstrap exit check below is: the promotion stands, and the operator
+	// should hear that its audit entry did not.
+	if err := s.recordApproval(ctx, userID, oldRole); err != nil {
+		return nil, err
 	}
 	user.Role = domain.RoleMember
 
@@ -120,6 +154,43 @@ func (s *ApprovalService) Approve(ctx context.Context, userID string) (*domain.U
 	}
 
 	return user, nil
+}
+
+// recordApproval writes the role_history entry for a council approval that has
+// already been applied.
+//
+// The reason names the mechanism rather than the approver. The council acts as
+// a body here — approval during bootstrap takes one council member and no
+// vote — and the endpoint does not carry which one of them clicked, so naming
+// an individual would mean inventing an attribution. "council approval" is what
+// the row can honestly say, and it is enough to tell this promotion apart from
+// a vouch or an automatic one at a glance.
+func (s *ApprovalService) recordApproval(ctx context.Context, userID string, oldRole domain.Role) error {
+	if s.roleHistory == nil {
+		s.logger.Warn("approval not recorded in role history: no writer wired", "user_id", userID)
+		return nil
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("user approved but generating role history id: %v", err)
+	}
+	entry := &domain.RoleHistory{
+		ID:        id.String(),
+		UserID:    userID,
+		OldRole:   oldRole,
+		NewRole:   domain.RoleMember,
+		Reason:    "council approval during bootstrap",
+		CreatedAt: s.now(),
+	}
+	if err := s.roleHistory.CreateRoleHistoryEntry(ctx, entry); err != nil {
+		// Unwrapped, like the promotion errors in VouchService: a post-commit
+		// failure is not the council member's mistake, and a sentinel leaking
+		// through here would render as a 404 or a 400 about a request that in
+		// fact succeeded.
+		return fmt.Errorf("user approved but recording role history: %v", err)
+	}
+	return nil
 }
 
 // requireBootstrap admits the caller only while the town is genuinely still in

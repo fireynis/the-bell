@@ -59,8 +59,24 @@ func EmailVerifiedFromContext(ctx context.Context) (bool, bool) {
 // uses it only when creating, never to overwrite a name the user has since
 // edited in-app, and an empty string is a valid argument for callers that have
 // no identity to read it from.
+//
+// The bool reports whether this call provisioned the user. Nothing in the
+// request path branches on it — invitation redemption runs for any pending
+// user, not only a brand new one, precisely so a redemption that failed the
+// first time still completes later — so it is here to be logged, which is the
+// only record that an account came into existence.
 type UserFinder interface {
-	FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, error)
+	FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, bool, error)
+}
+
+// InviteRedeemer turns a pending user's waiting invitation into the vouch that
+// makes them a member.
+//
+// It is optional: a server wired without one simply never redeems, which is the
+// behaviour of every deployment before invitations existed and of any town that
+// admits people some other way.
+type InviteRedeemer interface {
+	Redeem(ctx context.Context, user *domain.User, email string) error
 }
 
 // identityDisplayName reads the `name` trait off a Kratos identity.
@@ -72,6 +88,29 @@ type UserFinder interface {
 // before this trait was read at all. It is never an auth failure.
 func identityDisplayName(identity *kratos.Identity) string {
 	return internalkratos.DisplayNameFromTraits(identity.GetTraits())
+}
+
+// identityEmail reads the identity's address, preferring the `email` trait and
+// falling back to the first verifiable address Kratos returns.
+//
+// The fallback is not redundancy for its own sake: the trait is
+// schema-dependent, while verifiable_addresses is populated by Kratos itself
+// from whatever the schema marked as an identifier. A town whose schema words
+// the trait differently still gets its invitations redeemed.
+//
+// An identity with neither yields "", which every caller reads as "no address
+// to match" rather than as an error. It is never an auth failure — being unable
+// to name somebody's address is not a reason to refuse them their session.
+func identityEmail(identity *kratos.Identity) string {
+	if email := internalkratos.EmailFromTraits(identity.GetTraits()); email != "" {
+		return email
+	}
+	for _, addr := range identity.GetVerifiableAddresses() {
+		if addr.Value != "" {
+			return addr.Value
+		}
+	}
+	return ""
 }
 
 // identityEmailVerified reports whether a Kratos identity has at least one
@@ -119,6 +158,14 @@ type resolved struct {
 	// session was validated, which is as fresh as it can be — Kratos is
 	// consulted on every request.
 	emailVerified bool
+	// email is the identity's address, read from the session and not stored
+	// anywhere. It is what matches a pending user to the invitation waiting for
+	// them; see UserService.FindOrCreate for why the users table has no column
+	// for it.
+	email string
+	// created reports that this request is the one that provisioned the local
+	// user.
+	created bool
 }
 
 // resolveUser turns a request's session cookie into the local user it names.
@@ -142,7 +189,7 @@ func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFin
 	identity := session.GetIdentity()
 	kratosID := identity.GetId()
 
-	user, err := finder.FindByKratosID(r.Context(), kratosID, identityDisplayName(&identity))
+	user, created, err := finder.FindByKratosID(r.Context(), kratosID, identityDisplayName(&identity))
 	if err != nil {
 		logger.Error("auth: error looking up user", "kratos_id", kratosID, "error", err)
 		return resolved{}, authLookupFailed
@@ -152,13 +199,69 @@ func resolveUser(r *http.Request, kratosClient *kratos.APIClient, finder UserFin
 		return resolved{}, authNoLocalUser
 	}
 
-	return resolved{user: user, emailVerified: identityEmailVerified(&identity)}, authOK
+	return resolved{
+		user:          user,
+		emailVerified: identityEmailVerified(&identity),
+		email:         identityEmail(&identity),
+		created:       created,
+	}, authOK
+}
+
+// AuthOption configures optional behaviour of the authenticating middleware.
+//
+// Variadic options rather than more constructor parameters: the two middlewares
+// here are built in one place and constructed by hand in a dozen tests, and a
+// fifth positional argument would touch every one of them to say "no redeemer"
+// out loud.
+type AuthOption func(*authOptions)
+
+type authOptions struct {
+	redeemer InviteRedeemer
+}
+
+// WithInviteRedeemer makes the middleware complete a pending user's invitation
+// on their way in. Without it, nothing redeems.
+func WithInviteRedeemer(r InviteRedeemer) AuthOption {
+	return func(o *authOptions) { o.redeemer = r }
+}
+
+// redeemInvitation gives a pending user's waiting invitation a chance to land.
+//
+// It runs on every authenticated request from a pending user rather than only
+// on the request that created them, and that is what makes it self-healing:
+// redemption touches an invitation, a vouch and a role without a transaction
+// around them, so an attempt that died partway has to be able to finish on the
+// next page load rather than needing a human. Once the vouch lands the user is
+// a member and this stops running for them.
+//
+// It can never fail a request. A resident's ability to sign in must not depend
+// on the invitation machinery: the worst outcome of a failure here is that
+// somebody stays pending a little longer — the ordinary vouch and approval
+// paths are still open to them — while the worst outcome of propagating it is a
+// town nobody can log into because one query is broken.
+func redeemInvitation(r *http.Request, redeemer InviteRedeemer, res resolved, logger *slog.Logger) {
+	if redeemer == nil || res.user == nil || res.user.Role != domain.RolePending {
+		return
+	}
+	if res.created {
+		logger.Info("auth: provisioned local user for new identity",
+			"user_id", res.user.ID, "kratos_id", res.user.KratosIdentityID)
+	}
+	if err := redeemer.Redeem(r.Context(), res.user, res.email); err != nil {
+		logger.Error("auth: redeeming invitation failed; the user remains pending",
+			"user_id", res.user.ID, "error", err)
+	}
 }
 
 // KratosAuth validates the Kratos session cookie and populates the request
 // context with the corresponding local user, rejecting the request if it
 // cannot.
-func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger) func(http.Handler) http.Handler {
+func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.Logger, opts ...AuthOption) func(http.Handler) http.Handler {
+	var cfg authOptions
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			res, outcome := resolveUser(r, kratosClient, finder, logger)
@@ -179,6 +282,14 @@ func KratosAuth(kratosClient *kratos.APIClient, finder UserFinder, logger *slog.
 			}
 
 			logger.Debug("auth: authenticated", "user_id", res.user.ID, "role", res.user.Role)
+			// Before the context is built, so a newly-invited resident's very
+			// first request is answered as the member the invitation just made
+			// them. Redeem raises the role on the user it is handed once the
+			// vouch lands, and that value is what goes into the context below;
+			// otherwise the invitee's first page load would render the
+			// "waiting to be vouched for" screen they had already stopped
+			// needing.
+			redeemInvitation(r, cfg.redeemer, res, logger)
 			ctx := WithEmailVerified(WithUser(r.Context(), res.user), res.emailVerified)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

@@ -84,6 +84,25 @@ addresses.
 
 The site is now at whatever you set as `PUBLIC_URL`.
 
+### How residents join
+
+**A new town is invitation-only.** Nobody can create an account without a live
+invitation: a member invites somebody by email, and accepting that invitation
+also records the vouch that makes them a member. The founding council can invite
+without limit, which is how a town gets populated in the first place; ordinary
+members get three endorsements a day, invitations and vouches combined.
+
+Invitations are emailed, so set up a relay before you start inviting — see
+[Email](#email) below, and set `PUBLIC_URL` to the address residents actually
+type, since that is what invitation links are built on. Without a relay the
+invitation still works and the API hands the member a link to pass on by hand.
+
+If your town would rather let anybody sign up and be vouched for afterwards, the
+council can switch registration to open mode from the admin screen. See
+"Registration modes" in [docs/admin-guide.md](../docs/admin-guide.md). Existing
+towns upgrading into this release are switched to invitation-only, deliberately;
+open sign-up has to be chosen.
+
 ## Going to production: TLS
 
 The defaults in `.env.example` are for a plain-HTTP trial on `localhost`. They
@@ -167,10 +186,17 @@ Server-sent events power the live feed, so disable response buffering for it
 
 ## Email
 
-Password recovery and email verification are enabled in the UI. Until
-`COURIER_SMTP_CONNECTION_URI` points at a real relay, those messages are
+Three things send mail: password recovery, email verification, and
+**invitations**. The first two are Kratos's; invitations are The Bell's own. One
+setting covers all three — the compose file passes
+`COURIER_SMTP_CONNECTION_URI` and `COURIER_SMTP_FROM_ADDRESS` through to the app
+as `SMTP_CONNECTION_URI` and `SMTP_FROM_ADDRESS`.
+
+Until the URI points at a real relay, recovery and verification messages are
 generated and then fail to send, and a resident who forgets their password has
-no way back into their account.
+no way back into their account. Invitations behave differently: with no relay
+the invitation is still created and works, the response says
+`email_sent: false`, and the member passes the link on themselves.
 
 ```env
 COURIER_SMTP_CONNECTION_URI=smtps://user:password@smtp.example.com:465/
@@ -179,14 +205,19 @@ COURIER_SMTP_FROM_ADDRESS=noreply@example.com
 
 The URI must begin with `smtp://` or `smtps://`, and special characters in the
 password must be URL-encoded (`@` becomes `%40`). For a relay that does not
-offer STARTTLS, append `?disable_starttls=true`. An empty value is rejected by
-Kratos at startup, which is why the compose default is a placeholder that points
-nowhere rather than a blank.
+offer STARTTLS, append `?disable_starttls=true` — The Bell refuses to send
+invitations in the clear to a relay that does not offer STARTTLS unless you say
+so explicitly. An empty value is rejected by Kratos at startup, which is why the
+compose default is a placeholder that points nowhere rather than a blank.
 
-Delivery failures are logged by the Kratos courier worker:
+Set `PUBLIC_URL` too, or emailed invitation links will be relative paths that
+mean nothing in an inbox.
+
+Delivery failures are logged by whichever side sent the message:
 
 ```bash
-docker compose logs kratos | grep -i courier
+docker compose logs kratos | grep -i courier   # recovery, verification
+docker compose logs bell | grep -i invitation  # invitations
 ```
 
 ### Testing email with MailHog
@@ -202,13 +233,19 @@ COURIER_SMTP_CONNECTION_URI=smtp://mailhog:1025/?disable_starttls=true
 ```
 
 Then `docker compose up -d` and open `http://localhost:8025` (tunable with
-`MAILHOG_UI_PORT`). Every recovery and verification message the town sends
-lands there instead of a real inbox, which makes those flows testable
+`MAILHOG_UI_PORT`). Every recovery, verification **and invitation** message the
+town sends lands there instead of a real inbox, which makes all three testable
 end-to-end with no relay.
 
+Invitations are the flow most worth trying this way, because they are the one
+you cannot check by reading logs: invite yourself at a second address, open the
+message in MailHog, follow the link, and confirm you come out the other side as
+a member rather than as a pending applicant.
+
 **Never run this profile on a town with real residents.** The MailHog inbox is
-unauthenticated and holds live recovery links for every account on the
-instance. Before going live: remove both lines, set a real
+unauthenticated and holds live recovery links and live invitation links for
+every account on the instance — either one is enough to take over an account or
+walk into the town. Before going live: remove both lines, set a real
 `COURIER_SMTP_CONNECTION_URI`, and `docker compose up -d` again — the mailhog
 container is removed with the profile.
 

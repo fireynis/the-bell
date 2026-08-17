@@ -59,15 +59,34 @@ func TestValidateConfigUpdate(t *testing.T) {
 		{"single allowed key", map[string]string{"town_name": "Bellville"}, ""},
 		{
 			"every allowed key at once",
-			map[string]string{"town_name": "Bellville", "primary_color": "#123456", "accent_color": "#abcdef"},
+			map[string]string{
+				"town_name": "Bellville", "primary_color": "#123456",
+				"accent_color": "#abcdef", "registration_mode": "invite",
+			},
 			"",
 		},
-		{"unknown key is rejected", map[string]string{"favourite_bell": "big"}, "favourite_bell"},
-		{"bootstrap_mode is not writable", map[string]string{"bootstrap_mode": "false"}, "bootstrap_mode"},
+		{"unknown key is rejected", map[string]string{"favourite_bell": "big"}, "key not allowed: favourite_bell"},
+		{"bootstrap_mode is not writable", map[string]string{"bootstrap_mode": "false"}, "key not allowed: bootstrap_mode"},
 		{
 			"one bad key rejects the whole request",
 			map[string]string{"town_name": "Bellville", "bootstrap_mode": "false"},
-			"bootstrap_mode",
+			"key not allowed: bootstrap_mode",
+		},
+		{"registration_mode may be open", map[string]string{"registration_mode": "open"}, ""},
+		{
+			"registration_mode rejects anything else",
+			map[string]string{"registration_mode": "opne"},
+			"value not allowed for registration_mode: opne",
+		},
+		{
+			"registration_mode is case sensitive, because the gate's comparison is exact",
+			map[string]string{"registration_mode": "Open"},
+			"value not allowed for registration_mode: Open",
+		},
+		{
+			"an unconstrained key still takes any value",
+			map[string]string{"town_name": "anything at all"},
+			"",
 		},
 	}
 
@@ -77,5 +96,21 @@ func TestValidateConfigUpdate(t *testing.T) {
 				t.Errorf("validateConfigUpdate() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// registration_mode has to reach the sign-up screen, which has no session and
+// so no other way to learn whether it should offer a registration form at all.
+func TestPublicTownConfig_IncludesRegistrationMode(t *testing.T) {
+	public := publicTownConfig(map[string]string{
+		"registration_mode": "invite",
+		"bootstrap_mode":    "true",
+	})
+
+	if public["registration_mode"] != "invite" {
+		t.Errorf("registration_mode = %q, want it published", public["registration_mode"])
+	}
+	if _, found := public["bootstrap_mode"]; found {
+		t.Error("bootstrap_mode is in the public config, want it withheld")
 	}
 }

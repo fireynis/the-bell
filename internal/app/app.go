@@ -12,6 +12,7 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	kratos "github.com/ory/kratos-client-go"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/fireynis/the-bell/internal/cache"
 	"github.com/fireynis/the-bell/internal/config"
+	"github.com/fireynis/the-bell/internal/mail"
 	"github.com/fireynis/the-bell/internal/middleware"
 	"github.com/fireynis/the-bell/internal/repository/postgres"
 	"github.com/fireynis/the-bell/internal/server"
@@ -56,6 +58,36 @@ type Deps struct {
 	VouchService      *service.VouchService
 	ModerationService *service.ModerationActionService
 	ConfigRepo        service.ConfigRepository
+
+	// InviteService is listed for the same reason the others are, and it is the
+	// clearest case of it: redemption is not reachable through any route. It
+	// runs inside the authenticating middleware, which the integration harness
+	// replaces with a mock identity, so a test that wants to exercise somebody
+	// accepting an invitation has nowhere else to call.
+	InviteService *service.InviteService
+}
+
+// attachMailer gives the invite service a relay, when one is configured.
+//
+// No SMTP_CONNECTION_URI means sending is off, which is a supported
+// configuration rather than an error: invitations are still created, the
+// response says email_sent:false with a reason, and the member passes the link
+// on themselves. A URI that is set but unusable is the opposite — the operator
+// asked for mail and would otherwise discover the typo one failed invitation at
+// a time — so it stops the process at wiring, like a malformed TRUSTED_PROXIES.
+func attachMailer(inviteSvc *service.InviteService, cfg config.Config, logger *slog.Logger) error {
+	if strings.TrimSpace(cfg.SMTPConnectionURI) == "" {
+		logger.Info("invitation email disabled: SMTP_CONNECTION_URI is not set")
+		return nil
+	}
+
+	sender, err := mail.NewSender(cfg.SMTPConnectionURI, cfg.SMTPFromAddress)
+	if err != nil {
+		return fmt.Errorf("configuring invitation email: %w", err)
+	}
+	inviteSvc.SetMailer(sender)
+	logger.Info("invitation email enabled", "from", sender.From())
+	return nil
 }
 
 // trustInputs assembles the repositories service.TrustInputs spans.
@@ -100,6 +132,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	postRepo := postgres.NewPostRepo(queries)
 	reportRepo := postgres.NewReportRepo(queries)
 	vouchRepo := postgres.NewVouchRepo(queries)
+	inviteRepo := postgres.NewInviteRepo(queries)
 	modActionRepo := postgres.NewModerationActionRepo(queries)
 	reliefRepo := postgres.NewModerationReliefRepo(queries)
 	penaltyRepo := postgres.NewPenaltyRepo(queries)
@@ -118,9 +151,33 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	vouchSvc := service.NewVouchService(vouchRepo, ageQuerier, userRepo, nil)
 	// Revoking a vouch records a decaying trust penalty against the voucher.
 	vouchSvc.SetPenaltyRepository(penaltyRepo)
+	// Being vouched in is a role change, and every role change belongs in
+	// role_history. Until this was wired it was the one that did not appear
+	// there — the trail recorded automatic promotions and council votes, so a
+	// member who joined the ordinary way had no recorded origin at all.
+	vouchSvc.SetRoleHistory(roleCheckerRepo)
+	// The daily allowance is three endorsements, and an invitation is one of
+	// them. Both services count both kinds, so the budget cannot be spent twice
+	// by alternating between them.
+	vouchSvc.SetInviteCounter(inviteRepo)
 	modSvc := service.NewModerationService(penaltyRepo, ageQuerier, nil)
 	modActionSvc := service.NewModerationActionService(modActionRepo, userRepo, modSvc, userRepo, penaltyRepo, reliefRepo, nil)
 	approvalSvc := service.NewApprovalService(userRepo, configRepo)
+	// The other way somebody becomes a member, and the other role change that
+	// was missing from the trail.
+	approvalSvc.SetRoleHistory(roleCheckerRepo)
+	// Invitations. The vouch service is passed as the redemption path rather
+	// than the repository: accepting an invitation has to run every rule an
+	// ordinary vouch does — the graph edge, the promotion, the recalculation —
+	// and reaching around the service to write a vouch row would skip all of
+	// them. vouchRepo is there only for the other half of the shared daily
+	// budget, counting the vouches already given today.
+	inviteSvc := service.NewInviteService(inviteRepo, vouchRepo, vouchSvc, userRepo, configRepo, logger, nil)
+	inviteSvc.SetPublicURL(cfg.PublicURL)
+	inviteSvc.SetTownName(cfg.TownName)
+	if err := attachMailer(inviteSvc, cfg, logger); err != nil {
+		return nil, err
+	}
 	// The proposal service reaches across four repositories because carrying a
 	// motion is a change to something real: proposals and votes for the ballot,
 	// users for the role it changes, role history for the record every other
@@ -147,6 +204,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		VouchService:      vouchSvc,
 		ModerationService: modActionSvc,
 		ConfigRepo:        configRepo,
+		InviteService:     inviteSvc,
 	}
 
 	// Redis-backed features. One client is shared by the feed cache, the SSE
@@ -203,7 +261,15 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 	kratosCfg := kratos.NewConfiguration()
 	kratosCfg.Servers = kratos.ServerConfigurations{{URL: cfg.KratosPublicURL}}
 	kratosClient := kratos.NewAPIClient(kratosCfg)
-	authMiddleware := middleware.KratosAuth(kratosClient, userSvc, logger)
+	// The redeemer rides on the authenticating middleware because signing in is
+	// the only moment the application learns the address a session belongs to,
+	// and that address is what matches a newcomer to their invitation. It is
+	// deliberately not on OptionalAuth: the SPA calls GET /v1/me on every load,
+	// so the guarded middleware sees every signed-in resident anyway, and
+	// putting it on the public feed routes as well would only run the same
+	// lookup twice per page.
+	authMiddleware := middleware.KratosAuth(kratosClient, userSvc, logger,
+		middleware.WithInviteRedeemer(inviteSvc))
 	// Public-but-personalized routes need to know who is asking without
 	// requiring it; see middleware.OptionalAuth.
 	optionalAuth := middleware.OptionalAuth(kratosClient, userSvc, logger)
@@ -217,6 +283,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, rdb *redis.Client, logger *slo
 		server.WithVouchService(vouchSvc),
 		server.WithModerationActionService(modActionSvc),
 		server.WithApprovalService(approvalSvc),
+		server.WithInviteService(inviteSvc),
 		server.WithProposalService(proposalSvc),
 		server.WithReactionService(reactionSvc),
 		server.WithReactionRepo(reactionRepo),

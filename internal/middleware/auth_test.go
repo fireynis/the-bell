@@ -20,15 +20,18 @@ import (
 type mockUserFinder struct {
 	user *domain.User
 	err  error
+	// created is what the finder reports back as "this call provisioned the
+	// user", which the middleware logs and passes on to the redeemer.
+	created bool
 
 	gotKratosID    string
 	gotDisplayName string
 }
 
-func (m *mockUserFinder) FindByKratosID(_ context.Context, kratosID, displayName string) (*domain.User, error) {
+func (m *mockUserFinder) FindByKratosID(_ context.Context, kratosID, displayName string) (*domain.User, bool, error) {
 	m.gotKratosID = kratosID
 	m.gotDisplayName = displayName
-	return m.user, m.err
+	return m.user, m.created, m.err
 }
 
 // newKratosClient returns a kratos APIClient pointing at the given base URL.

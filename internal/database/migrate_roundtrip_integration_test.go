@@ -29,7 +29,7 @@ import (
 
 // latestVersion is the highest migration version. Kept as a literal so that
 // adding a migration without considering its Down block trips this file.
-const latestVersion = int64(22)
+const latestVersion = int64(23)
 
 // testProvider builds a goose provider over the test's own database.
 //
@@ -70,6 +70,7 @@ var publicSchemaColumns = []struct{ table, column string }{
 	{"moderation_reliefs", "relief_type"},
 	{"users", "residency_claim"},
 	{"proposals", "status"},
+	{"invites", "token_hash"},
 }
 
 func assertColumnsInPublic(t *testing.T, pool *pgxpool.Pool, when string) {

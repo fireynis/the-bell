@@ -49,6 +49,12 @@ func NewUserService(repo UserRepository, clock func() time.Time) *UserService {
 // FindOrCreate looks up a user by Kratos identity ID. If no local user exists,
 // it auto-provisions one as pending with trust 50.0, seeded with displayName.
 //
+// The second return reports whether this call created the user. It exists
+// because provisioning is the one moment something outside this service may
+// need to act on — invitation redemption is the current caller — and the
+// alternative, inferring it from a zero-valued JoinedAt or a role of pending,
+// would be reading a guess off the row.
+//
 // displayName is the identity's `name` trait and applies to creation only. An
 // existing user is returned untouched, because by then the name is theirs to
 // manage: UpdateProfile lets them change it in-app, and re-applying the trait
@@ -58,18 +64,26 @@ func NewUserService(repo UserRepository, clock func() time.Time) *UserService {
 // because a trait is missing is far worse than one where a name has to be
 // filled in later, and callers with no identity to read (fixtures, tooling)
 // legitimately have nothing to pass.
-func (s *UserService) FindOrCreate(ctx context.Context, kratosID, displayName string) (*domain.User, error) {
+//
+// The identity's email is deliberately NOT a parameter and is not stored. It
+// travels alongside this call rather than through it (see
+// middleware.resolveUser), because the address belongs to Kratos: copying it
+// into users would create a second, immediately-stale copy of the one fact
+// Kratos is authoritative for, and every read of it would have to ask which
+// copy was right. The one thing that needs the address — matching a pending
+// user to their invitation — asks the session for it at the moment it needs it.
+func (s *UserService) FindOrCreate(ctx context.Context, kratosID, displayName string) (*domain.User, bool, error) {
 	user, err := s.repo.GetUserByKratosID(ctx, kratosID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, fmt.Errorf("looking up user by kratos id: %w", err)
+		return nil, false, fmt.Errorf("looking up user by kratos id: %w", err)
 	}
 	if user != nil {
-		return user, nil
+		return user, false, nil
 	}
 
 	id, err := uuid.NewV7()
 	if err != nil {
-		return nil, fmt.Errorf("generating user id: %w", err)
+		return nil, false, fmt.Errorf("generating user id: %w", err)
 	}
 
 	now := s.now()
@@ -86,15 +100,15 @@ func (s *UserService) FindOrCreate(ctx context.Context, kratosID, displayName st
 	}
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
-		return nil, fmt.Errorf("creating user: %w", err)
+		return nil, false, fmt.Errorf("creating user: %w", err)
 	}
 
-	return user, nil
+	return user, true, nil
 }
 
 // FindByKratosID satisfies the middleware.UserFinder interface by delegating
 // to FindOrCreate.
-func (s *UserService) FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, error) {
+func (s *UserService) FindByKratosID(ctx context.Context, kratosID, displayName string) (*domain.User, bool, error) {
 	return s.FindOrCreate(ctx, kratosID, displayName)
 }
 

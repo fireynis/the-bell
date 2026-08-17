@@ -28,7 +28,7 @@ func TestUser(t *testing.T, pool *pgxpool.Pool, kratosID string, role domain.Rol
 	// No display name: this fixture has no Kratos identity to read a `name`
 	// trait from, which is the same blank-name user sign-up produced before
 	// the trait was threaded through.
-	user, err := svc.FindOrCreate(ctx, kratosID, "")
+	user, _, err := svc.FindOrCreate(ctx, kratosID, "")
 	if err != nil {
 		t.Fatalf("creating test user: %v", err)
 	}

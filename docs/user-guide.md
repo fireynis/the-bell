@@ -2,7 +2,43 @@
 
 ## Getting Started
 
-### Registration
+### Joining, by invitation
+
+Most towns on The Bell are **invitation only**. You cannot sign yourself up;
+somebody who already lives there invites you, and that invitation is also their
+vouch for you. That is the whole design — membership runs on people who know
+people, not on anyone who finds the address.
+
+What it looks like from your side:
+
+1. A neighbour invites you and you get an email: who invited you, whatever they
+   wanted to say to you, and a link.
+2. Follow the link. The sign-up page greets you by the address you were invited
+   at and asks for a password.
+3. **Register with that same address.** The invitation is for one address and
+   will not accept another — if you sign up with a different one, you will be
+   turned away and have to start again with the right one.
+4. That is it. You are a **member** straight away, because accepting the
+   invitation records your neighbour vouching for you. No waiting, no queue.
+
+Two things worth knowing about the link:
+
+- **It expires after 14 days.** If yours has run out, ask whoever invited you to
+  send another — they can, as soon as the old one lapses.
+- **It is yours.** Forwarding it to somebody else does not work: the address has
+  to match. If you were expecting an invitation and never got one, check your
+  spam folder before asking again, since a second one cannot be sent while the
+  first is still live.
+
+If your neighbour's own standing has changed since they invited you — if they
+have been suspended, say, or their trust has dropped below the vouching
+threshold — the invitation still lets you register, but you arrive as a
+`pending` resident instead of a member. The routes below are then how you get
+the rest of the way, and they are open to you as they are to anybody.
+
+### Joining a town with open sign-up
+
+Some towns leave registration open. There you can create an account yourself:
 
 1. Navigate to the Bell's login page (`/auth/login`)
 2. Click the registration link to create an account (`/auth/registration`)
@@ -14,10 +50,35 @@
 
 ### Becoming a Member
 
-As a `pending` user you cannot post or vouch. To become a `member`:
+If you arrived by invitation you are already a member and can skip this. As a
+`pending` user you cannot post or vouch. To become a `member`:
 
+- **By invitation**: accepting one makes you a member the moment you sign in, as
+  above
 - **During bootstrap mode**: A council member can approve you directly from the admin dashboard
 - **After bootstrap mode**: An existing member or moderator with trust >= 60 must vouch for you. Your first vouch automatically promotes you to `member`
+
+### Inviting somebody yourself
+
+Once you are a member with trust >= 60 — the same bar as vouching — you can
+invite people. Give an email address and, if you like, a note; they get the
+message and you get a link you can also pass on by hand.
+
+An invitation **is** a vouch, so it spends the same allowance: **three a day,
+invitations and vouches together**. Two invitations and one vouch is your day
+spent. Nothing is charged again when the person accepts, however long they take.
+(Council members are not rationed.)
+
+Your invitations are on your own profile: who you invited, whether they have
+accepted, and when each one runs out. You can withdraw one that is still open,
+which also frees that address so you can send a corrected invitation to a
+mistyped one. Nobody else can see your list, and the link itself is shown only
+once, when you create it — if you lose it, withdraw the invitation and send a
+new one.
+
+Invite people the way you would vouch for them: because you know who they are.
+Their conduct affects your trust score the same way, since accepting is your
+endorsement of them.
 
 ### Saying where you live
 
@@ -126,7 +187,9 @@ To vouch for someone, you must:
 - Be an active `member`, `moderator`, or `council`
 - Not have already vouched for the same person
 - Not be creating a cycle in the trust graph (A vouches for B, B vouches for A)
-- Not exceed the daily limit of 3 vouches
+- Not exceed the daily limit of 3, **shared with invitations** — an invitation
+  is a vouch made in advance, so the two draw on one allowance. Council members
+  are exempt from it
 
 ### What Vouching Does
 

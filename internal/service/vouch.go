@@ -62,13 +62,15 @@ type UserGetter interface {
 
 // VouchService orchestrates vouch business logic.
 type VouchService struct {
-	vouches    VouchRepository
-	graph      GraphQuerier
-	users      UserGetter
-	now        func() time.Time
-	trustQueue TrustRecalcQueue
-	penalties  PenaltyRepository
-	logger     *slog.Logger
+	vouches     VouchRepository
+	graph       GraphQuerier
+	users       UserGetter
+	now         func() time.Time
+	trustQueue  TrustRecalcQueue
+	penalties   PenaltyRepository
+	roleHistory RoleHistoryWriter
+	invites     InviteCounter
+	logger      *slog.Logger
 }
 
 func NewVouchService(vouches VouchRepository, graph GraphQuerier, users UserGetter, clock func() time.Time) *VouchService {
@@ -96,6 +98,91 @@ func (s *VouchService) SetTrustQueue(q TrustRecalcQueue) {
 // absent trust queue degrades rather than failing.
 func (s *VouchService) SetPenaltyRepository(p PenaltyRepository) {
 	s.penalties = p
+}
+
+// SetInviteCounter makes the daily allowance count invitations as well as
+// vouches, in both directions.
+//
+// InviteService.Create already counts vouches when it charges the budget. Without
+// the mirror image here the allowance would only be combined from one side: a
+// member could send three invitations, be refused a fourth, and then give three
+// vouches — six endorsements in a day from a rule that says three. An invitation
+// is a vouch made in advance, so it has to cost the same thing whichever order
+// the two are spent in.
+//
+// Optional, like the other collaborators here: unset, the limit counts vouches
+// alone, which is the behaviour that predates invitations.
+func (s *VouchService) SetInviteCounter(c InviteCounter) {
+	s.invites = c
+}
+
+// InviteCounter reports how many invitations a member has created since a given
+// time — the other half of the shared daily allowance.
+type InviteCounter interface {
+	CountInvitesByInviterSince(ctx context.Context, inviterID string, since time.Time) (int64, error)
+}
+
+// endorsementsToday is what the daily allowance is spent on: vouches given plus
+// invitations sent, since local midnight.
+func (s *VouchService) endorsementsToday(ctx context.Context, voucherID string, since time.Time) (int64, error) {
+	count, err := s.vouches.CountVouchesByVoucherSince(ctx, voucherID, since)
+	if err != nil {
+		return 0, fmt.Errorf("counting daily vouches: %w", err)
+	}
+	if s.invites == nil {
+		return count, nil
+	}
+	invites, err := s.invites.CountInvitesByInviterSince(ctx, voucherID, since)
+	if err != nil {
+		return 0, fmt.Errorf("counting daily invites: %w", err)
+	}
+	return count + invites, nil
+}
+
+// SetRoleHistory attaches the audit trail that every role change in this
+// codebase writes to.
+//
+// It is a setter rather than a constructor parameter to match the other
+// optional collaborators here, but it is not optional in the way they are: a
+// vouch promoting somebody to member is a role change, and until this was wired
+// it was the one role change that left no trace — the role checker and council
+// votes both recorded theirs, so role_history read as though nobody had ever
+// joined by being vouched for. app.Build always sets it, and promoting with no
+// writer attached logs a warning rather than passing silently.
+func (s *VouchService) SetRoleHistory(w RoleHistoryWriter) {
+	s.roleHistory = w
+}
+
+// recordPromotion writes the role_history entry for a promotion that has
+// already been applied.
+//
+// The reason names the mechanism and the specific vouch, following
+// ProposalService.changeRole: the column is read in a list next to automatic
+// promotions and demotions, so it has to say in a few words why this one
+// happened and carry the id of the thing that caused it.
+func (s *VouchService) recordPromotion(ctx context.Context, userID, vouchID string, oldRole domain.Role) error {
+	if s.roleHistory == nil {
+		s.logger.Warn("promotion not recorded in role history: no writer wired",
+			"user_id", userID, "vouch_id", vouchID)
+		return nil
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("generating role history id: %w", err)
+	}
+	entry := &domain.RoleHistory{
+		ID:        id.String(),
+		UserID:    userID,
+		OldRole:   oldRole,
+		NewRole:   domain.RoleMember,
+		Reason:    fmt.Sprintf("vouched for: vouch %s", vouchID),
+		CreatedAt: s.now(),
+	}
+	if err := s.roleHistory.CreateRoleHistoryEntry(ctx, entry); err != nil {
+		return fmt.Errorf("recording role history: %w", err)
+	}
+	return nil
 }
 
 // applyRevocationPenalty charges the voucher for withdrawing their endorsement.
@@ -186,6 +273,30 @@ func (s *VouchService) enqueueVouchRecalc(ctx context.Context, voucherID, vouche
 // A non-nil vouch with a non-nil error means the vouch persisted but the
 // promotion that follows it did not; see the promotion block below.
 func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (*domain.Vouch, error) {
+	return s.vouch(ctx, voucherID, voucheeID, false)
+}
+
+// VouchFromInvite records the vouch an accepted invitation always was.
+//
+// It is Vouch with the daily limit skipped, and only the daily limit. The trust
+// floor, the self-vouch and duplicate-pair checks, cycle detection, the graph
+// edge, the recalculation enqueue and the promotion all still apply — the
+// inviter is re-read and re-tested at this moment, so an inviter who has since
+// been suspended or fallen below the threshold cannot carry anybody in on an
+// invitation they are no longer entitled to send.
+//
+// The limit is skipped because it was already spent. Creating the invitation
+// charged the member's combined invite-and-vouch budget for that day (see
+// InviteService.Create), so counting it again when the invitee finally clicks
+// the link would charge them twice for one endorsement — and would do it on a
+// day they did not choose, since the invitee decides when to accept. A member
+// who sent their three invitations on Monday would find themselves unable to
+// vouch on Thursday because three strangers happened to sign up that morning.
+func (s *VouchService) VouchFromInvite(ctx context.Context, voucherID, voucheeID string) (*domain.Vouch, error) {
+	return s.vouch(ctx, voucherID, voucheeID, true)
+}
+
+func (s *VouchService) vouch(ctx context.Context, voucherID, voucheeID string, skipDailyLimit bool) (*domain.Vouch, error) {
 	if voucherID == voucheeID {
 		return nil, fmt.Errorf("%w: cannot vouch for yourself", ErrValidation)
 	}
@@ -217,12 +328,20 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 	}
 
 	now := s.now()
-	count, err := s.vouches.CountVouchesByVoucherSince(ctx, voucherID, startOfDay(now))
-	if err != nil {
-		return nil, fmt.Errorf("counting daily vouches: %w", err)
-	}
-	if count >= dailyVouchLimit {
-		return nil, fmt.Errorf("%w: daily vouch limit (%d) reached", ErrValidation, dailyVouchLimit)
+	// Council is exempt from the daily allowance, for the reason spelled out in
+	// InviteService.Create: it mirrors the deliberate decision to leave council
+	// approvals unlimited, and in an invite-only town the council's endorsements
+	// are how the town gets populated at all. The check is here as well as
+	// there so the exemption cannot be spent from one side only.
+	if !skipDailyLimit && !voucher.IsCouncil() {
+		count, err := s.endorsementsToday(ctx, voucherID, startOfDay(now))
+		if err != nil {
+			return nil, err
+		}
+		if count >= dailyVouchLimit {
+			return nil, fmt.Errorf("%w: daily limit (%d) reached; invites and vouches share one allowance",
+				ErrValidation, dailyVouchLimit)
+		}
 	}
 
 	hasCycle, err := s.graph.HasCyclicVouch(ctx, voucherID, voucheeID)
@@ -301,8 +420,23 @@ func (s *VouchService) Vouch(ctx context.Context, voucherID, voucheeID string) (
 		return vouch, fmt.Errorf("vouch recorded but looking up vouchee for promotion: %v", err)
 	}
 	if vouchee.Role == domain.RolePending {
+		// Captured before the write, for the reason ProposalService.changeRole
+		// spells out: old_role is a fact about the moment before the update,
+		// and reading it off the user afterwards would depend on the repository
+		// not having touched the value in hand. A store that does — any
+		// in-memory one — silently turns every entry into member -> member.
+		oldRole := vouchee.Role
 		if err := s.users.UpdateUserRole(ctx, voucheeID, domain.RoleMember); err != nil {
 			return vouch, fmt.Errorf("vouch recorded but promoting vouchee to member: %v", err)
+		}
+		// The audit entry follows the same post-commit contract as the
+		// promotion above and for the same reason: the role has changed and is
+		// not being rolled back, but a promotion missing from role_history is a
+		// person whose membership has no recorded origin, which is precisely
+		// what the trail exists to prevent. Unwrapped (%v) so it lands as a 500
+		// rather than being mistaken for the caller's error.
+		if err := s.recordPromotion(ctx, voucheeID, vouch.ID, oldRole); err != nil {
+			return vouch, fmt.Errorf("vouch recorded and vouchee promoted but %v", err)
 		}
 	}
 

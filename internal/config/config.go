@@ -23,6 +23,35 @@ type Config struct {
 	ImageStoragePath string `env:"IMAGE_STORAGE_PATH" envDefault:"/storage/the-bell/images"`
 	TownName         string `env:"TOWN_NAME" envDefault:"My Town"`
 
+	// PublicURL is the address residents type — the origin invitation links are
+	// built on.
+	//
+	// Optional, and its absence is handled rather than defaulted. The
+	// application has no other way to learn its own public address: Kratos is
+	// told one, the reverse proxy knows one, and the Go process sees neither.
+	// The obvious substitute, the request's Host header, is attacker-controlled
+	// — one request with a forged Host would produce an invitation link
+	// pointing at somebody else's site — so when this is empty the API returns
+	// invitation links as site-relative paths and the frontend absolutizes them
+	// against the origin the member is already on. Only the emailed copy needs
+	// a real value, which is why the deploy docs pair this with SMTP.
+	PublicURL string `env:"PUBLIC_URL" envDefault:""`
+
+	// SMTPConnectionURI and SMTPFromAddress configure the relay The Bell sends
+	// invitation mail through.
+	//
+	// Both are optional and empty means sending is off: invitations are still
+	// created and still work, the response says email_sent:false, and the
+	// member passes the link on themselves. That is the right default for a
+	// town with no relay, and it is why this is not `required` — a missing
+	// SMTP setting must not stop the server booting.
+	//
+	// The URI is Kratos's courier shape (smtp[s]://user:pass@host:port/?...),
+	// deliberately, so both composes can feed this and COURIER_SMTP_* from one
+	// variable and an operator configures their relay once. See internal/mail.
+	SMTPConnectionURI string `env:"SMTP_CONNECTION_URI" envDefault:""`
+	SMTPFromAddress   string `env:"SMTP_FROM_ADDRESS" envDefault:""`
+
 	// TrustSweepInterval is how often the Redis-backed trust worker puts every
 	// active user back through the trust calculation. It has no effect without
 	// REDIS_URL, where `bell check-roles` is the only thing that recalculates.
@@ -186,6 +215,21 @@ func (c Config) validate() error {
 	}
 
 	errs = append(errs, validateImageStoragePath(c.ImageStoragePath))
+
+	// Only a value that was actually supplied is checked, because empty means
+	// "links are relative", which is a supported configuration.
+	if strings.TrimSpace(c.PublicURL) != "" {
+		errs = append(errs, absoluteURL("PUBLIC_URL", c.PublicURL))
+	}
+
+	// A relay with nobody to send as is not a working relay: the SMTP
+	// conversation opens with MAIL FROM, so this would fail at the first
+	// message rather than at boot — which is to say, on the first member who
+	// tried to invite somebody. Caught here instead. The reverse (a from
+	// address with no relay) is harmless and left alone: sending is simply off.
+	if strings.TrimSpace(c.SMTPConnectionURI) != "" && strings.TrimSpace(c.SMTPFromAddress) == "" {
+		errs = append(errs, fmt.Errorf("SMTP_FROM_ADDRESS must be set when SMTP_CONNECTION_URI is"))
+	}
 
 	// Zero and negative are both rejected here rather than left to
 	// TrustWorker.SetSweepInterval, which ignores them. Ignoring is the right

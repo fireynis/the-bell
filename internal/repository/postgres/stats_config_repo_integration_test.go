@@ -91,10 +91,12 @@ func TestStatsRepo_Counts(t *testing.T) {
 
 // --- ConfigRepo ---
 
-// Migration 00009 seeds bootstrap_mode, so a freshly migrated town already has
-// one config row. Tests that count rows have to account for it, and the server
-// relies on it: "no rows at all" is never a state it has to interpret.
-const seededConfigRows = 1
+// Migration 00009 seeds bootstrap_mode and 00023 seeds registration_mode, so a
+// freshly migrated town already has two config rows. Tests that count rows have
+// to account for them, and the server relies on both being there: "no rows at
+// all" is never a state it has to interpret, and a missing registration_mode
+// would leave the registration gate inferring a mode rather than reading one.
+const seededConfigRows = 2
 
 func TestConfigRepo_MigrationSeedsBootstrapMode(t *testing.T) {
 	pool := testsupport.TestDB(t)

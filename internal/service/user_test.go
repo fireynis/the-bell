@@ -16,7 +16,7 @@ func TestUserService_FindOrCreate_NewUser(t *testing.T) {
 	repo := newMockUserRepo()
 	svc := NewUserService(repo, func() time.Time { return now })
 
-	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada Lovelace")
+	user, _, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada Lovelace")
 	if err != nil {
 		t.Fatalf("FindOrCreate() unexpected error: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestUserService_FindOrCreate_ExistingUser(t *testing.T) {
 	repo.users[existing.ID] = existing
 	repo.byKratos[existing.KratosIdentityID] = existing
 
-	user, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Trait Name")
+	user, _, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Trait Name")
 	if err != nil {
 		t.Fatalf("FindOrCreate() unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestUserService_FindOrCreate_EmptyTraitStillCreatesTheUser(t *testing.T) {
 			repo := newMockUserRepo()
 			svc := NewUserService(repo, nil)
 
-			user, err := svc.FindOrCreate(context.Background(), "kratos-nameless", tt.displayName)
+			user, _, err := svc.FindOrCreate(context.Background(), "kratos-nameless", tt.displayName)
 			if err != nil {
 				t.Fatalf("FindOrCreate() unexpected error: %v", err)
 			}
@@ -135,7 +135,7 @@ func TestUserService_FindOrCreate_TrimsTheTrait(t *testing.T) {
 	repo := newMockUserRepo()
 	svc := NewUserService(repo, nil)
 
-	user, err := svc.FindOrCreate(context.Background(), "kratos-padded", "  Grace Hopper\n")
+	user, _, err := svc.FindOrCreate(context.Background(), "kratos-padded", "  Grace Hopper\n")
 	if err != nil {
 		t.Fatalf("FindOrCreate() unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestUserService_FindByKratosID_SeedsTheDisplayName(t *testing.T) {
 	repo := newMockUserRepo()
 	svc := NewUserService(repo, nil)
 
-	user, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Ada Lovelace")
+	user, _, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Ada Lovelace")
 	if err != nil {
 		t.Fatalf("FindByKratosID() unexpected error: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestUserService_FindByKratosID_SeedsTheDisplayName(t *testing.T) {
 	}
 
 	// Second request, same identity, a stale trait: the stored record wins.
-	again, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Someone Else")
+	again, _, err := svc.FindByKratosID(context.Background(), "kratos-new-member", "Someone Else")
 	if err != nil {
 		t.Fatalf("FindByKratosID() unexpected error: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestUserService_FindOrCreate_LookupError(t *testing.T) {
 	repo.getByKratosErr = errors.New("connection refused")
 	svc := NewUserService(repo, nil)
 
-	_, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada")
+	_, _, err := svc.FindOrCreate(context.Background(), "kratos-abc-123", "Ada")
 	if err == nil {
 		t.Fatal("FindOrCreate() expected error, got nil")
 	}
@@ -191,7 +191,7 @@ func TestUserService_FindOrCreate_CreateError(t *testing.T) {
 	repo.createErr = errors.New("unique constraint violation")
 	svc := NewUserService(repo, nil)
 
-	_, err := svc.FindOrCreate(context.Background(), "kratos-new", "Ada")
+	_, _, err := svc.FindOrCreate(context.Background(), "kratos-new", "Ada")
 	if err == nil {
 		t.Fatal("FindOrCreate() expected error, got nil")
 	}
@@ -206,7 +206,7 @@ func TestUserService_FindByKratosID(t *testing.T) {
 
 	// FindByKratosID delegates to FindOrCreate, so calling it for a new
 	// kratos ID should auto-provision a user.
-	user, err := svc.FindByKratosID(context.Background(), "kratos-new", "Ada")
+	user, _, err := svc.FindByKratosID(context.Background(), "kratos-new", "Ada")
 	if err != nil {
 		t.Fatalf("FindByKratosID() unexpected error: %v", err)
 	}

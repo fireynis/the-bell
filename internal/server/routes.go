@@ -70,13 +70,31 @@ func (s *Server) routes() http.Handler {
 				}
 				return nil
 			}
-			// Registration is throttled per IP before the request reaches
-			// Kratos. Everything else under /.ory passes through, including the
-			// login and session paths a signed-in resident hits constantly —
-			// see middleware.KratosRegistrationLimit.
-			r.With(middleware.KratosRegistrationLimit(
-				s.rateLimiter, s.trustedProxies, registrationMaxPerIP, registrationWindow,
-			)).HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
+			// Registration is throttled per IP and, on an invite-only town,
+			// gated on a live invitation before the request reaches Kratos.
+			// Everything else under /.ory passes through, including the login
+			// and session paths a signed-in resident hits constantly — see
+			// middleware.KratosRegistrationLimit, whose path set the gate
+			// shares.
+			//
+			// The limiter runs first so that a flood of invitation-less
+			// attempts is refused by the cheap check rather than by one
+			// database read each.
+			proxyGuards := []func(http.Handler) http.Handler{
+				middleware.KratosRegistrationLimit(
+					s.rateLimiter, s.trustedProxies, registrationMaxPerIP, registrationWindow,
+				),
+			}
+			// Appended only when there is a service, never passed as a typed
+			// nil: an interface holding a nil pointer is not nil, so the gate's
+			// own "no service, no gate" check would not fire and every
+			// registration would panic on the first lookup.
+			if s.inviteService != nil {
+				proxyGuards = append(proxyGuards,
+					middleware.InviteRegistrationGate(s.inviteService, s.logger))
+			}
+
+			r.With(proxyGuards...).HandleFunc("/.ory/*", func(w http.ResponseWriter, req *http.Request) {
 				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/.ory")
 				if req.URL.Path == "" {
 					req.URL.Path = "/"
@@ -131,6 +149,17 @@ type rateSpec struct {
 const (
 	registrationMaxPerIP = 10
 	registrationWindow   = time.Hour
+
+	// inviteLookupMaxPerIP bounds the public invitation lookup, per client IP,
+	// over the same window.
+	//
+	// Looser than registration because it is cheaper and more innocent: the
+	// registration page reads the invitation once per render, and a household
+	// reloading it a few times must not lock itself out of the sign-up it is
+	// trying to complete. What it caps is somebody working through a list of
+	// tokens — which is already a very poor use of their time, since a token is
+	// 256 bits from crypto/rand.
+	inviteLookupMaxPerIP = 30
 )
 
 // guard describes what a route group requires of its caller. The zero value is
@@ -431,6 +460,49 @@ func (s *Server) apiRoutes(r chi.Router) {
 					r.Delete("/{id}", vh.Revoke)
 				})
 			}
+		})
+	}
+
+	// Invitations. An invitation is a vouch made in advance, so the member
+	// group's guard mirrors the vouching one: signed in, active, member or
+	// above. The trust threshold is not expressible as a route guard and is
+	// re-checked in the service, exactly as POST /v1/vouches does it.
+	if s.inviteService != nil {
+		ih := handler.NewInviteHandler(s.inviteService)
+		r.Route("/v1/invites", func(r chi.Router) {
+			// Public and unauthenticated, because the person calling it has no
+			// account yet — this is what greets somebody arriving on an
+			// invitation link. Registered first so the static segment is
+			// matched before anything else in this subtree, and keyed by IP
+			// rather than by user for the obvious reason.
+			//
+			// The limit is the registration budget's shape, one step looser: a
+			// page render costs one lookup, and a token is 256 bits of
+			// randomness, so this is not guarding a guessable space. It caps
+			// how fast somebody can walk a stolen list of tokens.
+			r.Group(func(r chi.Router) {
+				if s.rateLimiter != nil {
+					r.Use(s.rateLimiter.LimitByIP("invite-lookup", inviteLookupMaxPerIP, registrationWindow, s.trustedProxies))
+				}
+				r.Get("/lookup", ih.Lookup)
+			})
+
+			r.Group(func(r chi.Router) {
+				// The Redis budget is a backstop against scripted abuse, not
+				// the rule: the rule is the combined three-a-day invite and
+				// vouch allowance the service applies, which this must not
+				// undercut. Thirty a day is well clear of it for a member and
+				// leaves the council — exempt from the daily allowance, and the
+				// people who populate a town in invite mode — room to work,
+				// while still capping a compromised session.
+				r.Use(s.protected(guard{
+					role:  domain.RoleMember,
+					limit: &rateSpec{"invites", 30, 24 * time.Hour},
+				})...)
+				r.Post("/", ih.Create)
+				r.Get("/", ih.List)
+				r.Delete("/{id}", ih.Revoke)
+			})
 		})
 	}
 

@@ -26,14 +26,40 @@ func NewConfigHandler(config service.ConfigRepository, tx service.Transactor) *C
 // the API. Everything else (bootstrap_mode in particular) is owned by the
 // server and must not be settable by a request.
 var allowedConfigKeys = map[string]bool{
-	"town_name":     true,
-	"primary_color": true,
-	"accent_color":  true,
+	"town_name":         true,
+	"primary_color":     true,
+	"accent_color":      true,
+	"registration_mode": true,
+}
+
+// allowedConfigValues constrains the keys whose value is a choice rather than
+// free text.
+//
+// registration_mode is the first such key, and it needs the constraint more
+// than a colour does: it decides whether strangers can create accounts, and a
+// typo would not fail — the registration gate treats anything that is not
+// "open" as invite-only, so "opne" would silently close the town, and a gate
+// written the other way round would silently open it. Rejecting the value at
+// the edge means the council sees their mistake immediately.
+//
+// A key absent from this map accepts any value, which is what town_name and the
+// colours want.
+var allowedConfigValues = map[string]map[string]bool{
+	"registration_mode": {
+		service.RegistrationModeInvite: true,
+		service.RegistrationModeOpen:   true,
+	},
 }
 
 // publicTownConfig returns the config entries safe to hand to any caller.
 // bootstrap_mode is withheld because it tells an unauthenticated visitor that
 // the town has not been claimed yet. The input map is left untouched.
+//
+// registration_mode is deliberately NOT withheld. The sign-in and sign-up
+// screens are the least authenticated pages there are and they have to know
+// which one to offer: without it, an invite-only town shows a "create an
+// account" form that always ends in 403. It also gives away nothing — anybody
+// can learn the same fact by trying to register once.
 func publicTownConfig(cfg map[string]string) map[string]string {
 	public := make(map[string]string, len(cfg))
 	for k, v := range cfg {
@@ -45,14 +71,18 @@ func publicTownConfig(cfg map[string]string) map[string]string {
 	return public
 }
 
-// validateConfigUpdate returns the first key in req that may not be written,
-// or "" when the whole request is acceptable. Callers must check the entire
-// request before writing any of it: map iteration order is random, so writing
-// as we validate would apply a random prefix of a rejected request.
-func validateConfigUpdate(req map[string]string) (badKey string) {
-	for k := range req {
+// validateConfigUpdate returns a message describing the first entry in req that
+// may not be written, or "" when the whole request is acceptable. Callers must
+// check the entire request before writing any of it: map iteration order is
+// random, so writing as we validate would apply a random prefix of a rejected
+// request.
+func validateConfigUpdate(req map[string]string) (problem string) {
+	for k, v := range req {
 		if !allowedConfigKeys[k] {
-			return k
+			return "key not allowed: " + k
+		}
+		if allowed, constrained := allowedConfigValues[k]; constrained && !allowed[v] {
+			return "value not allowed for " + k + ": " + v
 		}
 	}
 	return ""
@@ -82,8 +112,8 @@ func (h *ConfigHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if badKey := validateConfigUpdate(req); badKey != "" {
-		Error(w, http.StatusBadRequest, "key not allowed: "+badKey)
+	if problem := validateConfigUpdate(req); problem != "" {
+		Error(w, http.StatusBadRequest, problem)
 		return
 	}
 	if h.tx == nil {

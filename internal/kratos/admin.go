@@ -101,6 +101,23 @@ func DisplayNameFromTraits(traits interface{}) string {
 	return strings.TrimSpace(name)
 }
 
+// EmailFromTraits reads the `email` trait off a decoded identity trait set.
+//
+// Same checked-assertion discipline as DisplayNameFromTraits, and the same
+// answer to a schema that words things differently: "". The caller that wants
+// it — invitation redemption — treats an empty address as "no invitation to
+// match", which is the safe reading. It falls back to the verifiable addresses
+// Kratos returns alongside the traits, because a deployment may carry the
+// address there and not in a trait, and either one is the identity's address.
+func EmailFromTraits(traits interface{}) string {
+	m, ok := traits.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	email, _ := m["email"].(string)
+	return strings.TrimSpace(email)
+}
+
 // IdentityDisplayName fetches one identity by ID and returns its `name` trait.
 //
 // An identity that exists but carries no usable name yields ("", nil): the

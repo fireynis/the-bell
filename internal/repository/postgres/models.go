@@ -16,6 +16,19 @@ type CouncilVote struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type Invite struct {
+	ID         string             `json:"id"`
+	TokenHash  string             `json:"token_hash"`
+	Email      string             `json:"email"`
+	Note       string             `json:"note"`
+	InviterID  string             `json:"inviter_id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
+	ConsumedBy pgtype.Text        `json:"consumed_by"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type ModerationAction struct {
 	ID              string             `json:"id"`
 	TargetUserID    string             `json:"target_user_id"`

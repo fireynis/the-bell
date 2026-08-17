@@ -134,6 +134,7 @@ func newWiredServer(t *testing.T, cfg config.Config) *Server {
 		WithReportService(service.NewReportService(nil, nil, nil)),
 		WithModerationActionService(service.NewModerationActionService(nil, nil, nil, nil, nil, nil, nil)),
 		WithApprovalService(service.NewApprovalService(nil, nil)),
+		WithInviteService(service.NewInviteService(nil, nil, nil, nil, stubConfigRepo{}, nil, nil)),
 		WithProposalService(service.NewProposalService(nil, nil, nil, nil, nil, nil, nil)),
 		WithReactionService(service.NewReactionService(nil, nil)),
 		WithStatsService(service.NewStatsService(nil)),
@@ -190,6 +191,10 @@ func TestRoutesAreRegistered(t *testing.T) {
 		{"user posts", http.MethodGet, "/api/v1/users/u1/posts", "/api/v1/users/{id}/posts", http.StatusOK},
 		{"user vouches", http.MethodGet, "/api/v1/users/u1/vouches", "/api/v1/users/{id}/vouches", http.StatusOK},
 		{"town config", http.MethodGet, "/api/v1/config", "/api/v1/config", http.StatusOK},
+		// The invitee has no account yet, so this one cannot be guarded. The
+		// 404 is the invitation lookup finding nothing, which is the answer to
+		// every unusable token.
+		{"invite lookup", http.MethodGet, "/api/v1/invites/lookup", "/api/v1/invites/lookup", http.StatusNotFound},
 
 		// Guarded routes — rejected without a user in context.
 		{"live feed", http.MethodGet, "/api/v1/feed/live", "/api/v1/feed/live", http.StatusUnauthorized},
@@ -215,6 +220,9 @@ func TestRoutesAreRegistered(t *testing.T) {
 		{"create proposal", http.MethodPost, "/api/v1/admin/proposals", "/api/v1/admin/proposals", http.StatusUnauthorized},
 		{"vote on proposal", http.MethodPost, "/api/v1/admin/proposals/p1/votes", "/api/v1/admin/proposals/{id}/votes", http.StatusUnauthorized},
 		{"set residency claim", http.MethodPut, "/api/v1/users/me/residency-claim", "/api/v1/users/me/residency-claim", http.StatusUnauthorized},
+		{"create invite", http.MethodPost, "/api/v1/invites", "/api/v1/invites", http.StatusUnauthorized},
+		{"list invites", http.MethodGet, "/api/v1/invites", "/api/v1/invites", http.StatusUnauthorized},
+		{"revoke invite", http.MethodDelete, "/api/v1/invites/i1", "/api/v1/invites/{id}", http.StatusUnauthorized},
 		{"admin stats", http.MethodGet, "/api/v1/admin/stats", "/api/v1/admin/stats", http.StatusUnauthorized},
 		{"admin config", http.MethodPut, "/api/v1/admin/config", "/api/v1/admin/config", http.StatusUnauthorized},
 	}
@@ -630,6 +638,74 @@ func TestKratosProxyRegistration(t *testing.T) {
 				t.Errorf("proxy registered = %v (status %d), want %v", registered, rec.Code, tt.wantRegistered)
 			}
 		})
+	}
+}
+
+// modeConfigRepo answers the registration mode a test wants and nothing else.
+type modeConfigRepo struct{ mode string }
+
+func (modeConfigRepo) SetTownConfig(context.Context, string, string) error { return nil }
+func (m modeConfigRepo) GetTownConfig(_ context.Context, key string) (string, error) {
+	if key == "registration_mode" {
+		return m.mode, nil
+	}
+	return "", nil
+}
+func (m modeConfigRepo) ListTownConfig(context.Context) (map[string]string, error) {
+	return map[string]string{"registration_mode": m.mode}, nil
+}
+
+// The gate is installed on the same proxy route the registration limiter
+// guards, so an invite-only town refuses account creation before the request
+// reaches Kratos — and an open one is untouched.
+//
+// The proxy points at a host nothing listens on, so "reached Kratos" reads as
+// 502 rather than as a successful sign-up. That is the distinction the test
+// needs: 403 means the gate stopped it, 502 means it went through.
+func TestKratosProxyGatesRegistrationOnAnInvitation(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     string
+		path     string
+		wantCode int
+	}{
+		{"invite mode refuses a flow init", "invite", "/.ory/self-service/registration/browser", http.StatusForbidden},
+		{"invite mode refuses a submit", "invite", "/.ory/self-service/registration", http.StatusForbidden},
+		{"invite mode leaves login alone", "invite", "/.ory/self-service/login/browser", http.StatusBadGateway},
+		{"invite mode leaves the flow fetch alone", "invite", "/.ory/self-service/registration/flows", http.StatusBadGateway},
+		{"open mode proxies registration", "open", "/.ory/self-service/registration/browser", http.StatusBadGateway},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+			cfg := config.Config{Port: 0, KratosPublicURL: "http://127.0.0.1:1", ImageStoragePath: t.TempDir()}
+			srv := New(cfg, nil, logger,
+				WithInviteService(service.NewInviteService(nil, nil, nil, nil, modeConfigRepo{mode: tt.mode}, logger, nil)),
+			)
+
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("%s status = %d, want %d (%s)", tt.path, rec.Code, tt.wantCode, rec.Body)
+			}
+		})
+	}
+}
+
+// Without an invite service the proxy has no gate at all, which is what every
+// deployment looked like before invitations and what a server built by hand in
+// a test looks like. It must be a pass-through, not a panic.
+func TestKratosProxyWithoutAnInviteServiceIsUngated(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	srv := New(config.Config{Port: 0, KratosPublicURL: "http://127.0.0.1:1", ImageStoragePath: t.TempDir()}, nil, logger)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.ory/self-service/registration/browser", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d — the request should have reached the proxy", rec.Code, http.StatusBadGateway)
 	}
 }
 

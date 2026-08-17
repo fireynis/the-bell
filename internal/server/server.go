@@ -28,6 +28,7 @@ type Server struct {
 	reportService           *service.ReportService
 	moderationActionService *service.ModerationActionService
 	approvalService         *service.ApprovalService
+	inviteService           *service.InviteService
 	proposalService         *service.ProposalService
 	reactionService         *service.ReactionService
 	statsService            *service.StatsService
@@ -73,6 +74,17 @@ func WithModerationActionService(mas *service.ModerationActionService) Option {
 // WithApprovalService sets the ApprovalService used by approval handlers.
 func WithApprovalService(as *service.ApprovalService) Option {
 	return func(s *Server) { s.approvalService = as }
+}
+
+// WithInviteService sets the InviteService behind the invitation endpoints and
+// the registration gate.
+//
+// Both, from one option, on purpose. The endpoints without the gate would let a
+// town issue invitations that nothing requires; the gate without the endpoints
+// would close registration with no way to open it. They are one feature and
+// they arrive together.
+func WithInviteService(is *service.InviteService) Option {
+	return func(s *Server) { s.inviteService = is }
 }
 
 // WithProposalService sets the ProposalService behind the council's Town Hall

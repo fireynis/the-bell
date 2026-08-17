@@ -176,6 +176,16 @@ services:
       # Secure attribute from session cookies as they pass back through the
       # /.ory proxy, which is required for login to work without TLS.
       BELL_ENV: ${BELL_ENV:-}
+      # The same variable Kratos is given above, and for the same reason: it is
+      # the address residents type. Invitation links are built on it. Left at
+      # the localhost default those links are still correct for a local trial;
+      # emailed invitations need it to be the real public address.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # The relay Kratos's courier already uses, so one setting sends both the
+      # recovery mail and the invitations. Empty means invitation email is off:
+      # invitations still work and the member passes the link on themselves.
+      SMTP_CONNECTION_URI: "${COURIER_SMTP_CONNECTION_URI:-}"
+      SMTP_FROM_ADDRESS: "${COURIER_SMTP_FROM_ADDRESS:-noreply@localhost}"
     volumes:
       - bell_images:/data/images
     networks:

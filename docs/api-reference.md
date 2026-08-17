@@ -74,6 +74,8 @@ Rate limiting requires Redis (`REDIS_URL` must be set). Limits are per-user, per
 | `POST /api/v1/posts/{id}/report` | 5 requests | 1 hour | user |
 | `POST /api/v1/vouches` | 3 requests | 24 hours | user |
 | `DELETE /api/v1/vouches/{id}` | 3 requests | 24 hours | user |
+| `POST /api/v1/invites` | 30 requests | 24 hours | user |
+| `GET /api/v1/invites/lookup` | 30 requests | 1 hour | client IP |
 | Kratos registration flows (see below) | 10 requests | 1 hour | client IP |
 
 Vouching and revoking have the **same limit but separate budgets**, and the
@@ -110,6 +112,12 @@ for.
 attributed to the proxy's own address and the whole town shares one registration
 bucket. See the admin guide.
 
+On a town whose `registration_mode` is `invite`, these same three paths also
+require a live invitation in the `bell_invite` cookie — see
+[Registration is gated on the invitation](#registration-is-gated-on-the-invitation).
+The limiter runs first, so an invitation-less flood is refused by the cheap
+check rather than by a database read each.
+
 The council approval endpoints (`GET /api/v1/vouches/pending`,
 `POST /api/v1/vouches/approve/{id}`) are **not** rate limited, even though they
 share the `/api/v1/vouches` prefix with the member vouching endpoints above.
@@ -118,13 +126,25 @@ council approvals at 3 per day — and since bootstrap mode does not end until 2
 active members exist, standing up a town could not finish in under a week. The
 budget belongs to members vouching, not to council members approving.
 
-Two endpoints carry a second limit enforced in the service layer, independently
+The invitation limit of 30 a day is a **backstop against a scripted flood, not
+the rule**. The rule is the service-layer allowance below — three endorsements a
+day, invitations and vouches combined — and 30 sits well clear of it so that the
+council, who are exempt from that allowance and who populate an invite-only town
+in the first place, are not throttled by it.
+
+Some endpoints carry a second limit enforced in the service layer, independently
 of Redis:
 
 - **Reports**: 5 per hour per reporter.
-- **Vouches**: 3 per calendar day per voucher, counted from local midnight
-  rather than over a rolling window. This is a separate ceiling from the
-  sliding-window limiter above, so a member can meet either one first.
+- **Vouches and invitations**: 3 per calendar day per member, **shared between
+  the two**, counted from local midnight rather than over a rolling window. An
+  invitation is a vouch made in advance, so it draws on the same allowance; two
+  invitations and one vouch is the limit reached. This is a separate ceiling
+  from the sliding-window limiters above, so a member can meet either one first.
+  **Council members are exempt** from this allowance (their sliding-window
+  limits still apply), for the same reason their approvals are unlimited.
+- **Redeeming** an invitation bypasses the daily allowance entirely: it was
+  charged at creation, and the invitee chooses the day they accept.
 
 If Redis is unavailable, rate limiting fails open (requests are allowed through).
 
@@ -1035,12 +1055,19 @@ reaction you never left.
 #### `GET /api/v1/config`
 
 Returns the town's public configuration as a flat string map (for example
-`town_name`, `primary_color`, `accent_color`).
+`town_name`, `primary_color`, `accent_color`, `registration_mode`).
 
 **Auth**: Not required
 
 `bootstrap_mode` is deliberately withheld from this response, so an
 unauthenticated visitor cannot tell whether the town has been claimed yet.
+
+`registration_mode` is deliberately **included**. The sign-in and sign-up
+screens have no session and still have to know whether to offer a "create an
+account" form at all: in `invite` mode that form ends in a 403 for anyone
+without an invitation, so a client that could not read the mode would be
+advertising a door that does not open. It gives nothing away either — anybody
+can learn the same fact by attempting to register once.
 
 **Response** `200 OK`
 
@@ -1053,20 +1080,41 @@ Updates town configuration.
 **Auth**: Required
 **Role**: `council`
 
-**Request**: a flat string map. Only `town_name`, `primary_color`, and
-`accent_color` may be written; every other key — `bootstrap_mode` in particular
-— is owned by the server.
+**Request**: a flat string map. Only `town_name`, `primary_color`,
+`accent_color` and `registration_mode` may be written; every other key —
+`bootstrap_mode` in particular — is owned by the server.
 
 ```json
 {"town_name": "Springfield", "accent_color": "#c62828"}
 ```
 
+##### `registration_mode`
+
+`"invite"` or `"open"`, and nothing else is accepted.
+
+| Value | Effect |
+|-------|--------|
+| `invite` | Registration requires a live invitation. This is the default, including for existing towns upgrading into it. |
+| `open` | Anybody may create an account and wait to be vouched for or approved. The original behaviour. |
+
+Unlike the other keys, the value is constrained, and it needs to be: this
+setting decides whether strangers can create accounts, and the registration gate
+treats anything that is not exactly `open` as invite-only. A typo would
+therefore close the town silently rather than fail. Rejecting the value here
+means the council sees the mistake immediately. The comparison is exact and
+case-sensitive — `"Open"` is refused.
+
+```json
+{"registration_mode": "open"}
+```
+
 **Response** `204 No Content`
 
-**Response** `400 Bad Request`: `key not allowed: <key>`. The **whole request is
-rejected and nothing is written** if any key is disallowed. Validation completes
-before the first write on purpose: map iteration order is random, so validating
-as it wrote would apply a random subset of a rejected request.
+**Response** `400 Bad Request`: `key not allowed: <key>`, or
+`value not allowed for <key>: <value>`. The **whole request is rejected and
+nothing is written** if any entry is disallowed. Validation completes before the
+first write on purpose: map iteration order is random, so validating as it wrote
+would apply a random subset of a rejected request.
 
 ---
 
@@ -1638,11 +1686,302 @@ waiting out the duration they had chosen.
 
 ---
 
+### Invitations
+
+**An invitation is a vouch that has not landed yet.** A member who could vouch
+for somebody may instead invite them by email; accepting the invitation creates
+that vouch, and the newcomer arrives as a member rather than as a pending
+applicant. Everything that follows falls out of that one sentence:
+
+- The inviter must pass `CanVouch` — active, not pending or banned, trust >= 60.
+  The route's `member` guard is not enough on its own, so the service re-checks.
+- Creating an invitation spends the **same daily allowance** vouching does:
+  three per day, invitations and vouches **combined**. Two invitations and a
+  vouch is the limit reached.
+- **Council is exempt** from that allowance, mirroring the deliberate decision
+  to leave council approvals unlimited. In an invite-only town the council's
+  invitations are how the town gets populated at all.
+- Accepting does **not** spend the allowance a second time. It was charged when
+  the invitation was created, and the invitee — not the inviter — chooses the
+  day they accept.
+- The inviter's standing is re-checked **at redemption**. If they have since
+  been suspended, banned, or fallen below the threshold, the invitation is
+  consumed and no vouch lands; the newcomer stays pending and the ordinary vouch
+  and approval paths remain open to them.
+
+The raw token is returned **exactly once**, in the response that creates the
+invitation. Only its SHA-256 hash is stored, so no later read — the listing, the
+lookup, a database dump — can reconstruct a working link.
+
+Invitations expire after **14 days**. Nothing sweeps the table: status is
+derived from timestamps when the row is read, so an expiry cannot stop happening
+because a scheduler did.
+
+#### `POST /api/v1/invites`
+
+Creates an invitation and emails it.
+
+**Auth**: Required
+**Role**: `member` or higher
+**Trust**: >= 60 (or council)
+**Rate Limit**: 30/24 hours per user (a backstop; the real rule is the shared
+3-per-day allowance below, from which council is exempt)
+
+**Request**:
+
+```json
+{
+  "email": "newcomer@example.com",
+  "note": "We met at the market — hope to see you on here."
+}
+```
+
+`email` is trimmed and lowercased. `note` is optional and capped at 500
+characters; it is quoted in the invitation email, and it is the only part of
+that message a person wrote.
+
+**Response** `201 Created`:
+
+```json
+{
+  "invite": {
+    "id": "0193a7b2-1234-7000-8000-000000000010",
+    "email": "newcomer@example.com",
+    "note": "We met at the market — hope to see you on here.",
+    "status": "open",
+    "created_at": "2026-08-17T10:00:00Z",
+    "expires_at": "2026-08-31T10:00:00Z"
+  },
+  "invite_url": "https://bell.example.org/auth/registration?invite=<raw token>",
+  "email_sent": true
+}
+```
+
+When the email could not be sent, the response is still `201` and carries the
+reason:
+
+```json
+{
+  "invite": { "...": "..." },
+  "invite_url": "/auth/registration?invite=<raw token>",
+  "email_sent": false,
+  "email_error": "email sending is not configured on this deployment; send the invitation link yourself"
+}
+```
+
+That is deliberate. The invitation is the thing that was created and it works;
+the email is only how it usually travels. A member who is told the send failed
+can pass the link on themselves, whereas a `500` would leave them believing
+nothing happened while a live invitation sat in the database.
+
+##### `invite_url` may be relative
+
+`invite_url` is absolute when `PUBLIC_URL` is set and a **site-relative path**
+(`/auth/registration?invite=...`) when it is not. Clients must absolutize a
+relative value against their own origin.
+
+The application genuinely does not know its own public address without
+`PUBLIC_URL`: Kratos is told one and the reverse proxy knows one, and the Go
+process sees neither. The obvious substitute — the request's `Host` header — is
+attacker-controlled, so one forged request would mint invitation links pointing
+at somebody else's site. Only the **emailed** copy needs an absolute URL, which
+is why `PUBLIC_URL` is paired with SMTP in the deployment docs.
+
+**Errors**
+
+| Status | When |
+|--------|------|
+| `403 Forbidden` | The caller cannot vouch: trust below 60, suspended, pending or banned. |
+| `400 Bad Request` | The address does not look like an address; the note is over 500 characters; the shared daily allowance is spent; an invitation for that address is already open; that address has already accepted one. |
+
+Address validation is basic sanity, not RFC 5322: exactly one `@`, a non-empty
+local part, a domain containing a dot, no spaces or angle brackets. It catches
+the mistake a member actually makes — a typo, a pasted `Name <addr>` — and
+nothing here can tell whether an address receives mail. That test is the send
+itself, and its failure comes back as `email_sent: false` with the link still in
+hand.
+
+##### One live invitation per address, and re-inviting after expiry
+
+An address may have only one invitation outstanding at a time, matched
+case-insensitively and enforced by a partial unique index rather than by a
+check-then-write. Two simultaneous invitations to the same address therefore
+cannot both succeed; the loser gets the `400`.
+
+An **expired** invitation does not permanently occupy the address. The index
+cannot test expiry — an index predicate must be immutable, so `now()` is
+unavailable to it — so the service treats an expired row as not live and clears
+it out of the way before issuing the replacement. A mistyped address is
+recoverable by waiting out the 14 days or by revoking the invitation; it is
+never burned forever. The cleared row still reads as `expired` to the inviter,
+not as something they withdrew.
+
+##### What is not checked
+
+Whether the address already belongs to a Kratos identity is **not** checked.
+Kratos owns the identity table, cannot be queried by address cheaply, and asking
+it would turn this endpoint into an account-existence oracle for any member. The
+app-side check is narrower and honest: an address that has already **accepted**
+an invitation is refused, because that person is already in the town by this
+door. Everything else is left to Kratos, which refuses a duplicate registration
+at sign-up. So inviting an existing resident who never used an invitation
+succeeds and produces a link that cannot create an account; the invitation
+simply expires.
+
+---
+
+#### `GET /api/v1/invites`
+
+Lists the caller's own invitations, newest first.
+
+**Auth**: Required
+**Role**: `member` or higher
+
+**Response** `200 OK`:
+
+```json
+{
+  "invites": [
+    {
+      "id": "0193a7b2-1234-7000-8000-000000000010",
+      "email": "newcomer@example.com",
+      "note": "We met at the market.",
+      "status": "accepted",
+      "created_at": "2026-08-17T10:00:00Z",
+      "expires_at": "2026-08-31T10:00:00Z",
+      "consumed_at": "2026-08-18T09:12:00Z",
+      "consumed_by_display_name": "Dana"
+    },
+    {
+      "id": "0193a7b2-1234-7000-8000-000000000011",
+      "email": "another@example.com",
+      "note": "",
+      "status": "open",
+      "created_at": "2026-08-17T11:00:00Z",
+      "expires_at": "2026-08-31T11:00:00Z"
+    }
+  ]
+}
+```
+
+Only the caller's own invitations. There is no endpoint that lists anybody
+else's, including for moderators and council.
+
+`status` is one of:
+
+| Status | Meaning |
+|--------|---------|
+| `open` | Unanswered and still in date. |
+| `accepted` | Somebody signed up with the invited address. |
+| `expired` | Past `expires_at`, never accepted. |
+| `revoked` | Withdrawn by the inviter while it was still open. |
+
+It is derived when the row is read, never stored — which is what lets an
+invitation expire with nothing running.
+
+`consumed_at` and `consumed_by_display_name` appear only on an accepted
+invitation. **No token ever appears in this response**, and there is no field it
+could travel in at any layer.
+
+---
+
+#### `DELETE /api/v1/invites/{id}`
+
+Withdraws one of the caller's own open invitations.
+
+**Auth**: Required
+**Role**: `member` or higher
+
+**Response** `204 No Content`
+
+**Response** `404 Not Found`: the invitation is not the caller's, is not open
+(already accepted, already revoked, or expired), or does not exist. All four are
+the same answer on purpose — a `403` for somebody else's invitation would
+confirm that the id names a real one.
+
+Withdrawing frees the address immediately, so a mistyped invitation can be
+revoked and re-sent without waiting out the expiry.
+
+---
+
+#### `GET /api/v1/invites/lookup?token=<raw token>`
+
+Reads back the invitation a link names, so the registration page can greet the
+person arriving on it.
+
+**Auth**: **Not required.** The caller has no account yet — that is the point of
+the endpoint.
+**Rate Limit**: 30 requests per hour per client IP
+
+**Response** `200 OK`:
+
+```json
+{
+  "email": "newcomer@example.com",
+  "town_name": "Springfield",
+  "inviter_display_name": "Ana",
+  "status": "open"
+}
+```
+
+**Response** `404 Not Found`: everything else. A token that never existed, one
+that has been used, one that was withdrawn, one that has expired, a missing
+`token` parameter, and an internal failure all produce a byte-identical
+response. Distinguishing them would let anyone working through guesses learn
+which tokens were once real.
+
+`status` is always `"open"` — a lookup that found anything else answered 404. It
+is sent so the client handles one invitation shape rather than a special case
+with a field missing.
+
+---
+
+#### Registration is gated on the invitation
+
+While `registration_mode` is `invite`, the Kratos endpoints reached through the
+`/.ory/*` proxy that create accounts additionally require a live invitation.
+They are exactly the three the registration rate limit covers:
+
+- `GET /.ory/self-service/registration/browser`
+- `GET /.ory/self-service/registration/api`
+- `POST /.ory/self-service/registration`
+
+Nothing else under `/.ory` is affected — login, session checks, settings,
+recovery, and `GET /.ory/self-service/registration/flows` all pass through
+untouched.
+
+**The token travels in a cookie named `bell_invite`**, holding the raw token.
+The SPA sets it when somebody lands on an invitation link. A cookie rather than
+a header or a query parameter because these are requests the browser makes to
+Kratos through the proxy — requests this application does not construct and
+cannot add a header to.
+
+| Status | Body | When |
+|--------|------|------|
+| `403 Forbidden` | `{"error":"registration is by invitation"}` | No `bell_invite` cookie, or one naming an invitation that is unknown, consumed, revoked or expired. |
+| `403 Forbidden` | `{"error":"this invitation is for a different email address"}` | On the submit only: the `traits.email` being registered is not the invited address. |
+| `503 Service Unavailable` | `{"error":"registration is temporarily unavailable"}` | The town's registration mode or the invitation could not be read. Refusing beats guessing in either direction, and a retry succeeds once the database answers. |
+
+The address check is what stops one leaked link becoming a general-purpose key
+to the town: without it, a forwarded invitation would work for anyone who
+received it, repeatedly, until it expired. The comparison is case-insensitive.
+Both JSON and form-encoded submits are read, and the body is passed on to Kratos
+byte-for-byte. A submit that carries no `traits.email` at all is allowed
+through: Kratos will not invent an address that was never submitted, and a
+second step carrying only a password is completing a first step that carried the
+address and was checked here.
+
+In `open` mode the gate is inert.
+
+---
+
 ### Vouching
 
 Vouching is how a member endorses another resident. These endpoints are open to
 any active member; the council approval endpoints below are a separate,
-bootstrap-only path to the same outcome.
+bootstrap-only path to the same outcome. Inviting somebody by email is a third
+route to the same place — see [Invitations](#invitations) — and it shares this
+one's daily allowance, because an invitation *is* a vouch.
 
 #### `POST /api/v1/vouches`
 
@@ -1650,7 +1989,8 @@ Vouches for another user.
 
 **Auth**: Required
 **Role**: `member` or higher
-**Rate Limit**: 3/24 hours (plus a separate 3-per-calendar-day service limit)
+**Rate Limit**: 3/24 hours (plus a separate 3-per-calendar-day service limit,
+**shared with invitations** and not applied to council members)
 **Trust**: >= 60
 
 **Request**:
@@ -1684,7 +2024,10 @@ vouch for yourself"}` and so on for:
 - `cannot vouch for yourself`
 - `vouch already exists for this pair` — only an **active** vouch conflicts; see
   re-vouching below
-- `daily vouch limit (3) reached`
+- `daily limit (3) reached; invites and vouches share one allowance` — the
+  allowance counts both, in both directions, so three invitations sent this
+  morning spend it just as three vouches would. Council members do not see this
+  one
 - `vouch would create a cycle in the trust graph`
 
 A missing or blank `vouchee_id` is rejected before the service sees it, and is

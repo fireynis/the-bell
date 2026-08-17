@@ -118,9 +118,18 @@ no value in either file should ever be a credential.
 
 ## Email (courier)
 
-Password recovery and email verification are enabled, and both need an SMTP
-relay. Without one the messages are generated and fail at send time, which means
-a resident who forgets their password has no route back into their account.
+Password recovery, email verification and **invitations** all need an SMTP
+relay. The first two are Kratos's; invitations are The Bell's own. Both read the
+same two variables — the compose files pass `COURIER_SMTP_CONNECTION_URI` and
+`COURIER_SMTP_FROM_ADDRESS` through to the app as `SMTP_CONNECTION_URI` and
+`SMTP_FROM_ADDRESS` — so a relay is configured once and serves everything.
+
+Without a relay, recovery and verification are generated and fail at send time,
+which means a resident who forgets their password has no route back into their
+account. Invitations degrade instead: the invitation is still created and works,
+the API answers `email_sent: false` with a reason, and the member sends the link
+themselves. A town can run invite-only with no relay at all — it is just more
+manual.
 
 ```env
 COURIER_SMTP_CONNECTION_URI=smtps://user:password@smtp.example.com:465/
@@ -136,6 +145,22 @@ nowhere instead of a blank string.
 Kratos runs with `--watch-courier`, which starts the delivery worker in the same
 process. Without that flag messages are queued in the database and never sent.
 Delivery errors appear in `docker compose logs kratos`.
+
+Invitation mail is sent by the app rather than the courier, so it has no queue
+and no worker: it goes out synchronously while the member waits, with a ten
+second budget, and a failure is reported in that member's response rather than
+retried. Its errors appear in `docker compose logs bell`.
+
+STARTTLS is **required** on a plain `smtp://` URI unless you append
+`?disable_starttls=true`. The app refuses to send in the clear to a relay that
+does not offer it, rather than falling back silently — an invitation carries a
+token that admits its holder to the town.
+
+To read an invitation end-to-end before pointing at a real relay, use the
+MailHog profile (`COMPOSE_PROFILES=mailtest` plus
+`COURIER_SMTP_CONNECTION_URI=smtp://mailhog:1025/?disable_starttls=true`) and
+browse the captured mail at port 8025. Never on a town with real residents: it
+holds live invitation and recovery links for every account.
 
 ### Requiring verified email
 
@@ -223,6 +248,9 @@ All configuration is via environment variables. The Bell binary reads them at st
 | `BELL_ENV` | No | `production` | Only `dev` or `development` (case-insensitive) select development mode. **Anything else — including unset, empty, or a typo — means production.** In development mode The Bell strips the `Secure` attribute from Kratos session cookies as they pass back through the `/.ory/*` proxy, so login works over plain-HTTP localhost. Never set this on a deployment reachable over the network: it would hand the session cookie to any downgrade attacker |
 | `TRUSTED_PROXIES` | No | (empty) | Comma-separated IP addresses and CIDR blocks whose `X-Forwarded-For` header is believed when attributing a request to a client IP. **Set this if you run behind a reverse proxy** — see [Trusted proxies](#trusted-proxies). Example: `172.18.0.0/16` |
 | `REQUIRE_VERIFIED_EMAIL` | No | `false` | When `true`, a resident whose Kratos identity has no verified address may sign in and read their own status but cannot participate. **Requires a working SMTP relay** — see [Requiring verified email](#requiring-verified-email) before enabling |
+| `PUBLIC_URL` | No | (empty) | The address residents type, and the only thing that tells the app its own public URL. Invitation links are built on it. Empty means invitation links come back as site-relative paths, which the app absolutizes and an inbox cannot — set it if invitations are emailed. Must be absolute (scheme and host) if set |
+| `SMTP_CONNECTION_URI` | No | (empty) | Relay for **invitation** mail, in the same courier shape Kratos uses. Both composes feed it from `COURIER_SMTP_CONNECTION_URI`. Empty means invitation email is off and invitations still work — see [Email](#email-courier) |
+| `SMTP_FROM_ADDRESS` | No | (empty) | From address on invitation mail. **Required when `SMTP_CONNECTION_URI` is set**, and checked at startup: a relay with nobody to send as fails at `MAIL FROM`, which would otherwise be discovered by the first member who tried to invite somebody |
 
 ### Compose variables
 
@@ -234,12 +262,12 @@ configure Postgres, Kratos and the scheduler.
 | `POSTGRES_PASSWORD` | Yes | -- | Password for the `belluser` role, used by both the app and Kratos DSNs |
 | `KRATOS_SECRETS_COOKIE` | Yes | -- | Session cookie signing secret. `openssl rand -hex 32`. See [Secrets](#secrets) |
 | `KRATOS_SECRETS_CIPHER` | Yes | -- | Cookie encryption secret, **exactly 32 characters**. `openssl rand -hex 16` |
-| `COURIER_SMTP_CONNECTION_URI` | No | placeholder | SMTP relay for recovery and verification mail. Must start with `smtp://` or `smtps://`; empty is rejected. See [Email](#email-courier) |
-| `COURIER_SMTP_FROM_ADDRESS` | No | `noreply@localhost` | From address on outgoing mail (root compose defaults to the maintainer's domain) |
+| `COURIER_SMTP_CONNECTION_URI` | No | placeholder | SMTP relay for recovery and verification mail, **and passed through to the app as `SMTP_CONNECTION_URI` for invitations**. Must start with `smtp://` or `smtps://`; empty is rejected by Kratos (the app treats empty as "sending off"). See [Email](#email-courier) |
+| `COURIER_SMTP_FROM_ADDRESS` | No | `noreply@localhost` | From address on outgoing mail, Kratos's and the app's alike (root compose defaults to the maintainer's domain) |
 | `CHECK_ROLES_INTERVAL_SECONDS` | No | `86400` | How often the check-roles sidecar runs |
 | `TOWN_NAME` | No | `My Town` | Also used as the From name on outgoing mail |
+| `PUBLIC_URL` | No | see note | The address residents type. In `deploy/` every Kratos URL and the session cookie domain derive from it, and in both composes it is passed to the app for invitation links. Defaults to `http://localhost:8080` in `deploy/` and to the Traefik hostname in the root compose |
 | **`deploy/` only** | | | |
-| `PUBLIC_URL` | No | `http://localhost:8080` | The address residents type. Every Kratos URL and the session cookie domain derive from it |
 | `BELL_PORT` | No | `8080` | Host port to publish. Must agree with `PUBLIC_URL` |
 | `KRATOS_EXTRA_ARGS` | No | `--dev` | Extra Kratos flags. **Set to empty for any public deployment** — `--dev` issues non-`Secure` cookies |
 
@@ -558,6 +586,82 @@ The default compose file sets conservative resource limits:
 ### Logging
 
 The Bell outputs structured JSON logs to stdout via `slog.JSONHandler`. These can be collected by any Docker log driver (e.g., Loki via Alloy, Fluentd, etc.).
+
+## Registration modes
+
+A town admits new residents in one of two ways, and it is town configuration
+rather than an environment variable — the council changes it from the admin
+screen, or with `PUT /api/v1/admin/config`, because it is a decision the town
+makes rather than one the operator makes at deploy time.
+
+| `registration_mode` | What happens |
+|---------------------|--------------|
+| `invite` (default) | Nobody can create an account without a live invitation. A member invites somebody by email; accepting makes the newcomer a member immediately. |
+| `open` | Anybody may create an account and then wait to be vouched for or approved. The original behaviour. |
+
+```bash
+# Switch a town to open sign-up
+curl -X PUT https://bell.example.org/api/v1/admin/config \
+  -H 'Content-Type: application/json' \
+  -b "$SESSION_COOKIE" \
+  -d '{"registration_mode": "open"}'
+```
+
+Only `invite` and `open` are accepted, exactly and case-sensitively. That
+constraint matters: the registration gate treats anything that is not `open` as
+invite-only, so a typo would close the town silently rather than fail.
+
+**Existing towns are switched to `invite` when they upgrade.** Migration 00023
+seeds the setting, and it seeds `invite` — deliberately, because the alternative
+(defaulting an upgrading town to `open`) leaves a town that upgraded *for* this
+feature still accepting strangers until somebody noticed. If your town wants
+open sign-up, set it back after upgrading.
+
+### What invite mode changes
+
+- The three Kratos registration paths behind `/.ory/*` require a live invitation
+  in the `bell_invite` cookie, and on the submit the address being registered
+  must match the invited one. Everything else under `/.ory` — login, sessions,
+  recovery, settings — is untouched, so existing residents notice nothing.
+- Accepting an invitation **creates the vouch**, so the newcomer lands as a
+  member. There is no approval queue step for them.
+- The council's approval queue and ordinary vouching both keep working. An
+  invited person whose inviter has since been suspended or demoted arrives
+  pending, and those paths are how they get in.
+
+### Who can invite, and how many
+
+Anybody who could vouch can invite: an active member, not pending or banned,
+with trust >= 60. Council members always qualify.
+
+Invitations and vouches share **one allowance of three per day** — they are the
+same act, and an invitation is simply a vouch made in advance. Two invitations
+and one vouch spends it.
+
+**Council members are exempt from that allowance.** This mirrors the decision
+that leaves council approvals unlimited, and in invite mode it is load-bearing:
+populating a new invite-only town means the council inviting everybody they
+know, and three a day would make standing a town up take a fortnight. A
+sliding-window backstop of 30 invitations per day still applies to everyone,
+against a compromised session rather than against ordinary use.
+
+Accepting an invitation does not spend the inviter's allowance a second time.
+It was charged when the invitation was sent, and the invitee chooses when to
+accept.
+
+### Practical notes
+
+- Invitations expire after **14 days**. Nothing needs to run for that to happen.
+- One live invitation per address at a time. A mistyped address is recoverable:
+  revoke the invitation, or wait out the expiry, then send a new one.
+- The invitation link is shown to the member once, in the response that creates
+  it, and is emailed. It is never readable again — only a hash is stored — so a
+  member who loses it revokes the invitation and sends another.
+- Set `PUBLIC_URL` if invitations are emailed. Without it the API returns
+  site-relative links, which the app handles fine but an inbox does not.
+- A member can see and withdraw their own invitations, and nobody else's.
+  There is no town-wide list of outstanding invitations, for moderators or for
+  council.
 
 ## Bootstrap Mode
 

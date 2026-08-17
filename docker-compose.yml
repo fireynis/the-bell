@@ -30,6 +30,20 @@ services:
       BELL_ENV: "${BELL_ENV:-}"
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       REQUIRE_VERIFIED_EMAIL: "${REQUIRE_VERIFIED_EMAIL:-false}"
+      # The address residents type, which is what invitation links are built
+      # on. The app has no other way to know it — Kratos is told a public URL
+      # and the reverse proxy knows one, but the Go process sees neither, and
+      # the request's Host header is forgeable. Defaulted to this stack's own
+      # Traefik hostname; without it invitation links come back relative and
+      # only the emailed copy suffers.
+      PUBLIC_URL: "${PUBLIC_URL:-https://bell.themacarthurs.ca}"
+      # The same relay Kratos's courier uses, so one setting serves both.
+      # Empty means invitation email is off: invitations still work, the
+      # response says email_sent:false, and the member passes the link on
+      # themselves. Point COURIER_SMTP_CONNECTION_URI at the mailhog profile
+      # below to try the flow without a real relay.
+      SMTP_CONNECTION_URI: "${COURIER_SMTP_CONNECTION_URI:-}"
+      SMTP_FROM_ADDRESS: "${COURIER_SMTP_FROM_ADDRESS:-noreply@bell.themacarthurs.ca}"
     volumes:
       - /storage/the-bell/images:/storage/the-bell/images
     networks:
