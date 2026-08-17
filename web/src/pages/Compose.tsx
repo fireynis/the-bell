@@ -291,7 +291,7 @@ export default function Compose() {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={postBlock !== null}
-                className="flex items-center justify-center rounded-md p-1.5 transition-colors hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center justify-center rounded-md p-1.5 transition-colors hover:opacity-70 disabled:opacity-40"
                 style={{ color: "var(--color-text-tertiary)" }}
                 aria-label="Attach image"
                 title="Attach image"
@@ -331,7 +331,7 @@ export default function Compose() {
             <button
               type="submit"
               disabled={!canSubmit}
-              className="btn btn-primary rounded-full px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+              className="btn btn-primary rounded-full px-5 py-2 text-sm font-semibold disabled:opacity-40"
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">

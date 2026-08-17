@@ -208,7 +208,7 @@ export default function EditPostDialog({ post, onClose, onSaved }: EditPostDialo
             <button
               type="submit"
               disabled={!canSave}
-              className="btn btn-primary rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              className="btn btn-primary rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
             >
               {saving ? (
                 <span className="inline-flex items-center gap-2">

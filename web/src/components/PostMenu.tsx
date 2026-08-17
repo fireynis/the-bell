@@ -140,7 +140,7 @@ export default function PostMenu({ items, label, onOpen }: PostMenuProps) {
               role="menuitem"
               disabled={item.disabled}
               onClick={() => select(item)}
-              className="tint-on-hover block w-full px-4 py-2 text-left text-sm disabled:cursor-default disabled:opacity-60"
+              className="tint-on-hover block w-full px-4 py-2 text-left text-sm disabled:opacity-60"
               style={{ color: item.danger ? "var(--color-danger)" : "var(--color-text-secondary)" }}
             >
               {item.label}

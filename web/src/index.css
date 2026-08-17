@@ -231,6 +231,36 @@ html {
   border-radius: var(--radius-sm);
 }
 
+/*
+  Tailwind v3's preflight shipped `button, [role="button"] { cursor: pointer }`.
+  v4 dropped it on purpose — a native button really does show the arrow — but the
+  effect here was that every control in the app read as scenery: nothing on the
+  page changed under the pointer, so nothing looked pressable. Put the pointer
+  back, and give a disabled control the cursor that says "this is a button, it
+  just isn't available to you", which is the honest reading given the app leaves
+  disabled buttons on screen at reduced opacity rather than hiding them.
+
+  In @layer base, which is preflight's own layer: a later rule in the same layer
+  wins on source order, while anything a component sets with a `cursor-*` utility
+  still beats the lot, because the utilities layer outranks base whatever the
+  specificity. Unlayered CSS would win against the utilities too, which is not
+  what a default wants to do.
+*/
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  input:where([type="submit"], [type="button"], [type="reset"]):not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"],
+  input:where([type="submit"], [type="button"], [type="reset"]):disabled {
+    cursor: not-allowed;
+  }
+}
+
 /* Animations */
 @keyframes bell-ring {
   0%   { transform: rotate(0deg); }
