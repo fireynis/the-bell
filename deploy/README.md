@@ -189,6 +189,29 @@ Delivery failures are logged by the Kratos courier worker:
 docker compose logs kratos | grep -i courier
 ```
 
+### Testing email with MailHog
+
+While you are trying the stack out — before any real residents exist — you can
+catch all outgoing mail instead of sending it. A [MailHog](https://github.com/mailhog/MailHog)
+service ships in the compose file behind the `mailtest` profile. Enable it with
+two lines in `.env`:
+
+```env
+COMPOSE_PROFILES=mailtest
+COURIER_SMTP_CONNECTION_URI=smtp://mailhog:1025/?disable_starttls=true
+```
+
+Then `docker compose up -d` and open `http://localhost:8025` (tunable with
+`MAILHOG_UI_PORT`). Every recovery and verification message the town sends
+lands there instead of a real inbox, which makes those flows testable
+end-to-end with no relay.
+
+**Never run this profile on a town with real residents.** The MailHog inbox is
+unauthenticated and holds live recovery links for every account on the
+instance. Before going live: remove both lines, set a real
+`COURIER_SMTP_CONNECTION_URI`, and `docker compose up -d` again — the mailhog
+container is removed with the profile.
+
 ## What each service does
 
 | Service | Purpose |

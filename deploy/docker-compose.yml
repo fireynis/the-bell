@@ -118,6 +118,25 @@ services:
     networks:
       - bell
 
+  # Mail catcher for TESTING email flows (recovery, verification) without a
+  # real relay. Opt-in: set COMPOSE_PROFILES=mailtest in .env (or pass
+  # --profile mailtest) and point the courier at it:
+  #   COURIER_SMTP_CONNECTION_URI=smtp://mailhog:1025/?disable_starttls=true
+  # Captured mail is browsable at http://<host>:${MAILHOG_UI_PORT:-8025} and
+  # holds live recovery links for every account — never run this profile on a
+  # town with real residents.
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: bell-mailhog
+    profiles: ["mailtest"]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    ports:
+      - "${MAILHOG_UI_PORT:-8025}:8025"
+    networks:
+      - bell
+
   bell:
     build:
       context: ..
