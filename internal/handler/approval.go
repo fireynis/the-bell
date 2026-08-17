@@ -12,7 +12,7 @@ import (
 
 // ApprovalService defines the operations needed by the approval handler.
 type ApprovalService interface {
-	ListPending(ctx context.Context) ([]*domain.User, error)
+	ListPending(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error)
 	Approve(ctx context.Context, userID string) (*domain.User, error)
 }
 
@@ -48,13 +48,24 @@ type pendingUser struct {
 	ResidencyClaim string `json:"residency_claim"`
 }
 
+// listPendingResponse pairs the page with the size of the whole match, exactly
+// as the directory's does: the total is what lets the council's screen say how
+// many neighbours are waiting without walking off the end of the queue to find
+// out.
 type listPendingResponse struct {
 	Users []pendingUser `json:"users"`
+	Total int           `json:"total"`
 }
 
 // ListPending handles GET /api/v1/vouches/pending.
 func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
-	users, err := h.approvals.ListPending(r.Context())
+	query := r.URL.Query()
+
+	users, total, err := h.approvals.ListPending(r.Context(),
+		query.Get("q"),
+		parseDirectoryLimit(query.Get("limit")),
+		parseOffset(query.Get("offset")),
+	)
 	if err != nil {
 		serviceError(w, err)
 		return
@@ -65,7 +76,7 @@ func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, pendingUser{User: u, ResidencyClaim: u.ResidencyClaim})
 	}
 
-	JSON(w, http.StatusOK, listPendingResponse{Users: entries})
+	JSON(w, http.StatusOK, listPendingResponse{Users: entries, Total: total})
 }
 
 // Approve handles POST /api/v1/vouches/approve/{id}.

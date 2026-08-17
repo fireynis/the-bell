@@ -1,0 +1,18 @@
+- generic [ref=f4e54]:
+  - generic [ref=f4e55]: The Bell
+  - generic [ref=f4e60]:
+    - heading "Sign in" [level=2] [ref=f4e61]
+    - paragraph [ref=f4e62]: Welcome back to The Bell
+    - generic [ref=f4e63]:
+      - generic [ref=f4e64]:
+        - generic [ref=f4e65]: Email
+        - textbox "Email" [ref=f4e66]
+      - generic [ref=f4e67]:
+        - generic [ref=f4e68]: Password
+        - textbox "Password" [ref=f4e69]
+      - button "Sign in with password" [ref=f4e71]
+  - generic [ref=f4e72]:
+    - link "Don't have an account? Register" [ref=f4e73] [cursor=pointer]:
+      - /url: /auth/registration
+    - link "Forgot your password?" [ref=f4e74] [cursor=pointer]:
+      - /url: /auth/recovery

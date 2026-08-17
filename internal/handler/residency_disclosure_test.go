@@ -268,8 +268,8 @@ type stubApprovalService struct {
 	approved *domain.User
 }
 
-func (s *stubApprovalService) ListPending(context.Context) ([]*domain.User, error) {
-	return s.pending, nil
+func (s *stubApprovalService) ListPending(context.Context, string, int, int) ([]*domain.User, int, error) {
+	return s.pending, len(s.pending), nil
 }
 
 func (s *stubApprovalService) Approve(context.Context, string) (*domain.User, error) {

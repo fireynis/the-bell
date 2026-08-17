@@ -1,0 +1,39 @@
+- generic [ref=f1e5]:
+  - navigation [ref=f1e6]:
+    - link "Feed" [ref=f1e7] [cursor=pointer]:
+      - /url: /
+    - link "Neighbours" [ref=f1e10] [cursor=pointer]:
+      - /url: /neighbors
+    - link "Post" [ref=f1e13] [cursor=pointer]:
+      - /url: /compose
+    - link "Profile" [ref=f1e16] [cursor=pointer]:
+      - /url: /profile
+  - banner [ref=f1e19]:
+    - generic [ref=f1e20]: The Bell
+    - link "Settings" [ref=f1e25] [cursor=pointer]:
+      - /url: /auth/settings
+  - main [ref=f1e28]:
+    - generic [ref=f1e30]:
+      - generic [ref=f1e31]:
+        - link "What's happening in town?" [ref=f1e32] [cursor=pointer]:
+          - /url: /compose
+        - button "Mute bell sounds" [ref=f1e35]:
+          - generic [ref=f1e36]: 🔔
+      - article [ref=f1e38]:
+        - generic [ref=f1e39]:
+          - generic [ref=f1e40]: J
+          - link "Jeremy" [ref=f1e41] [cursor=pointer]:
+            - /url: /profile/01a00d0b-8fa8-79a3-8d22-0b8e2de43b1e
+          - generic [ref=f1e42]: ·
+          - generic "8/17/2026, 12:15:26 AM" [ref=f1e43]: 43m
+          - button "Actions for Jeremy's post" [ref=f1e46]:
+            - generic [ref=f1e47]: …
+        - paragraph [ref=f1e48]: We won the hockey championship!
+        - generic [ref=f1e49]:
+          - button "Bell, 1 reaction" [pressed] [ref=f1e57]:
+            - generic [ref=f1e51]: 🔔
+            - generic [ref=f1e58]: "1"
+          - button "Heart, no reactions" [ref=f1e52]:
+            - generic [ref=f1e53]: ❤️
+          - button "Celebrate, no reactions" [ref=f1e54]:
+            - generic [ref=f1e55]: 🎉

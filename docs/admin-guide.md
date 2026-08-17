@@ -564,7 +564,12 @@ The Bell outputs structured JSON logs to stdout via `slog.JSONHandler`. These ca
 Bootstrap mode is the initial phase of a new town deployment. During bootstrap mode:
 
 - Council members can directly approve pending users via `POST /api/v1/vouches/approve/{id}`
-- The pending user list is available via `GET /api/v1/vouches/pending`
+- The pending user list is available via `GET /api/v1/vouches/pending`, paged 25
+  at a time and searchable by name, longest wait first
+- In the app it is the **Approvals** page at `/admin/approvals`, reached from the
+  Town Hall dashboard, which keeps only a count and the longest-waiting few. The
+  queue has a page of its own because a town launch or a registration flood puts
+  fifty applicants in it at once
 - Both endpoints require the `council` role
 
 Bootstrap mode automatically disables itself when the active member count reaches 20. After that, new users must be vouched for by existing members with a trust score >= 60 to be promoted from `pending` to `member`.

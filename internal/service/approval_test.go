@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestApprovalService_ListPending_Success(t *testing.T) {
 	}
 
 	svc := NewApprovalService(userRepo, configRepo)
-	users, err := svc.ListPending(context.Background())
+	users, total, err := svc.ListPending(context.Background(), "", 25, 0)
 	if err != nil {
 		t.Fatalf("ListPending() unexpected error: %v", err)
 	}
@@ -38,6 +39,9 @@ func TestApprovalService_ListPending_Success(t *testing.T) {
 	if users[0].ID != "pending-1" {
 		t.Errorf("ListPending()[0].ID = %q, want %q", users[0].ID, "pending-1")
 	}
+	if total != 1 {
+		t.Errorf("ListPending() total = %d, want 1", total)
+	}
 }
 
 func TestApprovalService_ListPending_NotBootstrapMode(t *testing.T) {
@@ -46,7 +50,7 @@ func TestApprovalService_ListPending_NotBootstrapMode(t *testing.T) {
 	configRepo.config["bootstrap_mode"] = "false"
 
 	svc := NewApprovalService(userRepo, configRepo)
-	_, err := svc.ListPending(context.Background())
+	_, _, err := svc.ListPending(context.Background(), "", 25, 0)
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListPending() error = %v, want %v", err, ErrForbidden)
 	}
@@ -57,10 +61,174 @@ func TestApprovalService_ListPending_NoBootstrapKey(t *testing.T) {
 	configRepo := newMockConfigRepo() // empty config, key not found
 
 	svc := NewApprovalService(userRepo, configRepo)
-	_, err := svc.ListPending(context.Background())
+	_, _, err := svc.ListPending(context.Background(), "", 25, 0)
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListPending() error = %v, want %v", err, ErrForbidden)
 	}
+}
+
+// --- ListPending: paging and search ---
+
+// bootstrapQueue puts the town in bootstrap mode with the named applicants
+// waiting, joined a day apart so the oldest-first ordering is unambiguous.
+func bootstrapQueue(t *testing.T, names ...string) (*fakeUserStore, *ApprovalService) {
+	t.Helper()
+
+	store := newFakeUserStore()
+	for i, name := range names {
+		store.add(&domain.User{
+			ID:          fmt.Sprintf("pending-%d", i),
+			DisplayName: name,
+			Role:        domain.RolePending,
+			IsActive:    true,
+			// Earlier in the list means earlier in town: index 0 waited longest.
+			JoinedAt: approvalFixedNow.AddDate(0, 0, i),
+		})
+	}
+
+	configRepo := newMockConfigRepo()
+	configRepo.config["bootstrap_mode"] = "true"
+	return store, NewApprovalService(store, configRepo)
+}
+
+// The queue is FIFO: the applicant who has waited longest is reviewed first, so
+// a flood of newer registrations cannot bury somebody who signed up last week.
+func TestApprovalService_ListPending_OldestFirst(t *testing.T) {
+	_, svc := bootstrapQueue(t, "First", "Second", "Third")
+
+	users, _, err := svc.ListPending(context.Background(), "", 25, 0)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+
+	var got []string
+	for _, u := range users {
+		got = append(got, u.DisplayName)
+	}
+	want := []string{"First", "Second", "Third"}
+	if len(got) != len(want) {
+		t.Fatalf("queue = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("queue = %v, want %v", got, want)
+		}
+	}
+}
+
+// The same bounds as the directory, and for the same reason: a caller asking
+// for too much gets the ceiling rather than an error.
+func TestApprovalService_ListPending_BoundsTheLimit(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"zero means the default", 0, DirectoryDefaultLimit},
+		{"negative means the default", -5, DirectoryDefaultLimit},
+		{"a value in range is passed through", 10, 10},
+		{"the ceiling is allowed", DirectoryMaxLimit, DirectoryMaxLimit},
+		{"above the ceiling is clamped, not rejected", 5000, DirectoryMaxLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, svc := bootstrapQueue(t)
+
+			if _, _, err := svc.ListPending(context.Background(), "", tt.limit, 0); err != nil {
+				t.Fatalf("ListPending: %v", err)
+			}
+			if store.pendingLimit != tt.want {
+				t.Errorf("repository asked for limit %d, want %d", store.pendingLimit, tt.want)
+			}
+		})
+	}
+}
+
+func TestApprovalService_ListPending_RejectsANegativeOffset(t *testing.T) {
+	_, svc := bootstrapQueue(t)
+
+	_, _, err := svc.ListPending(context.Background(), "", 25, -1)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("error = %v, want %v", err, ErrValidation)
+	}
+}
+
+func TestApprovalService_ListPending_RejectsAnOverlongQuery(t *testing.T) {
+	_, svc := bootstrapQueue(t)
+
+	_, _, err := svc.ListPending(context.Background(), strings.Repeat("a", maxDirectorySearchLength+1), 25, 0)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("error = %v, want %v", err, ErrValidation)
+	}
+
+	if _, _, err := svc.ListPending(context.Background(), strings.Repeat("a", maxDirectorySearchLength), 25, 0); err != nil {
+		t.Errorf("a query at the limit was rejected: %v", err)
+	}
+}
+
+// Whitespace around a search term is a typing artefact, not part of the name
+// being looked for.
+func TestApprovalService_ListPending_TrimsTheQuery(t *testing.T) {
+	store, svc := bootstrapQueue(t, "Ada")
+
+	if _, _, err := svc.ListPending(context.Background(), "  Ada  ", 25, 0); err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if store.pendingQuery != "Ada" {
+		t.Errorf("repository asked for %q, want %q", store.pendingQuery, "Ada")
+	}
+}
+
+// The total sizes the whole match rather than the page, which is what lets the
+// council's screen say how many neighbours are waiting from the first request.
+func TestApprovalService_ListPending_TotalCountsEveryMatch(t *testing.T) {
+	_, svc := bootstrapQueue(t, "Ada", "Bo", "Cai", "Dev", "Eun")
+
+	users, total, err := svc.ListPending(context.Background(), "", 2, 0)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(users) != 2 {
+		t.Errorf("page holds %d users, want 2", len(users))
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5", total)
+	}
+}
+
+// A filtered queue reports the size of the filter, not of the queue: a council
+// member searching a name should not be told 50 people match when one does.
+func TestApprovalService_ListPending_TotalFollowsTheSearch(t *testing.T) {
+	_, svc := bootstrapQueue(t, "Ada Lovelace", "Bo Zhang", "Adam Smith")
+
+	users, total, err := svc.ListPending(context.Background(), "ada", 25, 0)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(users) != 2 || total != 2 {
+		t.Errorf("got %d users and total %d, want 2 and 2", len(users), total)
+	}
+}
+
+func TestApprovalService_ListPending_ReportsRepositoryFailures(t *testing.T) {
+	t.Run("the page", func(t *testing.T) {
+		store, svc := bootstrapQueue(t)
+		store.pendingPageErr = errors.New("db connection lost")
+
+		if _, _, err := svc.ListPending(context.Background(), "", 25, 0); err == nil {
+			t.Fatal("expected an error when the listing fails")
+		}
+	})
+
+	t.Run("the count", func(t *testing.T) {
+		store, svc := bootstrapQueue(t)
+		store.countPendingErr = errors.New("db connection lost")
+
+		if _, _, err := svc.ListPending(context.Background(), "", 25, 0); err == nil {
+			t.Fatal("expected an error when the count fails")
+		}
+	})
 }
 
 // --- Approve ---
@@ -311,7 +479,7 @@ func TestApprovalService_ReEvaluatesAMissedBootstrapExit(t *testing.T) {
 			return err
 		}},
 		{"list pending", func(s *ApprovalService) error {
-			_, err := s.ListPending(context.Background())
+			_, _, err := s.ListPending(context.Background(), "", 25, 0)
 			return err
 		}},
 	}
@@ -374,7 +542,7 @@ func TestApprovalService_RecheckFailureDoesNotBlockTheApprovalPath(t *testing.T)
 
 	// The write fails, so the flag stays wrong — but ListPending still answers
 	// rather than reporting the repair's failure as the caller's problem.
-	pending, err := svc.ListPending(context.Background())
+	pending, _, err := svc.ListPending(context.Background(), "", 25, 0)
 	if err != nil {
 		t.Fatalf("ListPending() error = %v; a failed repair must not fail the call", err)
 	}
@@ -389,7 +557,7 @@ func TestApprovalService_RecheckFailureDoesNotBlockTheApprovalPath(t *testing.T)
 	// Same for a count that cannot be read.
 	configRepo.setErr = nil
 	userRepo.countErr = errors.New("db connection lost")
-	if _, err := svc.ListPending(context.Background()); err != nil {
+	if _, _, err := svc.ListPending(context.Background(), "", 25, 0); err != nil {
 		t.Fatalf("ListPending() error = %v; an unreadable count must not fail the call", err)
 	}
 }

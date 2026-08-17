@@ -9,6 +9,7 @@ import type {
   ModerationQueueResponse,
   MuteStatus,
   OwnModerationHistoryResponse,
+  PendingUsersResponse,
   Post,
   Proposal,
   ProposalsResponse,
@@ -189,6 +190,37 @@ export const userApi = {
    */
   setResidencyClaim: (claim: string) =>
     api.put<void>("/users/me/residency-claim", { claim: (claim ?? "").trim() }),
+};
+
+export const approvalApi = {
+  /**
+   * One page of the council's approval queue, the applicant who has been
+   * waiting longest first. Council only, and only while the town is in
+   * bootstrap mode — outside it the server answers 403, which is not an error
+   * to show anybody: it means the town now admits residents by vouch.
+   *
+   * `q` matches a case-insensitive substring of the display name and is omitted
+   * when blank, exactly as the directory's does. The server caps `limit` at
+   * 100. Built through URLSearchParams for the same reason: the term is typed
+   * by a council member and may contain characters a bare template string
+   * would corrupt.
+   */
+  listPending: (limit: number, offset: number, q?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    const search = (q ?? "").trim();
+    if (search) params.set("q", search);
+    return api.get<PendingUsersResponse>(`/vouches/pending?${params.toString()}`);
+  },
+
+  /**
+   * Rings an applicant in, answering 200 with the whole updated user.
+   *
+   * This is the call that can end bootstrap mode: the twentieth approval flips
+   * the town out of it, after which the queue itself answers 403. A caller that
+   * reloads the queue afterwards has to treat that refusal as "the queue is
+   * closed" rather than as a failure.
+   */
+  approve: (userId: string) => api.post<User>(`/vouches/approve/${userId}`, {}),
 };
 
 export const proposalApi = {

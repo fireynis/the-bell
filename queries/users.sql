@@ -35,6 +35,45 @@ WHERE role = 'pending' AND is_active = TRUE
   AND (suspended_until IS NULL OR suspended_until <= NOW())
 ORDER BY created_at ASC;
 
+-- The council's approval queue, one page at a time. ListPendingUsers above is
+-- the whole roster and stays: the display-name backfill walks every applicant
+-- and has no page to be on.
+--
+-- Oldest first, which is the fair order for a queue: the applicant who has been
+-- waiting longest is the one the council sees first, and a registration flood
+-- cannot bury somebody who signed up last week behind fifty newer strangers.
+-- It is the opposite of the member directory, which is newest-first because it
+-- answers a different question — who has just arrived and needs a vouch.
+--
+-- joined_at rather than created_at, which the unpaged listing sorts on, because
+-- joined_at is the date the queue shows next to each name: an order the council
+-- cannot verify against what is on screen invites a bug report every time the
+-- two columns drift. id breaks ties, so paging with an offset cannot repeat or
+-- skip an applicant when two accounts share a timestamp.
+--
+-- An empty @query matches everyone; otherwise it is a case-insensitive
+-- substring of the display name, escaped by the caller exactly as the directory
+-- escapes it.
+
+-- name: ListPendingUsersPage :many
+SELECT * FROM users
+WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND (@query::text = '' OR display_name ILIKE '%' || @query::text || '%')
+ORDER BY joined_at ASC, id ASC
+LIMIT @row_limit::int OFFSET @row_offset::int;
+
+-- name: CountPendingUsersMatching :one
+-- The same population as ListPendingUsersPage, so the two filters must stay
+-- identical: a total that disagrees with the rows is a pager offering a page
+-- that comes back empty. With an empty @query it counts exactly what
+-- CountPendingUsers counts, which is what keeps the queue's total and the
+-- dashboard's pending stat from contradicting each other.
+SELECT COUNT(*) FROM users
+WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND (@query::text = '' OR display_name ILIKE '%' || @query::text || '%');
+
 -- name: CountUsersByMinRole :one
 SELECT COUNT(*) FROM users
 WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE

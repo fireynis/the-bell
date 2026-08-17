@@ -1,0 +1,14 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: The Bell
+  - generic [ref=e10]:
+    - heading "Create an account" [level=2] [ref=e11]
+    - paragraph [ref=e12]: Join The Bell community
+    - generic [ref=e17]:
+      - paragraph [ref=e27]: Please choose a credential to authenticate yourself with.
+      - generic [ref=e28]:
+        - generic [ref=e29]: Password
+        - textbox "Password" [ref=e30]
+      - button "Sign up" [ref=e32]
+      - button "Back" [ref=e34]
+  - link "Already have an account? Sign in" [ref=e16] [cursor=pointer]:
+    - /url: /auth/login

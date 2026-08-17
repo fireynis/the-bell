@@ -1,0 +1,7 @@
+- generic [ref=e4]:
+  - generic [ref=e5]: The Bell
+  - generic [ref=e10]:
+    - heading "Create an account" [level=2] [ref=e11]
+    - paragraph [ref=e12]: Join The Bell community
+  - link "Already have an account? Sign in" [ref=e16] [cursor=pointer]:
+    - /url: /auth/login

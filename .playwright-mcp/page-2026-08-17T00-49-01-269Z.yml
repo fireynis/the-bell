@@ -1,0 +1,54 @@
+- generic [ref=e35]:
+  - navigation [ref=e36]:
+    - link "Feed" [ref=e37] [cursor=pointer]:
+      - /url: /
+    - link "Neighbours" [ref=e40] [cursor=pointer]:
+      - /url: /neighbors
+    - link "Post — you cannot post yet" [ref=e43] [cursor=pointer]:
+      - /url: /compose
+      - generic [ref=e46]: Post
+    - link "Profile" [ref=e50] [cursor=pointer]:
+      - /url: /profile
+  - banner [ref=e53]:
+    - generic [ref=e54]: The Bell
+    - link "Settings" [ref=e59] [cursor=pointer]:
+      - /url: /auth/settings
+  - main [ref=e62]:
+    - generic [ref=e64]:
+      - status "Welcome — the town has not rung you in yet" [ref=e65]:
+        - heading "Welcome — the town has not rung you in yet" [level=2] [ref=e66]
+        - paragraph [ref=e67]: Your name is on the roll, but none of your neighbours have vouched for you yet, so the bell is not yours to ring for the moment.
+        - paragraph [ref=e68]: It takes one neighbour vouching for you, or council approval while the town is still starting up. There is nothing to apply for — someone here simply has to say they know you.
+        - paragraph [ref=e69]: "Until then you can read everything in the feed. Filling in your profile helps: a photo and a line about yourself give a neighbour something to recognise you by."
+        - link "Complete your profile" [ref=e70] [cursor=pointer]:
+          - /url: /profile
+        - generic [ref=e71]:
+          - generic [ref=e72]: Where in town are you?
+          - paragraph [ref=e73]: Tell the council where in town you are — it helps your neighbours recognise you.
+          - generic [ref=e74]:
+            - textbox "Where in town are you?" [ref=e75]:
+              - /placeholder: The old mill road, near the school...
+              - text: The yellow house by the creek bridge, two down from the Weaver mill
+            - button "Save" [disabled] [ref=e76]
+          - paragraph [ref=e77]: Only the council sees this, and only while they are deciding. It never appears on your profile.
+          - status [ref=e103]: Saved — the council will see this with your name.
+      - generic [ref=e78]:
+        - link "You cannot ring the bell yet — see why" [ref=e79] [cursor=pointer]:
+          - /url: /compose
+        - button "Mute bell sounds" [ref=e85]:
+          - generic [ref=e86]: 🔔
+      - article [ref=e88]:
+        - generic [ref=e89]:
+          - generic [ref=e90]: F
+          - link "fireynis@gmail.com" [ref=e91] [cursor=pointer]:
+            - /url: /profile/01a00d0b-8fa8-79a3-8d22-0b8e2de43b1e
+          - generic [ref=e92]: ·
+          - generic "8/17/2026, 12:15:26 AM" [ref=e93]: 33m
+        - paragraph [ref=e94]: We won the hockey championship!
+        - generic [ref=e95]:
+          - button "Bell, no reactions" [ref=e96]:
+            - generic [ref=e97]: 🔔
+          - button "Heart, no reactions" [ref=e98]:
+            - generic [ref=e99]: ❤️
+          - button "Celebrate, no reactions" [ref=e100]:
+            - generic [ref=e101]: 🎉

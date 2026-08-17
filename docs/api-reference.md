@@ -152,16 +152,20 @@ The response includes a `next_cursor` field when there are more results:
 
 ### Offset-Based Pagination
 
-The moderation queue, the action history and the member directory use
-offset-based pagination:
+The moderation queue, the action history, the member directory and the council's
+approval queue use offset-based pagination:
 
 ```
 GET /api/v1/moderation/queue?limit=20&offset=0
 GET /api/v1/users?limit=25&offset=0
+GET /api/v1/vouches/pending?limit=25&offset=0
 ```
 
-The directory additionally returns a `total`, so a client can size a pager
-without walking off the end of the list.
+The directory and the approval queue additionally return a `total`, so a client
+can size a pager without walking off the end of the list. The two share their
+bounds — 25 by default, 100 at most, clamped rather than rejected — and both
+accept the same `q` substring search over `display_name`; they differ only in
+sort order, for the reason given under each.
 
 ---
 
@@ -1756,11 +1760,19 @@ These endpoints are only available while bootstrap mode is active. They return `
 
 #### `GET /api/v1/vouches/pending`
 
-Returns all pending users awaiting council approval.
+One page of the pending users awaiting council approval, longest wait first.
 
 **Auth**: Required
 **Role**: `council`
 **Rate Limit**: None — see the note under [Rate Limiting](#rate-limiting)
+
+**Query Parameters**: the member directory's, exactly.
+
+| Param | Type | Default | Max | Notes |
+|-------|------|---------|-----|-------|
+| `limit` | int | 25 | 100 | Values outside the range are clamped, not rejected |
+| `offset` | int | 0 | -- | Offset-based, like the moderation queue |
+| `q` | string | (empty) | 100 chars | Case-insensitive substring of `display_name`. Empty lists everyone waiting |
 
 **Response** `200 OK`:
 
@@ -1781,9 +1793,43 @@ Returns all pending users awaiting council approval.
       "updated_at": "2025-07-01T10:00:00Z",
       "residency_claim": "12 Mill Lane, behind the churchyard"
     }
-  ]
+  ],
+  "total": 43
 }
 ```
+
+`total` is the number of applicants matching `q`, not the size of the page —
+it is what the council's screen counts the waiting neighbours from. `users` is
+always an array, never `null`.
+
+```bash
+curl "https://bell.example.com/api/v1/vouches/pending?q=ali&limit=25&offset=0" \
+  -H "Cookie: ory_kratos_session=..."
+```
+
+##### Order
+
+`joined_at` **ascending** — the applicant who has been waiting longest is first.
+This is deliberately the opposite of the member directory, which is newest-first
+because it answers a different question ("who has just arrived and needs a
+vouch?"). A queue is worked through in the order people joined it, and a
+registration flood must not be able to bury somebody who signed up last week
+behind fifty newer strangers.
+
+Ties break on id, so paging with `offset` cannot silently repeat or skip an
+applicant when two accounts were created in the same instant.
+
+##### Who is listed
+
+Pending accounts only, and only the ones with a live application: banned and
+deactivated accounts are excluded, as is anyone currently serving a suspension.
+A suspension that has lapsed is not a suspension, so that applicant is
+reviewable again the moment it expires — the same `NOW()` clock every other user
+query uses.
+
+With no `q`, `total` counts exactly what the `pending_users` figure on
+[`GET /api/v1/admin/stats`](#get-apiv1adminstats) counts, so the dashboard and
+the queue cannot contradict each other.
 
 ##### `residency_claim`
 

@@ -89,6 +89,25 @@ func (q *Queries) CountPendingUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countPendingUsersMatching = `-- name: CountPendingUsersMatching :one
+SELECT COUNT(*) FROM users
+WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND ($1::text = '' OR display_name ILIKE '%' || $1::text || '%')
+`
+
+// The same population as ListPendingUsersPage, so the two filters must stay
+// identical: a total that disagrees with the rows is a pager offering a page
+// that comes back empty. With an empty @query it counts exactly what
+// CountPendingUsers counts, which is what keeps the queue's total and the
+// dashboard's pending stat from contradicting each other.
+func (q *Queries) CountPendingUsersMatching(ctx context.Context, query string) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingUsersMatching, query)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsersByMinRole = `-- name: CountUsersByMinRole :one
 SELECT COUNT(*) FROM users
 WHERE role IN ('member', 'moderator', 'council') AND is_active = TRUE
@@ -355,6 +374,78 @@ ORDER BY created_at ASC
 
 func (q *Queries) ListPendingUsers(ctx context.Context) ([]User, error) {
 	rows, err := q.db.Query(ctx, listPendingUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.KratosIdentityID,
+			&i.DisplayName,
+			&i.Bio,
+			&i.AvatarUrl,
+			&i.TrustScore,
+			&i.Role,
+			&i.IsActive,
+			&i.JoinedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.TrustBelowSince,
+			&i.MutedUntil,
+			&i.SuspendedUntil,
+			&i.ResidencyClaim,
+			&i.ResidencyClaimUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingUsersPage = `-- name: ListPendingUsersPage :many
+
+SELECT id, kratos_identity_id, display_name, bio, avatar_url, trust_score, role, is_active, joined_at, created_at, updated_at, trust_below_since, muted_until, suspended_until, residency_claim, residency_claim_updated_at FROM users
+WHERE role = 'pending' AND is_active = TRUE
+  AND (suspended_until IS NULL OR suspended_until <= NOW())
+  AND ($1::text = '' OR display_name ILIKE '%' || $1::text || '%')
+ORDER BY joined_at ASC, id ASC
+LIMIT $3::int OFFSET $2::int
+`
+
+type ListPendingUsersPageParams struct {
+	Query     string `json:"query"`
+	RowOffset int32  `json:"row_offset"`
+	RowLimit  int32  `json:"row_limit"`
+}
+
+// The council's approval queue, one page at a time. ListPendingUsers above is
+// the whole roster and stays: the display-name backfill walks every applicant
+// and has no page to be on.
+//
+// Oldest first, which is the fair order for a queue: the applicant who has been
+// waiting longest is the one the council sees first, and a registration flood
+// cannot bury somebody who signed up last week behind fifty newer strangers.
+// It is the opposite of the member directory, which is newest-first because it
+// answers a different question — who has just arrived and needs a vouch.
+//
+// joined_at rather than created_at, which the unpaged listing sorts on, because
+// joined_at is the date the queue shows next to each name: an order the council
+// cannot verify against what is on screen invites a bug report every time the
+// two columns drift. id breaks ties, so paging with an offset cannot repeat or
+// skip an applicant when two accounts share a timestamp.
+//
+// An empty @query matches everyone; otherwise it is a case-insensitive
+// substring of the display name, escaped by the caller exactly as the directory
+// escapes it.
+func (q *Queries) ListPendingUsersPage(ctx context.Context, arg ListPendingUsersPageParams) ([]User, error) {
+	rows, err := q.db.Query(ctx, listPendingUsersPage, arg.Query, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

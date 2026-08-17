@@ -13,7 +13,12 @@ const bootstrapExitThreshold = 20
 // ApprovalUserRepository is the subset of user persistence needed by ApprovalService.
 type ApprovalUserRepository interface {
 	GetUserByID(ctx context.Context, id string) (*domain.User, error)
-	ListPendingUsers(ctx context.Context) ([]*domain.User, error)
+	// ListPendingUsersPage and CountPendingUsersMatching page and size the same
+	// population, so an implementation must apply the same filter to both. query
+	// is a plain substring — escaping whatever the storage engine reads as
+	// syntax is the implementation's job. The page is oldest applicant first.
+	ListPendingUsersPage(ctx context.Context, query string, limit, offset int) ([]*domain.User, error)
+	CountPendingUsersMatching(ctx context.Context, query string) (int64, error)
 	CountActiveMembers(ctx context.Context) (int64, error)
 	UpdateUserRole(ctx context.Context, id string, role domain.Role) error
 }
@@ -33,12 +38,41 @@ func NewApprovalService(users ApprovalUserRepository, config ConfigRepository) *
 	}
 }
 
-// ListPending returns all pending users. Only available during bootstrap mode.
-func (s *ApprovalService) ListPending(ctx context.Context) ([]*domain.User, error) {
+// ListPending returns one page of pending users, oldest applicant first, and
+// the total number of them matching the search. Only available during bootstrap
+// mode.
+//
+// It is paged rather than whole because the queue is exactly the thing that
+// grows without warning: a town launch or a registration flood puts fifty
+// strangers in front of the council at once, and the page they work through is
+// no place to render all of them. The bounds are boundUserListing's, shared
+// with the member directory.
+//
+// The count is a second query for the same reason ListDirectory's is — an
+// offset past the end has no row to carry a total on — and it counts everyone
+// matching the search rather than everyone waiting, so the number above a
+// filtered queue describes the queue on screen.
+func (s *ApprovalService) ListPending(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error) {
 	if err := s.requireBootstrap(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return s.users.ListPendingUsers(ctx)
+
+	query, limit, offset, err := boundUserListing(query, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	users, err := s.users.ListPendingUsersPage(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listing pending users: %w", err)
+	}
+
+	total, err := s.users.CountPendingUsersMatching(ctx, query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting pending users: %w", err)
+	}
+
+	return users, int(total), nil
 }
 
 // Approve promotes a pending user to member. Only available during bootstrap mode.

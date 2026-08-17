@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, proposalApi } from "../api/client";
+import { api, approvalApi, proposalApi } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import Spinner from "../components/Spinner";
 import ErrorBanner from "../components/ErrorBanner";
@@ -7,15 +7,10 @@ import ThemeSettings from "./admin/ThemeSettings";
 import PendingUsersSection from "./admin/PendingUsersSection";
 import ProposalsSection from "./admin/ProposalsSection";
 import { isCouncil } from "../lib/trust";
+import { APPROVALS_PREVIEW_SIZE } from "../lib/approvals";
 import { applyProposalUpdate, proposalErrorMessage } from "../lib/proposal";
 import { NAV_ITEMS } from "../lib/nav";
-import type {
-  ApiError,
-  TownStats,
-  Proposal,
-  PendingUsersResponse,
-  User,
-} from "../api/types";
+import type { ApiError, TownStats, Proposal, User } from "../api/types";
 
 function StatCard({
   label,
@@ -80,10 +75,10 @@ export default function Admin() {
 
   const [stats, setStats] = useState<TownStats | null>(null);
   const [pendingUsers, setPendingUsers] = useState<User[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [approving, setApproving] = useState<string | null>(null);
   const [voting, setVoting] = useState<string | null>(null);
 
   const council = isCouncil(user);
@@ -97,15 +92,22 @@ export default function Admin() {
       // and has no business being downloaded to find three open votes — but
       // they are held as one list here, so that a vote which decides a proposal
       // simply moves it from one half of the town hall to the other.
+      // Only the longest-waiting few: this is a preview with a link to the
+      // queue, so downloading the whole of it to show three names would be the
+      // wall this page was rewritten to stop rendering. The total still counts
+      // everybody, because it comes from the server rather than from the page.
+      // Still tolerant of a failure — the queue answers 403 once the town
+      // leaves bootstrap mode, and that must not take the dashboard with it.
       const [statsData, pendingResult, open, decided] = await Promise.all([
         api.get<TownStats>("/admin/stats"),
-        api.get<PendingUsersResponse>("/vouches/pending").catch(() => null),
+        approvalApi.listPending(APPROVALS_PREVIEW_SIZE, 0).catch(() => null),
         proposalApi.list("open"),
         proposalApi.list("decided"),
       ]);
 
       setStats(statsData);
       setPendingUsers(pendingResult?.users ?? []);
+      setPendingTotal(pendingResult?.total ?? 0);
       setProposals([...(open.proposals ?? []), ...(decided.proposals ?? [])]);
     } catch (err) {
       const apiErr = err as ApiError;
@@ -118,26 +120,6 @@ export default function Admin() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  async function handleApprove(userId: string) {
-    setApproving(userId);
-    try {
-      await api.post(`/vouches/approve/${userId}`, {});
-      setPendingUsers((prev) => prev.filter((u) => u.id !== userId));
-      // Refresh stats to update pending count
-      try {
-        const updatedStats = await api.get<TownStats>("/admin/stats");
-        setStats(updatedStats);
-      } catch {
-        // Non-critical — stats will refresh on next load
-      }
-    } catch (err) {
-      const apiErr = err as ApiError;
-      setError(apiErr.error ?? "Failed to approve user.");
-    } finally {
-      setApproving(null);
-    }
-  }
 
   async function handleVote(proposalId: string, vote: "approve" | "reject") {
     setVoting(proposalId);
@@ -207,11 +189,7 @@ export default function Admin() {
       <div className="space-y-6">
         {stats && <StatsPanel stats={stats} />}
 
-        <PendingUsersSection
-          users={pendingUsers}
-          onApprove={handleApprove}
-          approving={approving}
-        />
+        <PendingUsersSection users={pendingUsers} total={pendingTotal} />
 
         <ProposalsSection
           proposals={proposals}

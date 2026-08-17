@@ -206,8 +206,18 @@ export interface TownStats {
   pending_users: number;
 }
 
+/**
+ * One page of `GET /api/v1/vouches/pending`, longest wait first.
+ *
+ * `total` counts every applicant matching the search rather than the page, so
+ * the dashboard can say how many neighbours are waiting from a request that
+ * asked for three of them, and the queue page can end its list without walking
+ * off the end to find out. It mirrors DirectoryResponse exactly; the two
+ * endpoints share their bounds and their `q` search and differ only in order.
+ */
 export interface PendingUsersResponse {
   users: User[];
+  total: number;
 }
 
 /**

@@ -1,0 +1,13 @@
+- generic [ref=f3e4]:
+  - generic [ref=f3e5]: The Bell
+  - generic [ref=f3e10]:
+    - heading "Email verification" [level=2] [ref=f3e11]
+    - paragraph [ref=f3e12]: Verify your email address
+    - generic [ref=f3e13]:
+      - paragraph [ref=f3e15]: The request was already completed successfully and can not be retried.
+      - generic [ref=f3e16]:
+        - generic [ref=f3e17]: Email
+        - textbox "Email" [ref=f3e18]
+      - button "Continue" [ref=f3e20]
+  - link "Back to sign in" [ref=f3e22] [cursor=pointer]:
+    - /url: /auth/login

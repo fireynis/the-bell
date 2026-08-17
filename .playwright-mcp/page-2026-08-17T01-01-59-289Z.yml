@@ -1,0 +1,72 @@
+- generic [ref=f5e33]:
+  - navigation [ref=f5e34]:
+    - link "Feed" [ref=f5e35] [cursor=pointer]:
+      - /url: /
+    - link "Neighbours" [ref=f5e38] [cursor=pointer]:
+      - /url: /neighbors
+    - link "Post — you cannot post yet" [ref=f5e41] [cursor=pointer]:
+      - /url: /compose
+      - generic [ref=f5e44]: Post
+    - link "Profile" [ref=f5e48] [cursor=pointer]:
+      - /url: /profile
+  - banner [ref=f5e51]:
+    - generic [ref=f5e52]: The Bell
+    - link "Settings" [ref=f5e57] [cursor=pointer]:
+      - /url: /auth/settings
+  - main [ref=f5e60]:
+    - generic [ref=f5e62]:
+      - status "Welcome — the town has not rung you in yet" [ref=f5e63]:
+        - heading "Welcome — the town has not rung you in yet" [level=2] [ref=f5e64]
+        - paragraph [ref=f5e65]: Your name is on the roll, but none of your neighbours have vouched for you yet, so the bell is not yours to ring for the moment.
+        - paragraph [ref=f5e66]: It takes one neighbour vouching for you, or council approval while the town is still starting up. There is nothing to apply for — someone here simply has to say they know you.
+        - paragraph [ref=f5e67]: "Until then you can read everything in the feed. Filling in your profile helps: a photo and a line about yourself give a neighbour something to recognise you by."
+        - link "Complete your profile" [ref=f5e68] [cursor=pointer]:
+          - /url: /profile
+        - generic [ref=f5e69]:
+          - generic [ref=f5e70]: Where in town are you?
+          - paragraph [ref=f5e71]: Tell the council where in town you are — it helps your neighbours recognise you.
+          - generic [ref=f5e72]:
+            - textbox "Where in town are you?" [ref=f5e73]:
+              - /placeholder: The old mill road, near the school...
+              - text: Above the old corner store on Main, the one with the green awning
+            - button "Save" [disabled] [ref=f5e74]
+          - paragraph [ref=f5e75]: Only the council sees this, and only while they are deciding. It never appears on your profile.
+          - status [ref=f5e117]: Saved — the council will see this with your name.
+      - generic [ref=f5e76]:
+        - link "You cannot ring the bell yet — see why" [ref=f5e77] [cursor=pointer]:
+          - /url: /compose
+        - button "Mute bell sounds" [ref=f5e83]:
+          - generic [ref=f5e84]: 🔔
+      - generic [ref=f5e85]:
+        - article [ref=f5e86]:
+          - generic [ref=f5e87]:
+            - generic [ref=f5e88]: M
+            - link "Margaret Weaver" [ref=f5e89] [cursor=pointer]:
+              - /url: /profile/01a00d31-0d63-784f-9a17-8018916b9881
+            - generic [ref=f5e90]: ·
+            - generic "8/17/2026, 12:59:56 AM" [ref=f5e91]: 1m
+          - paragraph [ref=f5e92]: The farmers' market is back this Saturday at the fairgrounds — first one of the season! The Hendersons are bringing their honey and I hear there will be a pie table. Come say hello.
+          - generic [ref=f5e93]:
+            - button "Bell, no reactions" [ref=f5e94]:
+              - generic [ref=f5e95]: 🔔
+            - button "Heart, no reactions" [ref=f5e96]:
+              - generic [ref=f5e97]: ❤️
+            - button "Celebrate, no reactions" [ref=f5e98]:
+              - generic [ref=f5e99]: 🎉
+        - article [ref=f5e100]:
+          - generic [ref=f5e101]:
+            - generic [ref=f5e102]: J
+            - link "Jeremy" [ref=f5e103] [cursor=pointer]:
+              - /url: /profile/01a00d0b-8fa8-79a3-8d22-0b8e2de43b1e
+            - generic [ref=f5e104]: ·
+            - generic "8/17/2026, 12:15:26 AM" [ref=f5e105]: 46m
+          - paragraph [ref=f5e106]: We won the hockey championship!
+          - generic [ref=f5e107]:
+            - button "Bell, 1 reaction" [ref=f5e108]:
+              - generic [ref=f5e109]: 🔔
+              - generic [ref=f5e110]: "1"
+            - button "Heart, no reactions" [ref=f5e111]:
+              - generic [ref=f5e112]: ❤️
+            - button "Celebrate, 1 reaction" [ref=f5e113]:
+              - generic [ref=f5e114]: 🎉
+              - generic [ref=f5e115]: "1"

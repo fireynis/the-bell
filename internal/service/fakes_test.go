@@ -28,12 +28,19 @@ type fakeUserStore struct {
 	countErr          error
 	directoryErr      error
 	countDirectoryErr error
+	pendingPageErr    error
+	countPendingErr   error
 
 	// What the last directory listing was asked for, so a test can assert the
 	// service's clamping rather than inferring it from the page it got back.
 	directoryQuery  string
 	directoryLimit  int
 	directoryOffset int
+
+	// The same, for the approval queue's listing.
+	pendingQuery  string
+	pendingLimit  int
+	pendingOffset int
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -153,6 +160,51 @@ func (f *fakeUserStore) ListPendingUsers(_ context.Context) ([]*domain.User, err
 		}
 	}
 	return pending, nil
+}
+
+// pendingMatches applies the filter both approval-queue methods must agree on,
+// in the order the query returns: oldest applicant first. Substring rather than
+// escaped LIKE for the reason given on directoryMatches.
+func (f *fakeUserStore) pendingMatches(query string) []*domain.User {
+	query = strings.ToLower(query)
+	var matched []*domain.User
+	for _, u := range f.users {
+		if u.Role != domain.RolePending || !u.IsActive {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(u.DisplayName), query) {
+			continue
+		}
+		matched = append(matched, u)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].JoinedAt.Equal(matched[j].JoinedAt) {
+			return matched[i].JoinedAt.Before(matched[j].JoinedAt)
+		}
+		return matched[i].ID < matched[j].ID
+	})
+	return matched
+}
+
+func (f *fakeUserStore) ListPendingUsersPage(_ context.Context, query string, limit, offset int) ([]*domain.User, error) {
+	if f.pendingPageErr != nil {
+		return nil, f.pendingPageErr
+	}
+	f.pendingQuery, f.pendingLimit, f.pendingOffset = query, limit, offset
+
+	matched := f.pendingMatches(query)
+	if offset >= len(matched) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(matched))
+	return matched[offset:end], nil
+}
+
+func (f *fakeUserStore) CountPendingUsersMatching(_ context.Context, query string) (int64, error) {
+	if f.countPendingErr != nil {
+		return 0, f.countPendingErr
+	}
+	return int64(len(f.pendingMatches(query))), nil
 }
 
 func (f *fakeUserStore) CountActiveMembers(_ context.Context) (int64, error) {

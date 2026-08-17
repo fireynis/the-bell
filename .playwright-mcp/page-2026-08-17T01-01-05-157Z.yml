@@ -1,0 +1,15 @@
+- generic [ref=f5e4]:
+  - generic [ref=f5e5]: The Bell
+  - generic [ref=f5e10]:
+    - heading "Create an account" [level=2] [ref=f5e11]
+    - paragraph [ref=f5e12]: Join The Bell community
+    - generic [ref=f5e13]:
+      - generic [ref=f5e14]:
+        - generic [ref=f5e15]: Email
+        - textbox "Email" [ref=f5e16]
+      - generic [ref=f5e17]:
+        - generic [ref=f5e18]: Display Name
+        - textbox "Display Name" [ref=f5e19]
+      - button "Sign up" [ref=f5e21]
+  - link "Already have an account? Sign in" [ref=f5e23] [cursor=pointer]:
+    - /url: /auth/login

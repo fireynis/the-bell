@@ -1,0 +1,25 @@
+[      68ms] [ERROR] Failed to load resource: the server responded with a status of 401 () @ https://bell.themacarthurs.ca/.ory/sessions/whoami:0
+[   16968ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://bell.themacarthurs.ca/.ory/self-service/registration?flow=353d9b54-e38b-44cb-9e49-04005b98df41:0
+[   17070ms] [VERBOSE] [DOM] Password forms should have (optionally hidden) username fields for accessibility: (More info: https://goo.gl/9p2vKq) %o @ https://bell.themacarthurs.ca/auth/registration?flow=353d9b54-e38b-44cb-9e49-04005b98df41:0
+[ 1004357ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1016568ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1831746ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1843778ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1847115ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1850565ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1859232ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1862722ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 1874695ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2064523ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2071696ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2075205ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2078732ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2082054ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2085571ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2092497ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2105349ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2172482ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2181126ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2184307ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2196475ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0
+[ 2207752ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://bell.themacarthurs.ca/api/v1/feed/live:0

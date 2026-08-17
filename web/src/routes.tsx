@@ -7,6 +7,7 @@ import Compose from "./pages/Compose";
 import Neighbors from "./pages/Neighbors";
 import Profile from "./pages/Profile";
 import Admin from "./pages/Admin";
+import Approvals from "./pages/admin/Approvals";
 import Login from "./pages/auth/Login";
 import Registration from "./pages/auth/Registration";
 import Settings from "./pages/auth/Settings";
@@ -50,7 +51,14 @@ export const routes: RouteObject[] = [
         children: [
           {
             element: <RequireRole minRole="council" />,
-            children: [{ path: "/admin", element: <Admin /> }],
+            children: [
+              { path: "/admin", element: <Admin /> },
+              // The approval queue has a page of its own rather than a panel on
+              // the dashboard: fifty applicants is a normal town launch, and
+              // working through them is a different activity from reading where
+              // the town stands. Same guard, same wide measure.
+              { path: "/admin/approvals", element: <Approvals /> },
+            ],
           },
         ],
       },

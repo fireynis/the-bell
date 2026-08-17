@@ -1,77 +1,89 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import type { User } from "../../api/types";
+import {
+  APPROVALS_EMPTY,
+  APPROVALS_PREVIEW_SIZE,
+  describeQueueSize,
+  describeWaitingTime,
+} from "../../lib/approvals";
 import { personName } from "../../lib/people";
-import { NO_RESIDENCY_CLAIM, describeResidencyClaim } from "../../lib/residency";
+import { formatDate } from "../../lib/time";
 import AdminSection from "./AdminSection";
 
-/** PendingUsersSection lists users awaiting council approval, newest first. */
-export default function PendingUsersSection({
-  users,
-  onApprove,
-  approving,
-}: {
-  users: User[];
-  onApprove: (id: string) => void;
-  approving: string | null;
-}) {
+/**
+ * PendingUsersSection previews the approval queue on the Town Hall dashboard.
+ *
+ * It used to be the queue: every pending user, with an Approve button each.
+ * Fifty applicants — a town launch, or a registration flood — turned the
+ * dashboard into an unusable wall, and a dashboard is for knowing where things
+ * stand rather than for working through a list. The queue lives at
+ * /admin/approvals now; what stays here is how many are waiting, who has waited
+ * longest, and the way in.
+ *
+ * There is no Approve button, on purpose. Approving somebody is a judgement
+ * about a stranger and it wants the queue's context — the residency claim, the
+ * link to their profile, the rest of the list. A one-click approve sitting in a
+ * grid of statistics invites the opposite.
+ *
+ * The residency claim is deliberately absent too. It is the most sensitive
+ * thing a resident tells the town and it appears on the reviewing screen alone;
+ * a preview on a dashboard is not a review.
+ */
+export default function PendingUsersSection({ users, total }: { users: User[]; total: number }) {
+  // Read once, when the dashboard loads. The waits are counted in hours and
+  // days, so a clock re-read on every render would buy nothing and make the
+  // render impure; the figure refreshes when the page does.
+  const [now] = useState(() => Date.now());
+
+  const waiting = describeQueueSize(total);
+  const previewed = users.slice(0, APPROVALS_PREVIEW_SIZE);
+
   return (
     <AdminSection
-      title="Pending User Approvals"
-      isEmpty={users.length === 0}
-      emptyMessage="No pending users at this time."
+      title="Approvals"
+      isEmpty={total <= 0}
+      emptyMessage={APPROVALS_EMPTY}
+      action={
+        <Link
+          to="/admin/approvals"
+          className="text-sm font-medium"
+          style={{ color: "var(--color-primary)" }}
+        >
+          Review all
+        </Link>
+      }
     >
-      <ul style={{ borderTop: "1px solid var(--color-border-light)" }}>
-        {users.map((user) => {
-          const said = describeResidencyClaim(user.residency_claim);
+      <p className="text-sm font-medium" style={{ color: "var(--color-text)" }}>
+        {waiting}
+      </p>
+
+      <ul className="mt-3" style={{ borderTop: "1px solid var(--color-border-light)" }}>
+        {previewed.map((user) => {
+          const joined = formatDate(user.joined_at);
+          const meta = [joined && `Joined ${joined}`, describeWaitingTime(user.joined_at, now)]
+            .filter(Boolean)
+            .join(" · ");
 
           return (
-          <li
-            key={user.id}
-            className="flex items-center justify-between gap-4 py-3"
-            style={{ borderBottom: "1px solid var(--color-border-light)" }}
-          >
-            <div className="min-w-0">
+            <li
+              key={user.id}
+              className="py-2"
+              style={{ borderBottom: "1px solid var(--color-border-light)" }}
+            >
               <Link
                 to={`/profile/${user.id}`}
                 className="text-sm font-medium"
                 style={{ color: "var(--color-primary)" }}
               >
-                {/* Most pending users arrive with a name now that registration
-                    syncs the trait, but the fallback stays: a council member
-                    still has to be able to approve one who set none. */}
                 {personName(user.display_name, user.id)}
               </Link>
-              <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-                Joined {new Date(user.joined_at).toLocaleDateString()}
-              </p>
-              {/*
-                Rendered as something this person said, never as an address the
-                town holds — see describeResidencyClaim. This queue is the only
-                place in the app it appears; it is deliberately absent from
-                profiles and from the directory, and the server enforces that
-                too. Somebody who gave none gets a quiet line rather than a gap,
-                so a council member can tell "did not say" from "did not load".
-              */}
-              <p
-                className="mt-0.5 truncate text-xs italic"
-                style={{ color: said ? "var(--color-text-secondary)" : "var(--color-text-tertiary)" }}
-                title={said ?? undefined}
-              >
-                {said ?? NO_RESIDENCY_CLAIM}
-              </p>
-            </div>
-            <button
-              onClick={() => onApprove(user.id)}
-              disabled={approving === user.id}
-              className="flex-shrink-0 rounded-md px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              style={{
-                backgroundColor: "var(--color-success)",
-                color: "var(--color-text-inverse)",
-              }}
-            >
-              {approving === user.id ? "Approving..." : "Approve"}
-            </button>
-          </li>
+              {meta && (
+                <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
+                  {meta}
+                </p>
+              )}
+            </li>
           );
         })}
       </ul>

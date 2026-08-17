@@ -381,6 +381,10 @@ type listDirectoryResponse struct {
 // parseDirectoryLimit mirrors parseLimit with the directory's own default. The
 // feed's 20 answers a different question — how many posts fill a screen — and
 // the directory's page size is part of its published contract.
+//
+// The council's approval queue parses its limit through here too: both are
+// searchable listings of users and they publish the same bounds, so the two
+// endpoints clamp identically by construction rather than by remembering.
 func parseDirectoryLimit(s string) int {
 	if s == "" {
 		return service.DirectoryDefaultLimit

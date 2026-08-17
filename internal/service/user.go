@@ -122,6 +122,12 @@ const (
 	// DirectoryDefaultLimit and DirectoryMaxLimit bound one page of the member
 	// directory. 25 is a screenful of neighbours; 100 is the same ceiling the
 	// feed uses, and exists so one request cannot ask for the whole town.
+	//
+	// The council's approval queue pages on the same numbers — see
+	// ApprovalService.ListPending. Two searchable listings of users, both read
+	// by a person scanning names, and a queue that held a different number of
+	// rows per page than the directory would be an arbitrary difference for a
+	// client to carry.
 	DirectoryDefaultLimit = 25
 	DirectoryMaxLimit     = 100
 
@@ -131,8 +137,8 @@ const (
 	maxDirectorySearchLength = 100
 )
 
-// ListDirectory returns one page of the member directory and the total number
-// of people matching the search, so a caller can page through them.
+// boundUserListing applies the shared rules for paging a searchable listing of
+// users, returning the trimmed query and the bounded page.
 //
 // A page is bounded rather than rejected when the caller overreaches: a limit
 // of zero or less means "use the default" and one above the ceiling is clamped,
@@ -140,22 +146,39 @@ const (
 // not an overreach with an obvious intent, it is a caller that has lost track of
 // where it is — so it is refused.
 //
-// The count is a second query rather than a window function over the page: at
-// an offset past the end the page is empty and there would be no row to carry
-// the total on, which is exactly when a pager needs it most.
-func (s *UserService) ListDirectory(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error) {
+// It is one function rather than a rule per listing because the directory and
+// the approval queue publish the same bounds, and a limit that clamped in one
+// and rejected in the other would be a difference nobody chose.
+func boundUserListing(query string, limit, offset int) (string, int, int, error) {
 	query = strings.TrimSpace(query)
 	if utf8.RuneCountInString(query) > maxDirectorySearchLength {
-		return nil, 0, fmt.Errorf("%w: search query exceeds %d characters", ErrValidation, maxDirectorySearchLength)
+		return "", 0, 0, fmt.Errorf("%w: search query exceeds %d characters", ErrValidation, maxDirectorySearchLength)
 	}
 	if offset < 0 {
-		return nil, 0, fmt.Errorf("%w: offset must not be negative", ErrValidation)
+		return "", 0, 0, fmt.Errorf("%w: offset must not be negative", ErrValidation)
 	}
 	if limit <= 0 {
 		limit = DirectoryDefaultLimit
 	}
 	if limit > DirectoryMaxLimit {
 		limit = DirectoryMaxLimit
+	}
+	return query, limit, offset, nil
+}
+
+// ListDirectory returns one page of the member directory and the total number
+// of people matching the search, so a caller can page through them.
+//
+// The bounds on the page and the search term are boundUserListing's; see there
+// for why an overlong limit is clamped and a negative offset is not.
+//
+// The count is a second query rather than a window function over the page: at
+// an offset past the end the page is empty and there would be no row to carry
+// the total on, which is exactly when a pager needs it most.
+func (s *UserService) ListDirectory(ctx context.Context, query string, limit, offset int) ([]*domain.User, int, error) {
+	query, limit, offset, err := boundUserListing(query, limit, offset)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	users, err := s.repo.ListDirectoryUsers(ctx, query, limit, offset)

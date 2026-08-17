@@ -1,0 +1,58 @@
+- generic [ref=f2e5]:
+  - navigation [ref=f2e6]:
+    - link "Feed" [ref=f2e7] [cursor=pointer]:
+      - /url: /
+    - link "Neighbours" [ref=f2e10] [cursor=pointer]:
+      - /url: /neighbors
+    - link "Post" [ref=f2e13] [cursor=pointer]:
+      - /url: /compose
+    - link "Profile" [ref=f2e16] [cursor=pointer]:
+      - /url: /profile
+  - banner [ref=f2e19]:
+    - generic [ref=f2e20]: The Bell
+    - link "Settings" [ref=f2e25] [cursor=pointer]:
+      - /url: /auth/settings
+  - main [ref=f2e28]:
+    - generic [ref=f2e44]:
+      - generic [ref=f2e45]:
+        - link "What's happening in town?" [ref=f2e46] [cursor=pointer]:
+          - /url: /compose
+        - button "Mute bell sounds" [ref=f2e49]:
+          - generic [ref=f2e50]: 🔔
+      - generic [ref=f2e51]:
+        - article [ref=f2e52]:
+          - generic [ref=f2e53]:
+            - generic [ref=f2e54]: M
+            - link "Margaret Weaver" [ref=f2e55] [cursor=pointer]:
+              - /url: /profile/01a00d31-0d63-784f-9a17-8018916b9881
+            - generic [ref=f2e56]: ·
+            - generic "8/17/2026, 12:59:56 AM" [ref=f2e57]: just now
+            - button "Actions for Margaret Weaver's post" [ref=f2e60]:
+              - generic [ref=f2e61]: …
+          - paragraph [ref=f2e62]: The farmers' market is back this Saturday at the fairgrounds — first one of the season! The Hendersons are bringing their honey and I hear there will be a pie table. Come say hello.
+          - generic [ref=f2e63]:
+            - button "Bell, no reactions" [ref=f2e64]:
+              - generic [ref=f2e65]: 🔔
+            - button "Heart, no reactions" [ref=f2e66]:
+              - generic [ref=f2e67]: ❤️
+            - button "Celebrate, no reactions" [ref=f2e68]:
+              - generic [ref=f2e69]: 🎉
+        - article [ref=f2e70]:
+          - generic [ref=f2e71]:
+            - generic [ref=f2e72]: J
+            - link "Jeremy" [ref=f2e73] [cursor=pointer]:
+              - /url: /profile/01a00d0b-8fa8-79a3-8d22-0b8e2de43b1e
+            - generic [ref=f2e74]: ·
+            - generic "8/17/2026, 12:15:26 AM" [ref=f2e75]: 44m
+            - button "Actions for Jeremy's post" [ref=f2e78]:
+              - generic [ref=f2e79]: …
+          - paragraph [ref=f2e80]: We won the hockey championship!
+          - generic [ref=f2e81]:
+            - button "Bell, 1 reaction" [pressed] [ref=f2e82]:
+              - generic [ref=f2e83]: 🔔
+              - generic [ref=f2e84]: "1"
+            - button "Heart, no reactions" [ref=f2e85]:
+              - generic [ref=f2e86]: ❤️
+            - button "Celebrate, 1 reaction" [pressed] [ref=f2e87]:
+              - generic [ref=f2e88]: 🎉
+              - generic [ref=f2e89]: "1"

@@ -90,6 +90,25 @@ export function formatMonthYear(dateStr: string): string {
 }
 
 /**
+ * formatDate renders the day, month and year, for the approval queue's "Joined
+ * 3 March 2026".
+ *
+ * Between formatMonthYear and formatDateTime, and the queue is why: the day
+ * matters when the council is deciding about somebody who has been waiting
+ * twelve of them, but the minute they registered at does not, and printing it
+ * makes a list of applicants read like a server log.
+ *
+ * Shares the empty-string contract of the others: an unparseable timestamp
+ * shows nothing rather than "Invalid Date".
+ */
+export function formatDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+}
+
+/**
  * formatDateTime renders a date and time to the minute, for the moderation
  * audit trail where "3d" is not specific enough to defend a decision.
  *

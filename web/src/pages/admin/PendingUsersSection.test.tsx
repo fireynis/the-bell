@@ -1,15 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { User } from "../../api/types";
+import { APPROVALS_PREVIEW_SIZE } from "../../lib/approvals";
 import { NO_RESIDENCY_CLAIM } from "../../lib/residency";
 import PendingUsersSection from "./PendingUsersSection";
 
 /**
- * The queue is where a council member decides whether they recognise a stranger,
- * and the residency claim is the only thing on the row that helps them. These
- * pin that it reads as a claim rather than as a checked fact, and that a member
- * who gave none is not left looking like a row that failed to load.
+ * The dashboard's preview of the approval queue. It exists to say how many
+ * neighbours are waiting and to get somebody to the queue; the deciding happens
+ * on /admin/approvals. These pin the boundary in both directions — the preview
+ * stays short and carries no claim, and it does not disappear the queue.
  */
 
 function pendingUser(overrides: Partial<User> = {}): User {
@@ -26,48 +27,80 @@ function pendingUser(overrides: Partial<User> = {}): User {
   };
 }
 
-function renderSection(users: User[]) {
+function renderSection(users: User[], total = users.length) {
   return render(
     <MemoryRouter>
-      <PendingUsersSection users={users} onApprove={vi.fn()} approving={null} />
+      <PendingUsersSection users={users} total={total} />
     </MemoryRouter>,
   );
 }
 
-describe("PendingUsersSection", () => {
-  it("shows the claim as something the newcomer says, not as their address", () => {
-    renderSection([pendingUser({ residency_claim: "the old mill road" })]);
+describe("Town Hall approvals preview", () => {
+  it("counts the neighbours waiting, in the words a town uses", () => {
+    renderSection([pendingUser()], 7);
 
-    expect(screen.getByText("Says they're at or near the old mill road")).toBeInTheDocument();
+    expect(screen.getByText("7 neighbours waiting")).toBeInTheDocument();
   });
 
-  it("says quietly that no address was given rather than leaving a gap", () => {
-    renderSection([pendingUser({ residency_claim: "" })]);
+  it("says one neighbour rather than 1 neighbours", () => {
+    renderSection([pendingUser()], 1);
 
-    expect(screen.getByText(NO_RESIDENCY_CLAIM)).toBeInTheDocument();
+    expect(screen.getByText("1 neighbour waiting")).toBeInTheDocument();
   });
 
-  // The field is absent entirely on a build whose server does not send it, which
-  // must read the same as a member who chose not to answer.
-  it("says the same when the row carries no claim at all", () => {
-    renderSection([pendingUser()]);
-
-    expect(screen.getByText(NO_RESIDENCY_CLAIM)).toBeInTheDocument();
-  });
-
-  it("still names and offers to approve each pending user", () => {
-    renderSection([pendingUser({ residency_claim: "by the school" })]);
+  it("names the longest-waiting applicant and links to their profile", () => {
+    renderSection([pendingUser()], 1);
 
     expect(screen.getByRole("link", { name: "Ada Lovelace" })).toHaveAttribute(
       "href",
       "/profile/0193a7b2-aaaa-7000-8000-000000000000",
     );
-    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
   });
 
-  it("says there is nobody waiting when the queue is empty", () => {
-    renderSection([]);
+  it("offers a way through to the whole queue", () => {
+    renderSection([pendingUser()], 12);
 
-    expect(screen.getByText("No pending users at this time.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review all" })).toHaveAttribute(
+      "href",
+      "/admin/approvals",
+    );
+  });
+
+  // The wall this page was rewritten to stop rendering. Even handed more, the
+  // preview stays a preview.
+  it("previews only the longest-waiting few, however many it is given", () => {
+    const many = Array.from({ length: 10 }, (_, i) =>
+      pendingUser({ id: `user-${i}`, display_name: `Waiting ${i}` }),
+    );
+
+    renderSection(many, 50);
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(APPROVALS_PREVIEW_SIZE);
+    expect(screen.getByText("Waiting 0")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting 5")).not.toBeInTheDocument();
+  });
+
+  // The claim is the most sensitive thing a resident tells the town and belongs
+  // to the reviewing screen alone. A dashboard is not a review.
+  it("does not show the residency claim", () => {
+    renderSection([pendingUser({ residency_claim: "the old mill road" })], 1);
+
+    expect(screen.queryByText(/old mill road/)).not.toBeInTheDocument();
+    expect(screen.queryByText(NO_RESIDENCY_CLAIM)).not.toBeInTheDocument();
+  });
+
+  // Approving is a judgement about a stranger and wants the queue's context.
+  it("offers no approve button", () => {
+    renderSection([pendingUser()], 1);
+
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  });
+
+  it("says the town is caught up when nobody is waiting", () => {
+    renderSection([], 0);
+
+    expect(
+      screen.getByText("Nobody is waiting — the town is all caught up."),
+    ).toBeInTheDocument();
   });
 });

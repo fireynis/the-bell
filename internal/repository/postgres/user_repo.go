@@ -87,6 +87,31 @@ func (r *UserRepo) ListPendingUsers(ctx context.Context) ([]*domain.User, error)
 	return users, nil
 }
 
+// ListPendingUsersPage returns one page of the council's approval queue,
+// oldest applicant first, filtered by a case-insensitive substring of the
+// display name. An empty query lists everyone waiting.
+func (r *UserRepo) ListPendingUsersPage(ctx context.Context, query string, limit, offset int) ([]*domain.User, error) {
+	rows, err := r.q.ListPendingUsersPage(ctx, ListPendingUsersPageParams{
+		Query:     escapeLikePattern(query),
+		RowLimit:  int32Bound(limit),
+		RowOffset: int32Bound(offset),
+	})
+	if err != nil {
+		return nil, err
+	}
+	users := make([]*domain.User, len(rows))
+	for i, row := range rows {
+		users[i] = userFromRow(row)
+	}
+	return users, nil
+}
+
+// CountPendingUsersMatching counts everyone ListPendingUsersPage would page
+// through for the same query.
+func (r *UserRepo) CountPendingUsersMatching(ctx context.Context, query string) (int64, error) {
+	return r.q.CountPendingUsersMatching(ctx, escapeLikePattern(query))
+}
+
 // ListDirectoryUsers returns one page of the member directory, filtered by a
 // case-insensitive substring of the display name. An empty query lists
 // everyone.
